@@ -1,0 +1,19 @@
+[package]
+name = "deltabox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "deltabox-lite sandbox runtime CLI"
+
+[[bin]]
+name = "deltabox"
+path = "src/main.rs"
+
+[dependencies]
+deltabox-core = { path = "../deltabox-core" }
+clap.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+
