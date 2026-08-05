@@ -42,13 +42,14 @@ enum InnerCmd {
         resp: std_mpsc::Sender<ChanResult<ExecResult>>,
     },
     Scan {
-        resp: std_mpsc::Sender<ChanResult<Vec<ScanEntry>>>,
+        resp: std_mpsc::Sender<ChanResult<Vec<String>>>,
     },
     CurrentUpper {
         resp: std_mpsc::Sender<PathBuf>,
     },
     Freeze {
         dest: PathBuf,
+        prev: Option<PathBuf>,
         resp: std_mpsc::Sender<ChanResult<()>>,
     },
     Commit {
@@ -63,6 +64,11 @@ enum InnerCmd {
         resp: std_mpsc::Sender<ChanResult<()>>,
     },
     Ping {
+        resp: std_mpsc::Sender<ChanResult<()>>,
+    },
+    Write {
+        path: PathBuf,
+        content: Vec<u8>,
         resp: std_mpsc::Sender<ChanResult<()>>,
     },
 }
@@ -179,8 +185,70 @@ impl SandboxBackend for SandlockBackend {
         )
     }
 
+    fn read_file(&mut self, session_id: &str, path: &Path) -> Result<Option<Vec<u8>>> {
+        let Some(runtime) = self.sessions.get(session_id) else {
+            return Err(Error::SessionNotFound(session_id.to_string()));
+        };
+        let project = runtime.spec.project.clone();
+        let policy = runtime.spec.policy.clone();
+        let rel = path
+            .strip_prefix(&project)
+            .map_err(|_| Error::InvalidPolicy("fs.read outside project".into()))?;
+        if policy.path_is_denied(rel) {
+            return Err(Error::Backend("path denied by policy".into()));
+        }
+        drop(runtime);
+        let upper = self.current_upper(session_id)?;
+        let candidates = [upper.join(rel), project.join(rel)];
+        for candidate in candidates {
+            if let Ok(meta) = std::fs::metadata(&candidate) {
+                if meta.is_file() {
+                    if meta.len() > 16 * 1024 * 1024 {
+                        return Err(Error::Backend("fs.read file exceeds 16 MiB limit".into()));
+                    }
+                    return Ok(Some(std::fs::read(&candidate)?));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn write_file(&mut self, session_id: &str, path: &Path, content: Vec<u8>) -> Result<()> {
+        let Some(runtime) = self.sessions.get(session_id) else {
+            return Err(Error::SessionNotFound(session_id.to_string()));
+        };
+        let project = runtime.spec.project.clone();
+        let policy = runtime.spec.policy.clone();
+        let rel = path
+            .strip_prefix(&project)
+            .map_err(|_| Error::InvalidPolicy("fs.write outside project".into()))?;
+        if policy.path_is_denied(rel) {
+            return Err(Error::Backend("path denied by policy".into()));
+        }
+        drop(runtime);
+        let path = rel.to_path_buf();
+        self.call(
+            session_id,
+            move |resp| InnerCmd::Write {
+                path,
+                content,
+                resp,
+            },
+            COMMAND_TIMEOUT,
+        )
+    }
+
     fn scan(&mut self, session_id: &str) -> Result<Vec<ScanEntry>> {
-        self.call(session_id, |resp| InnerCmd::Scan { resp }, COMMAND_TIMEOUT)
+        let paths: Vec<String> =
+            self.call(session_id, |resp| InnerCmd::Scan { resp }, COMMAND_TIMEOUT)?;
+        let Some(runtime) = self.sessions.get(session_id) else {
+            return Err(Error::SessionNotFound(session_id.to_string()));
+        };
+        let project = runtime.spec.project.clone();
+        let upper = self.current_upper(session_id)?;
+        Ok(crate::snapshot::build_scan_entries(
+            &paths, &upper, &project,
+        ))
     }
 
     fn current_upper(&mut self, session_id: &str) -> Result<PathBuf> {
@@ -197,11 +265,17 @@ impl SandboxBackend for SandlockBackend {
             .map_err(|_| Error::Backend("current_upper timed out".into()))
     }
 
-    fn freeze_upper(&mut self, session_id: &str, dest_dir: &Path) -> Result<()> {
+    fn freeze_upper(
+        &mut self,
+        session_id: &str,
+        dest_dir: &Path,
+        prev_upper: Option<&Path>,
+    ) -> Result<()> {
         let dest = dest_dir.to_path_buf();
+        let prev = prev_upper.map(|p| p.to_path_buf());
         self.call(
             session_id,
-            move |resp| InnerCmd::Freeze { dest, resp },
+            move |resp| InnerCmd::Freeze { dest, prev, resp },
             Duration::from_secs(120),
         )
     }
@@ -405,7 +479,7 @@ async fn serve_loop(
                         }
                         tokio::spawn(async move {
                             let out = match orx.await {
-                                Ok(Ok(value)) => serde_json::from_value::<Vec<ScanEntry>>(value)
+                                Ok(Ok(value)) => serde_json::from_value::<Vec<String>>(value)
                                     .map_err(|e| e.to_string()),
                                 Ok(Err(e)) => Err(e),
                                 Err(_) => Err("worker disconnected".into()),
@@ -416,8 +490,13 @@ async fn serve_loop(
                     InnerCmd::CurrentUpper { resp } => {
                         let _ = resp.send(current_upper.clone());
                     }
-                    InnerCmd::Freeze { dest, resp } => {
-                        let r = copy_tree(&current_upper, &dest.join("upper")).map(|_| ());
+                    InnerCmd::Freeze { dest, prev, resp } => {
+                        let r = crate::snapshot::copy_tree_incremental(
+                            &current_upper,
+                            prev.as_deref(),
+                            &dest.join("upper"),
+                        )
+                        .map(|_| ());
                         let _ = resp.send(r.map_err(|e| e.to_string()));
                     }
                     InnerCmd::Commit {
@@ -479,6 +558,40 @@ async fn serve_loop(
                         let (otx, orx) = oneshot::channel();
                         pending.insert(id, otx);
                         let line = serde_json::to_string(&WorkerCommand::Ping { id })?;
+                        if writer_tx.as_ref().expect("writer").send(line).is_err() {
+                            pending.remove(&id);
+                            let _ = resp.send(Err("worker pipe closed".into()));
+                            continue;
+                        }
+                        tokio::spawn(async move {
+                            let out = match orx.await {
+                                Ok(Ok(_)) => Ok(()),
+                                Ok(Err(e)) => Err(e),
+                                Err(_) => Err("worker disconnected".into()),
+                            };
+                            let _ = resp.send(out);
+                        });
+                    }
+                    InnerCmd::Write {
+                        path,
+                        content,
+                        resp,
+                    } => {
+                        use base64::Engine;
+                        if !ready {
+                            let _ = resp.send(Err("worker not ready".into()));
+                            continue;
+                        }
+                        let id = next_id;
+                        next_id += 1;
+                        let (otx, orx) = oneshot::channel();
+                        pending.insert(id, otx);
+                        let line = serde_json::to_string(&WorkerCommand::Write {
+                            id,
+                            path: path.to_string_lossy().into_owned(),
+                            content_base64: base64::engine::general_purpose::STANDARD
+                                .encode(&content),
+                        })?;
                         if writer_tx.as_ref().expect("writer").send(line).is_err() {
                             pending.remove(&id);
                             let _ = resp.send(Err("worker pipe closed".into()));
@@ -566,6 +679,9 @@ fn build_sandbox(spec: &SessionSpec, worker_bin: &Path) -> Result<Sandbox> {
     for p in resolve_read_paths(&spec.policy, &spec.project) {
         builder = builder.fs_read(&p);
     }
+    for p in resolve_write_paths(&spec.policy, &spec.project) {
+        builder = builder.fs_write(&p);
+    }
     for p in resolve_deny_paths(&spec.policy, &spec.project)? {
         builder = builder.fs_deny(&p);
     }
@@ -590,6 +706,24 @@ fn resolve_read_paths(policy: &Policy, project: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = policy
         .filesystem
         .read
+        .iter()
+        .map(|p| {
+            if p.is_absolute() {
+                p.clone()
+            } else {
+                project.join(p)
+            }
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn resolve_write_paths(policy: &Policy, project: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = policy
+        .filesystem
+        .write
         .iter()
         .map(|p| {
             if p.is_absolute() {

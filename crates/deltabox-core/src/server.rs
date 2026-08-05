@@ -43,6 +43,17 @@ impl Server {
             Method::SessionStop(p) => serde_json::to_value(self.manager.stop(&p.session_id)?)?,
             Method::SessionStatus(p) => serde_json::to_value(self.manager.status(&p.session_id)?)?,
             Method::SessionExec(p) => serde_json::to_value(self.manager.exec(p)?)?,
+            Method::FsRead(p) => {
+                serde_json::to_value(self.manager.read_file(&p.session_id, &p.path)?)?
+            }
+            Method::FsWrite(p) => {
+                use base64::Engine;
+                let content = base64::engine::general_purpose::STANDARD
+                    .decode(&p.content_base64)
+                    .map_err(|e| crate::error::Error::InvalidPolicy(format!("bad base64: {e}")))?;
+                self.manager.write_file(&p.session_id, &p.path, content)?;
+                serde_json::json!(null)
+            }
             Method::CheckpointCreate(p) => serde_json::to_value(self.manager.checkpoint(p)?)?,
             Method::DiffList(p) => serde_json::to_value(self.manager.diff(p)?)?,
             Method::ChangesCommit(p) => serde_json::to_value(self.manager.commit(p)?)?,

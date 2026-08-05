@@ -12,13 +12,24 @@ pub trait SandboxBackend: Send + Sync {
     /// Round-trip health check against the session worker.
     fn ping(&mut self, session_id: &str) -> Result<()>;
     fn exec(&mut self, session_id: &str, req: ExecRequest) -> Result<ExecResult>;
+    /// Read a file from the sandboxed view (upper-then-lower), denying paths
+    /// outside the project or matching the policy deny list.
+    fn read_file(&mut self, session_id: &str, path: &Path) -> Result<Option<Vec<u8>>>;
+    /// Write a file through the sandbox (lands in the COW upper layer).
+    fn write_file(&mut self, session_id: &str, path: &Path, content: Vec<u8>) -> Result<()>;
     /// Scan the sandboxed project view. Additions/modifications live in the
     /// COW upper layer; deletions are visible only through this scan.
     fn scan(&mut self, session_id: &str) -> Result<Vec<ScanEntry>>;
     /// Path of the current COW upper directory.
     fn current_upper(&mut self, session_id: &str) -> Result<PathBuf>;
-    /// Freeze the current COW state into `dest_dir/upper`.
-    fn freeze_upper(&mut self, session_id: &str, dest_dir: &Path) -> Result<()>;
+    /// Freeze the current COW state into `dest_dir/upper`, skipping files
+    /// already frozen in `prev_upper` (same size/mtime).
+    fn freeze_upper(
+        &mut self,
+        session_id: &str,
+        dest_dir: &Path,
+        prev_upper: Option<&Path>,
+    ) -> Result<()>;
     /// Merge pending changes into the real project and restart the session.
     fn commit_changes(
         &mut self,

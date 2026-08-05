@@ -10,6 +10,7 @@ pub enum JournalKind {
     SessionStart,
     SessionStop,
     Exec,
+    Write,
     Checkpoint,
     Commit,
     Abort,
@@ -58,7 +59,9 @@ impl Journal {
     }
 
     pub fn flush_sync(&mut self) -> Result<()> {
-        self.file.sync_all()?;
+        // fdatasync: flush journal data + size without a metadata fsync,
+        // which is the durability level an append-only log needs.
+        self.file.sync_data()?;
         Ok(())
     }
 

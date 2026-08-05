@@ -28,6 +28,7 @@ fn exec_sh(manager: &mut SessionManager, session_id: &str, script: &str) -> (i32
             argv: vec!["sh".into(), "-c".into(), script.into()],
             cwd: None,
             env: None,
+            label: None,
         })
         .unwrap();
     (result.exit_code.unwrap_or(-1), result.stdout, result.stderr)
@@ -77,7 +78,7 @@ fn exec_captures_output_and_keeps_host_clean() {
 
 #[test]
 fn checkpoint_abort_roundtrip() {
-    let (dir, mut manager, sid) = start_project();
+    let (_dir, mut manager, sid) = start_project();
     exec_sh(&mut manager, &sid, "printf 'v1' > a.txt");
     let ckpt = manager
         .checkpoint(CheckpointParams {
@@ -179,4 +180,190 @@ fn stop_discards_pending() {
     exec_sh(&mut manager, &sid, "printf x > pending.txt");
     manager.stop(&sid).unwrap();
     assert!(!dir.path().join("pending.txt").exists());
+}
+
+#[test]
+fn checkpoint_before_deletion_abort_restores() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("sub/deep")).unwrap();
+    std::fs::write(dir.path().join("sub/deep/a.txt"), "a").unwrap();
+    std::fs::write(dir.path().join("sub/b.txt"), "b").unwrap();
+    let backend = SandlockBackend::new(Some(worker_bin()));
+    let mut manager = SessionManager::new(dir.path(), Box::new(backend)).unwrap();
+    let info = manager.start(None).unwrap();
+    let sid = info.session_id;
+
+    manager
+        .checkpoint(CheckpointParams {
+            session_id: sid.clone(),
+            label: Some("before-rm".into()),
+        })
+        .unwrap();
+    exec_sh(&mut manager, &sid, "rm -rf sub");
+    let (code, _, _) = exec_sh(&mut manager, &sid, "test -e sub/b.txt");
+    assert_ne!(code, 0, "deleted inside sandbox view");
+
+    manager
+        .abort(AbortParams {
+            session_id: sid.clone(),
+            checkpoint: None,
+        })
+        .unwrap();
+    let (code, _, _) = exec_sh(&mut manager, &sid, "test -f sub/deep/a.txt");
+    assert_eq!(code, 0, "abort restores files deleted after the checkpoint");
+    assert!(dir.path().join("sub/deep/a.txt").exists());
+}
+
+#[test]
+fn delete_then_checkpoint_then_commit_applies_deletion() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/b.txt"), "b").unwrap();
+    let backend = SandlockBackend::new(Some(worker_bin()));
+    let mut manager = SessionManager::new(dir.path(), Box::new(backend)).unwrap();
+    let info = manager.start(None).unwrap();
+    let sid = info.session_id;
+
+    exec_sh(&mut manager, &sid, "rm -rf sub");
+    manager
+        .checkpoint(CheckpointParams {
+            session_id: sid.clone(),
+            label: Some("after-rm".into()),
+        })
+        .unwrap();
+    manager
+        .commit(CommitParams {
+            session_id: sid.clone(),
+            checkpoint: None,
+        })
+        .unwrap();
+    assert!(
+        !dir.path().join("sub/b.txt").exists(),
+        "commit applies the deletion to the host project"
+    );
+}
+
+#[test]
+fn binary_edit_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("hello.txt"), "hello\n").unwrap();
+    std::fs::write(dir.path().join("bin.dat"), [1u8, 2, 3]).unwrap();
+    let backend = SandlockBackend::new(Some(worker_bin()));
+    let mut manager = SessionManager::new(dir.path(), Box::new(backend)).unwrap();
+    let info = manager.start(None).unwrap();
+    let sid = info.session_id;
+
+    manager
+        .checkpoint(CheckpointParams {
+            session_id: sid.clone(),
+            label: Some("before-bin-edit".into()),
+        })
+        .unwrap();
+    exec_sh(&mut manager, &sid, "printf '\\000\\002\\003' > bin.dat");
+    let diff = manager
+        .diff(DiffParams {
+            session_id: sid.clone(),
+            from: None,
+            to: None,
+        })
+        .unwrap();
+    let bin = diff.changes.iter().find(|c| c.path == "bin.dat").unwrap();
+    assert!(bin.is_binary, "binary file is marked, not text-diffed");
+    assert!(bin.text_diff.is_none());
+
+    manager
+        .abort(AbortParams {
+            session_id: sid.clone(),
+            checkpoint: None,
+        })
+        .unwrap();
+    let (code, out, _) = exec_sh(&mut manager, &sid, "od -An -tx1 bin.dat | tr -d ' \\n'");
+    assert_eq!(code, 0);
+    assert_eq!(out.trim(), "010203", "abort restores binary content");
+}
+
+#[test]
+fn exec_cwd_and_env() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/inner.txt"), "x").unwrap();
+    let backend = SandlockBackend::new(Some(worker_bin()));
+    let mut manager = SessionManager::new(dir.path(), Box::new(backend)).unwrap();
+    let info = manager.start(None).unwrap();
+    let sid = info.session_id;
+
+    let result = manager
+        .exec(ExecParams {
+            session_id: sid.clone(),
+            argv: vec![
+                "sh".into(),
+                "-c".into(),
+                "pwd; printf '%s' \"$DBX_VAR\"".into(),
+            ],
+            cwd: Some(dir.path().join("sub")),
+            env: Some(vec![("DBX_VAR".into(), "hello-env".into())]),
+            label: Some("cwd-env".into()),
+        })
+        .unwrap();
+    assert_eq!(result.exit_code, Some(0));
+    assert!(result.stdout.contains("sub"), "cwd passthrough");
+    assert!(result.stdout.contains("hello-env"), "env override");
+}
+
+#[test]
+fn fs_read_write_roundtrip() {
+    let (dir, mut manager, sid) = start_project();
+    let path = dir.path().join("new.txt");
+    manager
+        .write_file(&sid, &path, b"tracked content".to_vec())
+        .unwrap();
+    let result = manager.read_file(&sid, &path).unwrap();
+    assert_eq!(result.size, 15);
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&result.content_base64)
+        .unwrap();
+    assert_eq!(bytes, b"tracked content");
+    assert!(!path.exists(), "write stays in the COW layer until commit");
+
+    let diff = manager
+        .diff(DiffParams {
+            session_id: sid.clone(),
+            from: None,
+            to: None,
+        })
+        .unwrap();
+    assert!(diff.changes.iter().any(|c| c.path == "new.txt"));
+
+    manager
+        .checkpoint(CheckpointParams {
+            session_id: sid.clone(),
+            label: None,
+        })
+        .unwrap();
+    manager
+        .commit(CommitParams {
+            session_id: sid.clone(),
+            checkpoint: None,
+        })
+        .unwrap();
+    assert!(path.exists());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "tracked content");
+}
+
+#[test]
+fn fs_ops_deny_secrets_and_outside_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".env"), "SECRET=1\n").unwrap();
+    let backend = SandlockBackend::new(Some(worker_bin()));
+    let mut manager = SessionManager::new(dir.path(), Box::new(backend)).unwrap();
+    let info = manager.start(None).unwrap();
+    let sid = info.session_id;
+
+    let read = manager.read_file(&sid, &dir.path().join(".env"));
+    assert!(read.is_err(), "fs.read must deny secret paths");
+    let write = manager.write_file(&sid, &dir.path().join(".env"), b"x".to_vec());
+    assert!(write.is_err(), "fs.write must deny secret paths");
+    let outside = manager.read_file(&sid, &PathBuf::from("/etc/hostname"));
+    assert!(outside.is_err(), "fs.read outside project must fail");
 }

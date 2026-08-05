@@ -35,6 +35,16 @@ impl SandboxBackend for StubBackend {
         ))
     }
 
+    fn read_file(&mut self, _session_id: &str, _path: &Path) -> Result<Option<Vec<u8>>> {
+        Err(Error::Unsupported("fs.read requires a real backend".into()))
+    }
+
+    fn write_file(&mut self, _session_id: &str, _path: &Path, _content: Vec<u8>) -> Result<()> {
+        Err(Error::Unsupported(
+            "fs.write requires a real backend".into(),
+        ))
+    }
+
     fn scan(&mut self, _session_id: &str) -> Result<Vec<ScanEntry>> {
         Ok(Vec::new())
     }
@@ -45,7 +55,12 @@ impl SandboxBackend for StubBackend {
         ))
     }
 
-    fn freeze_upper(&mut self, _session_id: &str, _dest_dir: &Path) -> Result<()> {
+    fn freeze_upper(
+        &mut self,
+        _session_id: &str,
+        _dest_dir: &Path,
+        _prev_upper: Option<&Path>,
+    ) -> Result<()> {
         Ok(())
     }
 

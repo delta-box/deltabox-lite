@@ -6,8 +6,8 @@ use crate::journal::{Journal, JournalEntry, JournalKind};
 use crate::policy::Policy;
 use crate::protocol::{
     AbortParams, AbortResult, CheckpointInfo, CheckpointParams, CommitParams, CommitResult,
-    DiffParams, DiffResult, ExecParams, ExecRequest, ExecResult, SessionInfo, SessionSpec,
-    SessionStatus,
+    DiffParams, DiffResult, ExecParams, ExecRequest, ExecResult, FsReadResult, SessionInfo,
+    SessionSpec, SessionStatus,
 };
 use crate::snapshot::{
     diff_snapshots, load_snapshot, read_capped_file, save_snapshot, BASE_SCAN_FILE,
@@ -20,6 +20,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 pub const SESSION_REGISTRY_FILE: &str = "sessions.json";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Durability {
+    /// Flush journal entries without fsync (low-latency default).
+    #[default]
+    Flush,
+    /// fdatasync journal entries at checkpoint/commit/abort boundaries.
+    Fsync,
+}
 
 pub fn now_ms() -> u64 {
     SystemTime::now()
@@ -84,10 +93,19 @@ pub struct SessionManager {
     project: PathBuf,
     registry: SessionRegistry,
     backend: Box<dyn SandboxBackend>,
+    durability: Durability,
 }
 
 impl SessionManager {
     pub fn new(project: &Path, backend: Box<dyn SandboxBackend>) -> Result<Self> {
+        Self::new_with_durability(project, backend, Durability::default())
+    }
+
+    pub fn new_with_durability(
+        project: &Path,
+        backend: Box<dyn SandboxBackend>,
+        durability: Durability,
+    ) -> Result<Self> {
         let project = project.canonicalize()?;
         let root = project.join(".deltabox");
         std::fs::create_dir_all(&root)?;
@@ -97,6 +115,7 @@ impl SessionManager {
             project,
             registry,
             backend,
+            durability,
         })
     }
 
@@ -132,7 +151,7 @@ impl SessionManager {
             kind: JournalKind::SessionStart,
             data: None,
         })?;
-        journal.flush_sync()?;
+        self.sync_journal(&mut journal)?;
 
         let meta = SessionMeta {
             session_id: session_id.clone(),
@@ -159,7 +178,7 @@ impl SessionManager {
             kind: JournalKind::SessionStop,
             data: None,
         })?;
-        journal.flush_sync()?;
+        self.sync_journal(&mut journal)?;
         self.registry.upsert(SessionMeta {
             status: SessionStatus::Stopped,
             ..meta
@@ -201,6 +220,7 @@ impl SessionManager {
     }
 
     pub fn exec(&mut self, params: ExecParams) -> Result<ExecResult> {
+        let label = params.label.clone();
         self.ensure_running(&params.session_id)?;
         let req = ExecRequest {
             argv: params.argv,
@@ -211,13 +231,41 @@ impl SessionManager {
         // Exec results are informational; flush without fsync so per-command
         // latency is not bound to disk durability.
         let mut journal = self.open_journal(&params.session_id)?;
+        let data = match &label {
+            Some(l) => serde_json::json!({"label": l, "result": &result}),
+            None => serde_json::to_value(&result).unwrap_or_default(),
+        };
         journal.append(JournalEntry {
             ts_ms: now_ms(),
             session_id: params.session_id.clone(),
             kind: JournalKind::Exec,
-            data: Some(serde_json::to_value(&result).unwrap_or_default()),
+            data: Some(data),
         })?;
         Ok(result)
+    }
+
+    pub fn read_file(&mut self, session_id: &str, path: &Path) -> Result<FsReadResult> {
+        use base64::Engine;
+        self.ensure_running(session_id)?;
+        let bytes = self
+            .backend
+            .read_file(session_id, path)?
+            .unwrap_or_default();
+        Ok(FsReadResult {
+            content_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+            size: bytes.len(),
+        })
+    }
+
+    pub fn write_file(&mut self, session_id: &str, path: &Path, content: Vec<u8>) -> Result<()> {
+        self.ensure_running(session_id)?;
+        self.backend.write_file(session_id, path, content)?;
+        self.journal_append(
+            session_id,
+            JournalKind::Write,
+            Some(serde_json::json!({"path": path})),
+        )?;
+        Ok(())
     }
 
     pub fn checkpoint(&mut self, params: CheckpointParams) -> Result<CheckpointInfo> {
@@ -228,10 +276,15 @@ impl SessionManager {
         let changes = diff_snapshots(&previous, &current);
 
         let mut manifest = CheckpointStore::open(&store_dir, DEFAULT_CHECKPOINT_CAP)?;
+        let prev_head = manifest.head().map(str::to_string);
         let meta = manifest.create(params.label.as_deref(), changes.len())?;
         let dir = store_dir.join("checkpoints").join(&meta.id);
         std::fs::create_dir_all(&dir)?;
-        self.backend.freeze_upper(&params.session_id, &dir)?;
+        let prev_upper = prev_head
+            .as_deref()
+            .map(|h| store_dir.join("checkpoints").join(h).join("upper"));
+        self.backend
+            .freeze_upper(&params.session_id, &dir, prev_upper.as_deref())?;
         save_snapshot(&dir.join("scan.json"), &current)?;
 
         let current_paths: HashSet<&str> = current.iter().map(|e| e.path.as_str()).collect();
@@ -240,10 +293,7 @@ impl SessionManager {
             .filter(|p| !current_paths.contains(p.path.as_str()))
             .map(|p| p.path.clone())
             .collect();
-        std::fs::write(
-            dir.join("deleted.json"),
-            serde_json::to_vec_pretty(&deleted)?,
-        )?;
+        std::fs::write(dir.join("deleted.json"), serde_json::to_vec(&deleted)?)?;
 
         self.journal_append(
             &params.session_id,
@@ -523,7 +573,14 @@ impl SessionManager {
             kind,
             data,
         })?;
-        journal.flush_sync()
+        self.sync_journal(&mut journal)
+    }
+
+    fn sync_journal(&self, journal: &mut Journal) -> Result<()> {
+        if self.durability == Durability::Fsync {
+            journal.flush_sync()?;
+        }
+        Ok(())
     }
 }
 
@@ -587,13 +644,24 @@ mod tests {
                 truncated: false,
             })
         }
+        fn read_file(&mut self, _session_id: &str, _path: &Path) -> Result<Option<Vec<u8>>> {
+            Ok(None)
+        }
+        fn write_file(&mut self, _session_id: &str, _path: &Path, _content: Vec<u8>) -> Result<()> {
+            Ok(())
+        }
         fn scan(&mut self, _session_id: &str) -> Result<Vec<ScanEntry>> {
             Ok(self.fake_entries(*self.pending.lock().unwrap()))
         }
         fn current_upper(&mut self, _session_id: &str) -> Result<PathBuf> {
             Ok(PathBuf::from("/tmp/test-upper"))
         }
-        fn freeze_upper(&mut self, _session_id: &str, dest_dir: &Path) -> Result<()> {
+        fn freeze_upper(
+            &mut self,
+            _session_id: &str,
+            dest_dir: &Path,
+            _prev_upper: Option<&Path>,
+        ) -> Result<()> {
             std::fs::create_dir_all(dest_dir.join("upper"))?;
             Ok(())
         }
@@ -642,6 +710,7 @@ mod tests {
                 argv: vec!["echo".into(), "hi".into()],
                 cwd: None,
                 env: None,
+                label: Some("greeting".into()),
             })
             .unwrap();
         assert_eq!(exec.stdout, "echo hi");

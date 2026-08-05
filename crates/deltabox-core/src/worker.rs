@@ -16,9 +16,21 @@ pub const MAX_EXEC_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", content = "payload", rename_all = "snake_case")]
 pub enum WorkerCommand {
-    Ping { id: u64 },
-    Exec { id: u64, exec: WorkerExec },
-    Scan { id: u64 },
+    Ping {
+        id: u64,
+    },
+    Exec {
+        id: u64,
+        exec: WorkerExec,
+    },
+    Scan {
+        id: u64,
+    },
+    Write {
+        id: u64,
+        path: String,
+        content_base64: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,9 +122,23 @@ pub fn run_worker(root: &Path) -> Result<()> {
                 },
             },
             WorkerCommand::Scan { id } => match scan_root(root) {
-                Ok(entries) => WorkerEvent::Ok {
+                Ok(paths) => WorkerEvent::Ok {
                     id,
-                    result: serde_json::to_value(&entries)?,
+                    result: serde_json::to_value(&paths)?,
+                },
+                Err(e) => WorkerEvent::Err {
+                    id,
+                    message: e.to_string(),
+                },
+            },
+            WorkerCommand::Write {
+                id,
+                path,
+                content_base64,
+            } => match write_file(root, &path, &content_base64) {
+                Ok(()) => WorkerEvent::Ok {
+                    id,
+                    result: serde_json::json!(null),
                 },
                 Err(e) => WorkerEvent::Err {
                     id,
@@ -192,8 +218,11 @@ fn read_capped(mut reader: impl Read) -> (String, bool) {
     (String::from_utf8_lossy(&buf).into_owned(), truncated)
 }
 
-fn scan_root(root: &Path) -> Result<Vec<ScanEntry>> {
-    let mut entries = Vec::new();
+/// Walk the merged sandbox view and return relative paths of files and
+/// symlinks. Metadata is built supervisor-side (native stats), so this scan
+/// only pays interception cost for readdir calls.
+fn scan_root(root: &Path) -> Result<Vec<String>> {
+    let mut paths = Vec::new();
     let walker = walkdir::WalkDir::new(root)
         .min_depth(1)
         .follow_links(false)
@@ -206,37 +235,47 @@ fn scan_root(root: &Path) -> Result<Vec<ScanEntry>> {
         if ft.is_dir() {
             continue;
         }
-        let kind = if ft.is_file() {
-            ScanEntryKind::File
-        } else if ft.is_symlink() {
-            ScanEntryKind::Symlink
-        } else {
+        if !(ft.is_file() || ft.is_symlink()) {
             continue;
-        };
-        let meta = entry
-            .metadata()
-            .map_err(|e| Error::Io(std::io::Error::other(e)))?;
+        }
         let rel = entry
             .path()
             .strip_prefix(root)
             .map_err(|_| Error::Backend("scan path escapes root".into()))?;
-        entries.push(ScanEntry {
-            path: rel.to_string_lossy().into_owned(),
-            size: meta.len(),
-            mtime_ns: mtime_ns(&meta),
-            kind,
-        });
+        paths.push(rel.to_string_lossy().into_owned());
     }
-    entries.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(entries)
+    paths.sort();
+    Ok(paths)
 }
 
-fn mtime_ns(meta: &std::fs::Metadata) -> i64 {
-    meta.modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_nanos() as i64)
-        .unwrap_or(0)
+fn write_file(root: &Path, rel: &str, content_base64: &str) -> Result<()> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(content_base64)
+        .map_err(|e| Error::InvalidPolicy(format!("bad base64: {e}")))?;
+    let path = resolve_within(root, rel)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, bytes)?;
+    Ok(())
+}
+
+fn resolve_within(root: &Path, rel: &str) -> Result<PathBuf> {
+    let p = Path::new(rel);
+    if p.is_absolute() {
+        return Err(Error::InvalidPolicy(
+            "fs.write path must be relative".into(),
+        ));
+    }
+    if p.components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(Error::InvalidPolicy(
+            "fs.write path escapes the project".into(),
+        ));
+    }
+    Ok(root.join(p))
 }
 
 fn now_ms() -> u64 {
@@ -313,8 +352,21 @@ mod tests {
         std::fs::write(dir.path().join(".git/config"), "x").unwrap();
         std::fs::write(dir.path().join(".deltabox/state"), "x").unwrap();
         std::fs::write(dir.path().join("a.txt"), "a").unwrap();
-        let entries = scan_root(dir.path()).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].path, "a.txt");
+        let paths = scan_root(dir.path()).unwrap();
+        assert_eq!(paths, vec!["a.txt".to_string()]);
+    }
+
+    #[test]
+    fn worker_write_creates_dirs_and_rejects_escape() {
+        use base64::Engine;
+        let dir = tempfile::tempdir().unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"hello");
+        write_file(dir.path(), "a/b.txt", &b64).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a/b.txt")).unwrap(),
+            "hello"
+        );
+        assert!(write_file(dir.path(), "../evil", &b64).is_err());
+        assert!(write_file(dir.path(), "/abs", &b64).is_err());
     }
 }

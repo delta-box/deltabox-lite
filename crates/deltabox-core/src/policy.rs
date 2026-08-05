@@ -95,6 +95,7 @@ impl Policy {
                     PathBuf::from("/lib"),
                     PathBuf::from("/lib64"),
                     PathBuf::from("/etc"),
+                    PathBuf::from("/run"),
                 ],
                 write: vec![PathBuf::from(".")],
                 deny: DEFAULT_DENY_PATTERNS

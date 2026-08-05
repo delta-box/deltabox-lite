@@ -24,7 +24,7 @@ each response is one JSON object per line.
 | `session.start` | `{project, policy?}` | `SessionInfo` |
 | `session.stop` | `{session_id}` | `SessionInfo` |
 | `session.status` | `{session_id}` | `SessionInfo` |
-| `session.exec` | `{session_id, argv, cwd?, env?}` | `ExecResult` |
+| `session.exec` | `{session_id, argv, cwd?, env?, label?}` | `ExecResult` |
 | `checkpoint.create` | `{session_id, label?}` | `CheckpointInfo` |
 | `diff.list` | `{session_id, from?, to?}` | `DiffResult` |
 | `changes.commit` | `{session_id, checkpoint?}` | `CommitResult` |
@@ -34,6 +34,10 @@ each response is one JSON object per line.
 pending_changes}`.
 
 `ExecResult` = `{exit_code, stdout, stderr, duration_ms, truncated}`.
+
+`label` on `session.exec` is optional free-form attribution (e.g. the Pi tool
+name); it is recorded in the session journal so change sets can be grouped by
+the command that produced them.
 
 `DiffResult` = `{from, to, pending_changes, changes}` where each `Change` is
 `{path, kind: added|modified|deleted, old_size, new_size, is_binary,

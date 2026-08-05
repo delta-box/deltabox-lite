@@ -5,7 +5,7 @@ use deltabox_core::protocol::{
     AbortParams, CheckpointParams, CommitParams, DiffParams, ExecParams, Request,
 };
 use deltabox_core::server::Server;
-use deltabox_core::session::SessionManager;
+use deltabox_core::session::{Durability, SessionManager};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
@@ -29,6 +29,10 @@ enum Command {
     },
     /// Run a command inside a sandbox session.
     Exec(ExecArgs),
+    /// Read a file from the sandbox view.
+    Read(ReadArgs),
+    /// Write a file through the sandbox.
+    Write(WriteArgs),
     /// Create a checkpoint in a session.
     Checkpoint(CheckpointArgs),
     /// Show changes in a session.
@@ -59,6 +63,8 @@ struct StartArgs {
     project: PathBuf,
     #[arg(long)]
     policy: Option<PathBuf>,
+    #[arg(long)]
+    durable: bool,
 }
 
 #[derive(clap::Args)]
@@ -81,11 +87,33 @@ struct ExecArgs {
     #[arg(long, default_value = ".")]
     project: PathBuf,
     #[arg(long)]
+    label: Option<String>,
+    #[arg(long)]
     cwd: Option<PathBuf>,
     #[arg(long)]
     env: Vec<String>,
     #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
     command: Vec<String>,
+}
+
+#[derive(clap::Args)]
+struct ReadArgs {
+    session: String,
+    #[arg(long, default_value = ".")]
+    project: PathBuf,
+    path: PathBuf,
+}
+
+#[derive(clap::Args)]
+struct WriteArgs {
+    session: String,
+    #[arg(long, default_value = ".")]
+    project: PathBuf,
+    path: PathBuf,
+    #[arg(long)]
+    content_base64: Option<String>,
+    #[arg(long)]
+    content: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -102,6 +130,8 @@ struct DiffArgs {
     session: String,
     #[arg(long, default_value = ".")]
     project: PathBuf,
+    #[arg(long)]
+    json: bool,
     #[arg(long)]
     from: Option<String>,
     #[arg(long)]
@@ -137,8 +167,16 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Session { cmd } => match cmd {
             SessionCmd::Start(args) => {
-                let mut manager =
-                    SessionManager::new(&args.project, Box::new(DefaultBackend::default()))?;
+                let durability = if args.durable {
+                    Durability::Fsync
+                } else {
+                    Durability::Flush
+                };
+                let mut manager = SessionManager::new_with_durability(
+                    &args.project,
+                    Box::new(DefaultBackend::default()),
+                    durability,
+                )?;
                 let info = manager.start(args.policy.as_deref())?;
                 println!("{}", info.session_id);
             }
@@ -173,8 +211,30 @@ fn main() -> anyhow::Result<()> {
                 argv: args.command,
                 cwd: args.cwd,
                 env,
+                label: args.label,
             })?;
             println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::Read(args) => {
+            use std::io::Write as _;
+            let mut manager =
+                SessionManager::new(&args.project, Box::new(DefaultBackend::default()))?;
+            let result = manager.read_file(&args.session, &args.path)?;
+            let bytes = base64_decode(&result.content_base64)?;
+            std::io::stdout().lock().write_all(&bytes)?;
+        }
+        Command::Write(args) => {
+            let bytes = match (args.content_base64, args.content) {
+                (Some(b64), _) => base64_decode(&b64)?,
+                (None, Some(text)) => text.into_bytes(),
+                (None, None) => {
+                    anyhow::bail!("provide --content or --content-base64")
+                }
+            };
+            let mut manager =
+                SessionManager::new(&args.project, Box::new(DefaultBackend::default()))?;
+            manager.write_file(&args.session, &args.path, bytes)?;
+            println!("written");
         }
         Command::Checkpoint(args) => {
             let mut manager =
@@ -193,7 +253,11 @@ fn main() -> anyhow::Result<()> {
                 from: args.from,
                 to: args.to,
             })?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                print!("{}", deltabox_core::changeset::render_diff_text(&result));
+            }
         }
         Command::Commit(args) => {
             let mut manager =
@@ -246,4 +310,9 @@ fn main() -> anyhow::Result<()> {
 fn split_env(s: &str) -> anyhow::Result<(String, String)> {
     let (k, v) = s.split_once('=').context("env entries must be KEY=VALUE")?;
     Ok((k.to_string(), v.to_string()))
+}
+
+fn base64_decode(s: &str) -> anyhow::Result<Vec<u8>> {
+    use base64::Engine;
+    Ok(base64::engine::general_purpose::STANDARD.decode(s)?)
 }

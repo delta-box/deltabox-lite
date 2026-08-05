@@ -1,3 +1,4 @@
+use crate::protocol::DiffResult;
 use serde::{Deserialize, Serialize};
 use similar::TextDiff;
 
@@ -59,7 +60,8 @@ pub fn describe_change(
         old_size.unwrap_or(0) > text_size_limit || new_size.unwrap_or(0) > text_size_limit;
     let binary = too_large
         || match (old_bytes, new_bytes) {
-            (Some(o), _) => is_binary(o),
+            (Some(o), Some(n)) => is_binary(o) || is_binary(n),
+            (Some(o), None) => is_binary(o),
             (None, Some(n)) => is_binary(n),
             (None, None) => false,
         };
@@ -123,6 +125,32 @@ fn count_marker_lines(diff: &str, marker: char) -> usize {
         .count()
 }
 
+/// Human-readable diff summary (git-diff-like) for CLI/review output.
+pub fn render_diff_text(diff: &DiffResult) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("{} file(s) changed\n", diff.changes.len()));
+    for change in &diff.changes {
+        let mark = match change.kind {
+            ChangeKind::Added => "A",
+            ChangeKind::Modified => "M",
+            ChangeKind::Deleted => "D",
+        };
+        out.push_str(&format!(
+            " {mark} {}{}\n",
+            change.path,
+            if change.is_binary { " (binary)" } else { "" }
+        ));
+        if let Some(text) = &change.text_diff {
+            for line in text.lines().take(50) {
+                out.push_str("    ");
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,5 +206,53 @@ mod tests {
         );
         assert!(bin.is_binary);
         assert!(bin.text_diff.is_none());
+    }
+
+    #[test]
+    fn text_to_binary_edit_is_marked_binary() {
+        let change = describe_change(
+            "f.dat",
+            ChangeKind::Modified,
+            Some(3),
+            Some(3),
+            Some(b"abc"),
+            Some(b"a\x00c"),
+            DEFAULT_TEXT_SIZE_LIMIT,
+        );
+        assert!(change.is_binary);
+        assert!(change.text_diff.is_none());
+    }
+
+    #[test]
+    fn render_diff_text_is_git_like() {
+        let diff = crate::protocol::DiffResult {
+            from: None,
+            to: None,
+            pending_changes: 2,
+            changes: vec![
+                describe_change(
+                    "a.txt",
+                    ChangeKind::Modified,
+                    Some(1),
+                    Some(2),
+                    Some(b"1"),
+                    Some(b"2"),
+                    DEFAULT_TEXT_SIZE_LIMIT,
+                ),
+                describe_change(
+                    "big.bin",
+                    ChangeKind::Added,
+                    None,
+                    Some(10 * 1024 * 1024),
+                    None,
+                    None,
+                    DEFAULT_TEXT_SIZE_LIMIT,
+                ),
+            ],
+        };
+        let text = render_diff_text(&diff);
+        assert!(text.contains(" M a.txt"));
+        assert!(text.contains(" A big.bin (binary)"));
+        assert!(text.contains("2 file(s) changed"));
     }
 }

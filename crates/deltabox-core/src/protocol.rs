@@ -21,6 +21,10 @@ pub enum Method {
     SessionStatus(SessionStatusParams),
     #[serde(rename = "session.exec")]
     SessionExec(ExecParams),
+    #[serde(rename = "fs.read")]
+    FsRead(FsReadParams),
+    #[serde(rename = "fs.write")]
+    FsWrite(FsWriteParams),
     #[serde(rename = "checkpoint.create")]
     CheckpointCreate(CheckpointParams),
     #[serde(rename = "diff.list")]
@@ -56,6 +60,27 @@ pub struct ExecParams {
     pub cwd: Option<PathBuf>,
     #[serde(default)]
     pub env: Option<Vec<(String, String)>>,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsReadParams {
+    pub session_id: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsReadResult {
+    pub content_base64: String,
+    pub size: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsWriteParams {
+    pub session_id: String,
+    pub path: PathBuf,
+    pub content_base64: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,5 +252,38 @@ mod tests {
         let parsed: Response = serde_json::from_str(&serde_json::to_string(&err).unwrap()).unwrap();
         assert!(parsed.result.is_none());
         assert_eq!(parsed.error.unwrap().message, "boom");
+    }
+
+    #[test]
+    fn fs_methods_round_trip() {
+        let read = Request {
+            id: 10,
+            method: Method::FsRead(FsReadParams {
+                session_id: "s".into(),
+                path: "/proj/a.txt".into(),
+            }),
+        };
+        let json = serde_json::to_string(&read).unwrap();
+        assert!(json.contains("\"method\":\"fs.read\""));
+        let parsed: Request = serde_json::from_str(&json).unwrap();
+        match parsed.method {
+            Method::FsRead(p) => assert_eq!(p.path, PathBuf::from("/proj/a.txt")),
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        let write = Request {
+            id: 11,
+            method: Method::FsWrite(FsWriteParams {
+                session_id: "s".into(),
+                path: "/proj/b.txt".into(),
+                content_base64: "aGk=".into(),
+            }),
+        };
+        let parsed: Request =
+            serde_json::from_str(&serde_json::to_string(&write).unwrap()).unwrap();
+        match parsed.method {
+            Method::FsWrite(p) => assert_eq!(p.content_base64, "aGk="),
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 }

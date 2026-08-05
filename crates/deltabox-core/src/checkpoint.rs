@@ -105,7 +105,7 @@ impl CheckpointStore {
 
     fn persist(&self) -> Result<()> {
         let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(&self.manifest)?)?;
+        std::fs::write(&tmp, serde_json::to_vec(&self.manifest)?)?;
         std::fs::rename(&tmp, &self.path)?;
         Ok(())
     }
