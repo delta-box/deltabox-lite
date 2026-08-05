@@ -1,4 +1,5 @@
 use crate::backend::SandboxBackend;
+use crate::changeset::{Change, ChangeKind};
 use crate::checkpoint::{CheckpointStore, DEFAULT_CHECKPOINT_CAP};
 use crate::error::{Error, Result};
 use crate::journal::{Journal, JournalEntry, JournalKind};
@@ -8,7 +9,12 @@ use crate::protocol::{
     DiffParams, DiffResult, ExecParams, ExecRequest, ExecResult, SessionInfo, SessionSpec,
     SessionStatus,
 };
+use crate::snapshot::{
+    diff_snapshots, load_snapshot, read_capped_file, save_snapshot, BASE_SCAN_FILE,
+};
+use crate::worker::ScanEntry;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -109,6 +115,14 @@ impl SessionManager {
             policy: policy.clone(),
         };
         self.backend.start_session(&session_id, &spec)?;
+        let base_scan = match self.backend.scan(&session_id) {
+            Ok(scan) => scan,
+            Err(e) => {
+                let _ = self.backend.stop_session(&session_id);
+                return Err(e);
+            }
+        };
+        save_snapshot(&store_dir.join(BASE_SCAN_FILE), &base_scan)?;
 
         CheckpointStore::open(&store_dir, DEFAULT_CHECKPOINT_CAP)?;
         let mut journal = Journal::open(&store_dir.join("journal.jsonl"))?;
@@ -154,8 +168,36 @@ impl SessionManager {
         self.info_from_meta(session_id)
     }
 
-    pub fn status(&self, session_id: &str) -> Result<SessionInfo> {
-        self.info_from_meta(session_id)
+    pub fn ping(&mut self, session_id: &str) -> Result<()> {
+        self.ensure_running(session_id)?;
+        self.backend.ping(session_id)
+    }
+
+    pub fn status(&mut self, session_id: &str) -> Result<SessionInfo> {
+        let meta = self.require_meta(session_id)?.clone();
+        let store_dir = self.store_dir(session_id);
+        let manifest = CheckpointStore::open(&store_dir, DEFAULT_CHECKPOINT_CAP)?;
+        let pending_changes = if meta.status == SessionStatus::Running {
+            match self.backend.scan(session_id) {
+                Ok(current) => {
+                    let base = load_snapshot(&store_dir.join(BASE_SCAN_FILE))?
+                        .map(|s| s.entries)
+                        .unwrap_or_default();
+                    diff_snapshots(&base, &current).len()
+                }
+                Err(_) => 0,
+            }
+        } else {
+            0
+        };
+        Ok(SessionInfo {
+            session_id: meta.session_id.clone(),
+            project: meta.project.clone(),
+            started_at_ms: meta.started_at_ms,
+            status: meta.status.clone(),
+            checkpoint_count: manifest.list().len(),
+            pending_changes,
+        })
     }
 
     pub fn exec(&mut self, params: ExecParams) -> Result<ExecResult> {
@@ -166,20 +208,43 @@ impl SessionManager {
             env: params.env,
         };
         let result = self.backend.exec(&params.session_id, req)?;
-        self.journal_append(
-            &params.session_id,
-            JournalKind::Exec,
-            Some(serde_json::to_value(&result).unwrap_or_default()),
-        )?;
+        // Exec results are informational; flush without fsync so per-command
+        // latency is not bound to disk durability.
+        let mut journal = self.open_journal(&params.session_id)?;
+        journal.append(JournalEntry {
+            ts_ms: now_ms(),
+            session_id: params.session_id.clone(),
+            kind: JournalKind::Exec,
+            data: Some(serde_json::to_value(&result).unwrap_or_default()),
+        })?;
         Ok(result)
     }
 
     pub fn checkpoint(&mut self, params: CheckpointParams) -> Result<CheckpointInfo> {
         self.ensure_running(&params.session_id)?;
         let store_dir = self.store_dir(&params.session_id);
-        let change_count = self.backend.pending_change_count(&params.session_id)?;
+        let current = self.backend.scan(&params.session_id)?;
+        let previous = self.previous_snapshot(&store_dir)?;
+        let changes = diff_snapshots(&previous, &current);
+
         let mut manifest = CheckpointStore::open(&store_dir, DEFAULT_CHECKPOINT_CAP)?;
-        let meta = manifest.create(params.label.as_deref(), change_count)?;
+        let meta = manifest.create(params.label.as_deref(), changes.len())?;
+        let dir = store_dir.join("checkpoints").join(&meta.id);
+        std::fs::create_dir_all(&dir)?;
+        self.backend.freeze_upper(&params.session_id, &dir)?;
+        save_snapshot(&dir.join("scan.json"), &current)?;
+
+        let current_paths: HashSet<&str> = current.iter().map(|e| e.path.as_str()).collect();
+        let deleted: Vec<String> = previous
+            .iter()
+            .filter(|p| !current_paths.contains(p.path.as_str()))
+            .map(|p| p.path.clone())
+            .collect();
+        std::fs::write(
+            dir.join("deleted.json"),
+            serde_json::to_vec_pretty(&deleted)?,
+        )?;
+
         self.journal_append(
             &params.session_id,
             JournalKind::Checkpoint,
@@ -196,34 +261,78 @@ impl SessionManager {
 
     pub fn diff(&mut self, params: DiffParams) -> Result<DiffResult> {
         self.ensure_running(&params.session_id)?;
-        let DiffParams {
-            session_id,
-            from,
-            to,
-        } = params;
-        let mut result = self
-            .backend
-            .diff(&session_id, from.as_deref(), to.as_deref())?;
-        result.from = from;
-        result.to = to;
-        Ok(result)
+        let store_dir = self.store_dir(&params.session_id);
+
+        let (from_dir, from_entries, from_label) = if let Some(from) = &params.from {
+            let dir = store_dir.join("checkpoints").join(from);
+            let snapshot = load_snapshot(&dir.join("scan.json"))?
+                .ok_or_else(|| Error::CheckpointNotFound(from.clone()))?;
+            (Some(dir), snapshot.entries, Some(from.clone()))
+        } else {
+            let snapshot = load_snapshot(&store_dir.join(BASE_SCAN_FILE))?;
+            (None, snapshot.map(|s| s.entries).unwrap_or_default(), None)
+        };
+
+        let (_, to_entries, to_label, to_upper) = if let Some(to) = &params.to {
+            let dir = store_dir.join("checkpoints").join(to);
+            let snapshot = load_snapshot(&dir.join("scan.json"))?
+                .ok_or_else(|| Error::CheckpointNotFound(to.clone()))?;
+            (
+                Some(dir.clone()),
+                snapshot.entries,
+                Some(to.clone()),
+                dir.join("upper"),
+            )
+        } else {
+            let current = self.backend.scan(&params.session_id)?;
+            let upper = self.backend.current_upper(&params.session_id)?;
+            (None, current, None, upper)
+        };
+
+        let changes =
+            self.build_changes(from_dir.as_deref(), &from_entries, &to_entries, &to_upper)?;
+        Ok(DiffResult {
+            from: from_label,
+            to: to_label,
+            pending_changes: changes.len(),
+            changes,
+        })
     }
 
     pub fn commit(&mut self, params: CommitParams) -> Result<CommitResult> {
         self.ensure_running(&params.session_id)?;
         let store_dir = self.store_dir(&params.session_id);
         let mut manifest = CheckpointStore::open(&store_dir, DEFAULT_CHECKPOINT_CAP)?;
-        let target = params
-            .checkpoint
-            .clone()
-            .unwrap_or_else(|| manifest.head().map(str::to_string).unwrap_or_default());
+        let head = manifest.head().map(str::to_string).unwrap_or_default();
+        let target = params.checkpoint.clone().unwrap_or_else(|| head.clone());
         if target.is_empty() {
             return Err(Error::CheckpointNotFound(
                 "no checkpoint to commit".to_string(),
             ));
         }
-        let result = self.backend.commit_changes(&params.session_id, &target)?;
-        manifest.commit(&target)?;
+        if target != head {
+            return Err(Error::Unsupported(
+                "commit currently supports the head checkpoint only".to_string(),
+            ));
+        }
+
+        let head_dir = store_dir.join("checkpoints").join(&head);
+        let current = self.backend.scan(&params.session_id)?;
+        let base = load_snapshot(&store_dir.join(BASE_SCAN_FILE))?
+            .map(|s| s.entries)
+            .unwrap_or_default();
+        let current_paths: HashSet<&str> = current.iter().map(|e| e.path.as_str()).collect();
+        let deleted: Vec<String> = base
+            .iter()
+            .filter(|p| !current_paths.contains(p.path.as_str()))
+            .map(|p| p.path.clone())
+            .collect();
+        let result = self
+            .backend
+            .commit_changes(&params.session_id, &head, &head_dir, deleted)?;
+        manifest.commit(&head)?;
+        save_snapshot(&store_dir.join(BASE_SCAN_FILE), &current)?;
+        let _ = std::fs::remove_dir_all(head_dir.join("upper"));
         self.journal_append(
             &params.session_id,
             JournalKind::Commit,
@@ -236,16 +345,36 @@ impl SessionManager {
         self.ensure_running(&params.session_id)?;
         let store_dir = self.store_dir(&params.session_id);
         let manifest = CheckpointStore::open(&store_dir, DEFAULT_CHECKPOINT_CAP)?;
-        let target = params
-            .checkpoint
-            .clone()
-            .unwrap_or_else(|| manifest.head().map(str::to_string).unwrap_or_default());
+        let head = manifest.head().map(str::to_string).unwrap_or_default();
+        let target = params.checkpoint.clone().unwrap_or_else(|| head.clone());
         if target.is_empty() {
             return Err(Error::CheckpointNotFound(
                 "no checkpoint to abort to".to_string(),
             ));
         }
-        let result = self.backend.abort_changes(&params.session_id, &target)?;
+        if target != head {
+            return Err(Error::Unsupported(
+                "abort currently supports the head checkpoint only".to_string(),
+            ));
+        }
+
+        let head_dir = store_dir.join("checkpoints").join(&head);
+        let head_scan = load_snapshot(&head_dir.join("scan.json"))?
+            .map(|s| s.entries)
+            .unwrap_or_default();
+        let deleted_at_head: Vec<String> =
+            serde_json::from_str(&std::fs::read_to_string(head_dir.join("deleted.json"))?)
+                .unwrap_or_default();
+        let current = self.backend.scan(&params.session_id)?;
+        let current_paths: HashSet<&str> = current.iter().map(|e| e.path.as_str()).collect();
+        let to_remove: Vec<String> = deleted_at_head
+            .into_iter()
+            .filter(|p| !current_paths.contains(p.as_str()))
+            .collect();
+        let result = self
+            .backend
+            .abort_changes(&params.session_id, &head, &head_dir, to_remove)?;
+        save_snapshot(&store_dir.join(BASE_SCAN_FILE), &head_scan)?;
         self.journal_append(
             &params.session_id,
             JournalKind::Abort,
@@ -260,6 +389,89 @@ impl SessionManager {
 
     pub fn registry_path(&self) -> PathBuf {
         self.root.join(SESSION_REGISTRY_FILE)
+    }
+
+    fn build_changes(
+        &self,
+        from_dir: Option<&Path>,
+        from_entries: &[ScanEntry],
+        to_entries: &[ScanEntry],
+        to_upper: &Path,
+    ) -> Result<Vec<Change>> {
+        let diffs = diff_snapshots(from_entries, to_entries);
+        let mut out = Vec::with_capacity(diffs.len());
+        for diff in diffs {
+            let change = match diff.kind {
+                ChangeKind::Added => {
+                    let new = self.read_new_bytes(to_upper, &diff.path)?;
+                    crate::snapshot::describe(
+                        &diff.path,
+                        ChangeKind::Added,
+                        None,
+                        diff.new_size,
+                        None,
+                        new.as_deref(),
+                    )
+                }
+                ChangeKind::Deleted => {
+                    let old = self.read_old_bytes(&diff.path, from_dir)?;
+                    crate::snapshot::describe(
+                        &diff.path,
+                        ChangeKind::Deleted,
+                        diff.old_size,
+                        None,
+                        old.as_deref(),
+                        None,
+                    )
+                }
+                ChangeKind::Modified => {
+                    let old = self.read_old_bytes(&diff.path, from_dir)?;
+                    let new = self.read_new_bytes(to_upper, &diff.path)?;
+                    crate::snapshot::describe(
+                        &diff.path,
+                        ChangeKind::Modified,
+                        diff.old_size,
+                        diff.new_size,
+                        old.as_deref(),
+                        new.as_deref(),
+                    )
+                }
+            };
+            out.push(change);
+        }
+        Ok(out)
+    }
+
+    fn read_old_bytes(&self, rel: &str, from_dir: Option<&Path>) -> Result<Option<Vec<u8>>> {
+        if let Some(dir) = from_dir {
+            let checkpoint_upper = dir.join("upper").join(rel);
+            if checkpoint_upper.exists() {
+                return read_capped_file(&checkpoint_upper);
+            }
+        }
+        read_capped_file(&self.project.join(rel))
+    }
+
+    fn read_new_bytes(&self, upper: &Path, rel: &str) -> Result<Option<Vec<u8>>> {
+        let upper_path = upper.join(rel);
+        if upper_path.exists() {
+            return read_capped_file(&upper_path);
+        }
+        read_capped_file(&self.project.join(rel))
+    }
+
+    fn previous_snapshot(&self, store_dir: &Path) -> Result<Vec<ScanEntry>> {
+        let manifest = CheckpointStore::open(store_dir, DEFAULT_CHECKPOINT_CAP)?;
+        if let Some(head) = manifest.head() {
+            let dir = store_dir.join("checkpoints").join(head);
+            Ok(load_snapshot(&dir.join("scan.json"))?
+                .map(|s| s.entries)
+                .unwrap_or_default())
+        } else {
+            Ok(load_snapshot(&store_dir.join(BASE_SCAN_FILE))?
+                .map(|s| s.entries)
+                .unwrap_or_default())
+        }
     }
 
     fn info_from_meta(&self, session_id: &str) -> Result<SessionInfo> {
@@ -319,14 +531,30 @@ impl SessionManager {
 mod tests {
     use super::*;
     use crate::backend::SandboxBackend;
-    use crate::protocol::{ExecRequest, ExecResult, SessionSpec};
+    use crate::worker::{ScanEntry, ScanEntryKind};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
     struct TestBackend {
+        specs: Arc<Mutex<HashMap<String, SessionSpec>>>,
         pending: Arc<Mutex<usize>>,
         committed: Arc<Mutex<usize>>,
         aborted: Arc<Mutex<usize>>,
+    }
+
+    impl TestBackend {
+        fn fake_entries(&self, count: usize) -> Vec<ScanEntry> {
+            (0..count)
+                .map(|i| ScanEntry {
+                    path: format!("f{i}.txt"),
+                    size: 1,
+                    mtime_ns: i as i64,
+                    kind: ScanEntryKind::File,
+                })
+                .collect()
+        }
     }
 
     impl SandboxBackend for TestBackend {
@@ -336,36 +564,46 @@ mod tests {
         fn is_supported(&self) -> bool {
             true
         }
-        fn start_session(&mut self, _id: &str, _spec: &SessionSpec) -> Result<()> {
+        fn start_session(&mut self, session_id: &str, spec: &SessionSpec) -> Result<()> {
+            self.specs
+                .lock()
+                .unwrap()
+                .insert(session_id.to_string(), spec.clone());
             Ok(())
         }
-        fn stop_session(&mut self, _id: &str) -> Result<()> {
+        fn stop_session(&mut self, _session_id: &str) -> Result<()> {
             Ok(())
         }
-        fn exec(&mut self, _id: &str, req: ExecRequest) -> Result<ExecResult> {
+        fn ping(&mut self, _session_id: &str) -> Result<()> {
+            Ok(())
+        }
+        fn exec(&mut self, _session_id: &str, req: ExecRequest) -> Result<ExecResult> {
             *self.pending.lock().unwrap() += 1;
             Ok(ExecResult {
                 exit_code: Some(0),
                 stdout: req.argv.join(" "),
                 stderr: String::new(),
                 duration_ms: 1,
+                truncated: false,
             })
         }
-        fn pending_change_count(&mut self, _id: &str) -> Result<usize> {
-            Ok(*self.pending.lock().unwrap())
+        fn scan(&mut self, _session_id: &str) -> Result<Vec<ScanEntry>> {
+            Ok(self.fake_entries(*self.pending.lock().unwrap()))
         }
-        fn diff(
+        fn current_upper(&mut self, _session_id: &str) -> Result<PathBuf> {
+            Ok(PathBuf::from("/tmp/test-upper"))
+        }
+        fn freeze_upper(&mut self, _session_id: &str, dest_dir: &Path) -> Result<()> {
+            std::fs::create_dir_all(dest_dir.join("upper"))?;
+            Ok(())
+        }
+        fn commit_changes(
             &mut self,
-            _id: &str,
-            _from: Option<&str>,
-            _to: Option<&str>,
-        ) -> Result<DiffResult> {
-            Ok(DiffResult {
-                pending_changes: *self.pending.lock().unwrap(),
-                ..Default::default()
-            })
-        }
-        fn commit_changes(&mut self, _id: &str, checkpoint_id: &str) -> Result<CommitResult> {
+            _session_id: &str,
+            checkpoint_id: &str,
+            _head_dir: &Path,
+            _deleted: Vec<String>,
+        ) -> Result<CommitResult> {
             *self.committed.lock().unwrap() += 1;
             *self.pending.lock().unwrap() = 0;
             Ok(CommitResult {
@@ -373,7 +611,13 @@ mod tests {
                 applied: 1,
             })
         }
-        fn abort_changes(&mut self, _id: &str, checkpoint_id: &str) -> Result<AbortResult> {
+        fn abort_changes(
+            &mut self,
+            _session_id: &str,
+            checkpoint_id: &str,
+            _head_dir: &Path,
+            _deleted: Vec<String>,
+        ) -> Result<AbortResult> {
             *self.aborted.lock().unwrap() += 1;
             *self.pending.lock().unwrap() = 0;
             Ok(AbortResult {
@@ -414,6 +658,16 @@ mod tests {
             1
         );
 
+        let diff = manager
+            .diff(DiffParams {
+                session_id: info.session_id.clone(),
+                from: None,
+                to: None,
+            })
+            .unwrap();
+        assert_eq!(diff.changes.len(), 1);
+        assert_eq!(diff.changes[0].path, "f0.txt");
+
         let committed = manager
             .commit(CommitParams {
                 session_id: info.session_id.clone(),
@@ -444,7 +698,8 @@ mod tests {
             SessionManager::new(dir.path(), Box::new(TestBackend::default())).unwrap();
         let info = manager.start(None).unwrap();
         drop(manager);
-        let reopened = SessionManager::new(dir.path(), Box::new(TestBackend::default())).unwrap();
+        let mut reopened =
+            SessionManager::new(dir.path(), Box::new(TestBackend::default())).unwrap();
         let status = reopened.status(&info.session_id).unwrap();
         assert_eq!(status.status, SessionStatus::Running);
     }

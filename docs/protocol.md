@@ -33,11 +33,10 @@ each response is one JSON object per line.
 `SessionInfo` = `{session_id, project, started_at_ms, status, checkpoint_count,
 pending_changes}`.
 
-`ExecResult` = `{exit_code, stdout, stderr, duration_ms}`.
+`ExecResult` = `{exit_code, stdout, stderr, duration_ms, truncated}`.
 
 `DiffResult` = `{from, to, pending_changes, changes}` where each `Change` is
 `{path, kind: added|modified|deleted, old_size, new_size, is_binary,
 added_lines, removed_lines, text_diff?}`.
 
 This is the stable contract for adapters (`pi-deltabox`, MCP server, wrappers).
-

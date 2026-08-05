@@ -37,6 +37,9 @@ enum Command {
     Commit(CommitArgs),
     /// Abort pending changes back to a checkpoint.
     Abort(AbortArgs),
+    /// Run the in-sandbox worker loop (spawned by the Linux backend).
+    #[command(hide = true)]
+    Worker(WorkerArgs),
     /// Serve the JSON-RPC protocol over stdio.
     Serve,
 }
@@ -123,6 +126,12 @@ struct AbortArgs {
     checkpoint: Option<String>,
 }
 
+#[derive(clap::Args)]
+struct WorkerArgs {
+    #[arg(long)]
+    root: PathBuf,
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -140,7 +149,7 @@ fn main() -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&info)?);
             }
             SessionCmd::Status(args) => {
-                let manager =
+                let mut manager =
                     SessionManager::new(&args.project, Box::new(DefaultBackend::default()))?;
                 let info = manager.status(&args.session)?;
                 println!("{}", serde_json::to_string_pretty(&info)?);
@@ -203,6 +212,9 @@ fn main() -> anyhow::Result<()> {
                 checkpoint: args.checkpoint,
             })?;
             println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::Worker(args) => {
+            deltabox_core::worker::run_worker(&args.root)?;
         }
         Command::Serve => {
             let project = std::env::current_dir()?;

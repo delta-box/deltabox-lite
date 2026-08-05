@@ -148,6 +148,8 @@ pub struct ExecResult {
     pub stdout: String,
     pub stderr: String,
     pub duration_ms: u64,
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

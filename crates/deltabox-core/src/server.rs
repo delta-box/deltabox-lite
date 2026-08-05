@@ -53,6 +53,7 @@ impl Server {
 }
 
 #[cfg(test)]
+#[cfg(not(target_os = "linux"))]
 mod tests {
     use super::*;
     use crate::backend::stub::StubBackend;

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use similar::{ChangeTag, TextDiff};
+use similar::TextDiff;
 
 pub const DEFAULT_TEXT_SIZE_LIMIT: u64 = 1024 * 1024;
 
@@ -76,6 +76,30 @@ pub fn describe_change(
         } else {
             (0, 0, None)
         }
+    } else if let Some(n) = new_bytes {
+        // Added file: render all lines as additions.
+        let text = String::from_utf8_lossy(n);
+        let mut out = String::new();
+        let mut count = 0usize;
+        for line in text.lines() {
+            out.push('+');
+            out.push_str(line);
+            out.push('\n');
+            count += 1;
+        }
+        (count, 0, Some(out))
+    } else if let Some(o) = old_bytes {
+        // Deleted file: render all lines as removals.
+        let text = String::from_utf8_lossy(o);
+        let mut out = String::new();
+        let mut count = 0usize;
+        for line in text.lines() {
+            out.push('-');
+            out.push_str(line);
+            out.push('\n');
+            count += 1;
+        }
+        (0, count, Some(out))
     } else {
         (0, 0, None)
     };
@@ -97,17 +121,6 @@ fn count_marker_lines(diff: &str, marker: char) -> usize {
     diff.lines()
         .filter(|l| l.starts_with(marker) && !l.starts_with(&header))
         .count()
-}
-
-// Keep ChangeTag import used (future extension points); silence the lint in
-// case the compiler sees it as unused in the current build.
-#[allow(dead_code)]
-fn _tag_name(tag: ChangeTag) -> &'static str {
-    match tag {
-        ChangeTag::Equal => "equal",
-        ChangeTag::Delete => "delete",
-        ChangeTag::Insert => "insert",
-    }
 }
 
 #[cfg(test)]

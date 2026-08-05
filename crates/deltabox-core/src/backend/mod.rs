@@ -1,8 +1,7 @@
 use crate::error::Result;
-use crate::protocol::{
-    AbortResult, CommitResult, DiffResult, ExecRequest, ExecResult, SessionSpec,
-};
-use std::path::Path;
+use crate::protocol::{AbortResult, CommitResult, ExecRequest, ExecResult, SessionSpec};
+use crate::worker::ScanEntry;
+use std::path::{Path, PathBuf};
 
 /// Platform sandbox backend. The core delegates everything OS-specific here.
 pub trait SandboxBackend: Send + Sync {
@@ -10,16 +9,32 @@ pub trait SandboxBackend: Send + Sync {
     fn is_supported(&self) -> bool;
     fn start_session(&mut self, session_id: &str, spec: &SessionSpec) -> Result<()>;
     fn stop_session(&mut self, session_id: &str) -> Result<()>;
+    /// Round-trip health check against the session worker.
+    fn ping(&mut self, session_id: &str) -> Result<()>;
     fn exec(&mut self, session_id: &str, req: ExecRequest) -> Result<ExecResult>;
-    fn pending_change_count(&mut self, session_id: &str) -> Result<usize>;
-    fn diff(
+    /// Scan the sandboxed project view. Additions/modifications live in the
+    /// COW upper layer; deletions are visible only through this scan.
+    fn scan(&mut self, session_id: &str) -> Result<Vec<ScanEntry>>;
+    /// Path of the current COW upper directory.
+    fn current_upper(&mut self, session_id: &str) -> Result<PathBuf>;
+    /// Freeze the current COW state into `dest_dir/upper`.
+    fn freeze_upper(&mut self, session_id: &str, dest_dir: &Path) -> Result<()>;
+    /// Merge pending changes into the real project and restart the session.
+    fn commit_changes(
         &mut self,
         session_id: &str,
-        from: Option<&str>,
-        to: Option<&str>,
-    ) -> Result<DiffResult>;
-    fn commit_changes(&mut self, session_id: &str, checkpoint_id: &str) -> Result<CommitResult>;
-    fn abort_changes(&mut self, session_id: &str, checkpoint_id: &str) -> Result<AbortResult>;
+        checkpoint_id: &str,
+        head_dir: &Path,
+        deleted: Vec<String>,
+    ) -> Result<CommitResult>;
+    /// Discard pending changes and restore the head checkpoint state.
+    fn abort_changes(
+        &mut self,
+        session_id: &str,
+        checkpoint_id: &str,
+        head_dir: &Path,
+        deleted: Vec<String>,
+    ) -> Result<AbortResult>;
 }
 
 #[cfg(target_os = "linux")]
@@ -31,7 +46,3 @@ pub use linux_sandlock::SandlockBackend as DefaultBackend;
 pub mod stub;
 #[cfg(not(target_os = "linux"))]
 pub use stub::StubBackend as DefaultBackend;
-
-// Keep `Path` referenced at the trait level for future backend methods.
-#[allow(dead_code)]
-fn _path_placeholder(_p: &Path) {}

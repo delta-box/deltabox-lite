@@ -13,6 +13,7 @@ pub mod policy;
 pub mod protocol;
 pub mod server;
 pub mod session;
+pub mod snapshot;
 pub mod worker;
 
 pub use error::{Error, Result};
