@@ -197,7 +197,7 @@ impl SandboxBackend for SandlockBackend {
         if policy.path_is_denied(rel) {
             return Err(Error::Backend("path denied by policy".into()));
         }
-        drop(runtime);
+        let _ = runtime;
         let upper = self.current_upper(session_id)?;
         let candidates = [upper.join(rel), project.join(rel)];
         for candidate in candidates {
@@ -225,7 +225,7 @@ impl SandboxBackend for SandlockBackend {
         if policy.path_is_denied(rel) {
             return Err(Error::Backend("path denied by policy".into()));
         }
-        drop(runtime);
+        let _ = runtime;
         let path = rel.to_path_buf();
         self.call(
             session_id,
@@ -312,6 +312,34 @@ impl SandboxBackend for SandlockBackend {
             checkpoint_id: checkpoint_id.to_string(),
             applied,
         })
+    }
+
+    fn materialize_changes(
+        &mut self,
+        session_id: &str,
+        head_dir: &Path,
+        deleted: Vec<String>,
+    ) -> Result<usize> {
+        let Some(runtime) = self.sessions.remove(session_id) else {
+            return Err(Error::SessionNotFound(session_id.to_string()));
+        };
+        let (tx, rx) = std_mpsc::channel();
+        runtime
+            .tx
+            .blocking_send(InnerCmd::Commit {
+                head_dir: head_dir.to_path_buf(),
+                deleted,
+                resp: tx,
+            })
+            .map_err(|_| Error::Backend("session runtime closed".into()))?;
+        let applied = rx
+            .recv_timeout(Duration::from_secs(300))
+            .map_err(|_| Error::Backend("materialize timed out".into()))?
+            .map_err(Error::Backend)?;
+        if let Some(thread) = runtime.thread {
+            let _ = thread.join();
+        }
+        Ok(applied)
     }
 
     fn abort_changes(
@@ -657,9 +685,13 @@ fn upper_branch_dir(upper: &Path) -> Option<PathBuf> {
 }
 
 fn build_sandbox(spec: &SessionSpec, worker_bin: &Path) -> Result<Sandbox> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    spec.project.hash(&mut hasher);
+    let sandbox_name = format!("deltabox-{:016x}", hasher.finish());
     let mut builder = Sandbox::builder();
     builder = builder
-        .name(format!("deltabox-{}", &spec.project.to_string_lossy()))
+        .name(sandbox_name)
         .workdir(&spec.project)
         .fs_storage(spec.store_dir.join("cow"))
         .cwd(&spec.project)

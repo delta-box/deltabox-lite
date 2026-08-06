@@ -1,11 +1,11 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use deltabox_core::backend::DefaultBackend;
+use deltabox_core::durable::DurableSessionManager;
 use deltabox_core::protocol::{
     AbortParams, CheckpointParams, CommitParams, DiffParams, ExecParams, Request,
 };
 use deltabox_core::server::Server;
-use deltabox_core::session::{Durability, SessionManager};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
@@ -63,7 +63,8 @@ struct StartArgs {
     project: PathBuf,
     #[arg(long)]
     policy: Option<PathBuf>,
-    #[arg(long)]
+    /// Deprecated: service-free sessions are durable by default.
+    #[arg(long, hide = true)]
     durable: bool,
 }
 
@@ -167,35 +168,24 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Session { cmd } => match cmd {
             SessionCmd::Start(args) => {
-                let durability = if args.durable {
-                    Durability::Fsync
-                } else {
-                    Durability::Flush
-                };
-                let mut manager = SessionManager::new_with_durability(
-                    &args.project,
-                    Box::new(DefaultBackend::default()),
-                    durability,
-                )?;
+                let _ = args.durable;
+                let manager = DurableSessionManager::new(&args.project, None)?;
                 let info = manager.start(args.policy.as_deref())?;
                 println!("{}", info.session_id);
             }
             SessionCmd::Stop(args) => {
-                let mut manager =
-                    SessionManager::new(&args.project, Box::new(DefaultBackend::default()))?;
+                let manager = DurableSessionManager::new(&args.project, None)?;
                 let info = manager.stop(&args.session)?;
                 println!("{}", serde_json::to_string_pretty(&info)?);
             }
             SessionCmd::Status(args) => {
-                let mut manager =
-                    SessionManager::new(&args.project, Box::new(DefaultBackend::default()))?;
+                let manager = DurableSessionManager::new(&args.project, None)?;
                 let info = manager.status(&args.session)?;
                 println!("{}", serde_json::to_string_pretty(&info)?);
             }
         },
         Command::Exec(args) => {
-            let mut manager =
-                SessionManager::new(&args.project, Box::new(DefaultBackend::default()))?;
+            let manager = DurableSessionManager::new(&args.project, None)?;
             let env = if args.env.is_empty() {
                 None
             } else {
@@ -217,8 +207,7 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Read(args) => {
             use std::io::Write as _;
-            let mut manager =
-                SessionManager::new(&args.project, Box::new(DefaultBackend::default()))?;
+            let manager = DurableSessionManager::new(&args.project, None)?;
             let result = manager.read_file(&args.session, &args.path)?;
             let bytes = base64_decode(&result.content_base64)?;
             std::io::stdout().lock().write_all(&bytes)?;
@@ -231,14 +220,12 @@ fn main() -> anyhow::Result<()> {
                     anyhow::bail!("provide --content or --content-base64")
                 }
             };
-            let mut manager =
-                SessionManager::new(&args.project, Box::new(DefaultBackend::default()))?;
+            let manager = DurableSessionManager::new(&args.project, None)?;
             manager.write_file(&args.session, &args.path, bytes)?;
             println!("written");
         }
         Command::Checkpoint(args) => {
-            let mut manager =
-                SessionManager::new(&args.project, Box::new(DefaultBackend::default()))?;
+            let manager = DurableSessionManager::new(&args.project, None)?;
             let info = manager.checkpoint(CheckpointParams {
                 session_id: args.session,
                 label: args.label,
@@ -246,8 +233,7 @@ fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&info)?);
         }
         Command::Diff(args) => {
-            let mut manager =
-                SessionManager::new(&args.project, Box::new(DefaultBackend::default()))?;
+            let manager = DurableSessionManager::new(&args.project, None)?;
             let result = manager.diff(DiffParams {
                 session_id: args.session,
                 from: args.from,
@@ -260,8 +246,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Command::Commit(args) => {
-            let mut manager =
-                SessionManager::new(&args.project, Box::new(DefaultBackend::default()))?;
+            let manager = DurableSessionManager::new(&args.project, None)?;
             let result = manager.commit(CommitParams {
                 session_id: args.session,
                 checkpoint: args.checkpoint,
@@ -269,8 +254,7 @@ fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Command::Abort(args) => {
-            let mut manager =
-                SessionManager::new(&args.project, Box::new(DefaultBackend::default()))?;
+            let manager = DurableSessionManager::new(&args.project, None)?;
             let result = manager.abort(AbortParams {
                 session_id: args.session,
                 checkpoint: args.checkpoint,

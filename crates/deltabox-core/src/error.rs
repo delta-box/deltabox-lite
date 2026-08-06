@@ -14,6 +14,10 @@ pub enum Error {
     SessionExists(String),
     #[error("session stopped: {0}")]
     SessionStopped(String),
+    #[error("session busy: {0}")]
+    SessionBusy(String),
+    #[error("project changed outside deltabox: {0}")]
+    ProjectConflict(String),
     #[error("checkpoint not found: {0}")]
     CheckpointNotFound(String),
     #[error("backend error: {0}")]

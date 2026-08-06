@@ -33,14 +33,14 @@ The JSON-RPC protocol in action — sandboxed edits, diff, abort, redo, commit:
 - **Real isolation, not a wrapper** — Linux commands run inside a local 
   sandbox with seccomp copy-on-write, Landlock filesystem policy (based on sandlock), resource
   limits, and an audited network allowlist.
-- **One persistent session per project** — the confined worker survives across
-  commands, so a single `exec` costs ~9 ms (p50), comparable to launching a
-  bare `sh -c true`.
+- **Service-free durable sessions** — accepted and pending views live on disk,
+  so separate CLI processes can continue a session without a daemon. Optional
+  warm `serve` mode remains available for adapters and latency-sensitive use.
 - **Diff / commit / abort** — unified text diffs, binary and large-file
   markers, and a checkpoint chain. Apply changes to the real project or
   discard them in milliseconds.
-- **Checkpoint before every mutation** — snapshots before each mutating tool
-  call; no-change checkpoints take ~6 ms and copy zero bytes.
+- **Review-scope savepoints** — task and tool adapters choose the correct abort
+  target; normal commit and abort do not require a user-created checkpoint.
 - **Agent-agnostic** — a line-delimited JSON-RPC protocol over stdio. The Pi
   adapter ships as [pi-deltabox](https://github.com/Ddnirvana/pi-deltabox);
   adapters for other agents speak the same protocol.
@@ -51,20 +51,19 @@ The JSON-RPC protocol in action — sandboxed edits, diff, abort, redo, commit:
 
 ```mermaid
 flowchart LR
-    A[Agent] -->|JSON-RPC over stdio| S[deltabox serve]
-    S -->|exec / write / read| W[Confined worker<br/>sandlock · seccomp-COW]
-    W --> U[(COW upper layer)]
-    U -->|checkpoint| C[(Checkpoint chain)]
-    U -->|commit| P[(Real project)]
-    U -.->|abort| X[discarded]
-    P --> S
+    A[CLI or agent adapter] --> D[Durable session store]
+    D -->|short-lived exec| W[Confined worker<br/>sandlock · seccomp-COW]
+    W --> S[(Working shadow)]
+    S -->|diff / abort| B[(Accepted baseline)]
+    S -->|user commit| P[(Real project)]
+    O[Optional deltabox serve] -.-> D
 ```
 
-The `deltabox serve` process owns one sandbox session per project. A confined
-worker holds the copy-on-write layer; each `exec` runs as a child of that
-worker. Checkpoints freeze the layer incrementally (only changed files are
-copied), and commit merges the layer into the real project while abort throws
-it away.
+The on-disk session store owns accepted and working project views. Each normal
+CLI `exec` launches a short-lived confined COW transaction and materializes its
+result into the working shadow; the real project remains untouched until user
+commit. `deltabox serve` is an optional transport/warm-runner surface, not the
+source of session truth. See [session semantics](docs/session-semantics.md).
 
 ## Quick start
 
@@ -75,20 +74,25 @@ cargo build --release
 export PATH="$PWD/target/release:$PATH"
 ```
 
-Run the protocol demo (Linux backend):
+Start a durable session and use it from independent CLI processes (Linux
+backend):
 
 ```bash
-node examples/rpc-demo.mjs
+deltabox session start /abs/path/my-project
+# prints a session id
+deltabox exec <id> --project /abs/path/my-project -- npm install
+deltabox diff <id> --project /abs/path/my-project
+deltabox commit <id> --project /abs/path/my-project
 ```
 
-Start a sandbox session server for a project:
+No service needs to be started first. To use the optional JSON-RPC transport:
 
 ```bash
 cd my-project
 deltabox serve
 ```
 
-The server speaks line-delimited JSON-RPC (see
+The optional server speaks line-delimited JSON-RPC (see
 [docs/protocol.md](docs/protocol.md)). A minimal session looks like:
 
 ```json

@@ -38,6 +38,19 @@ pub trait SandboxBackend: Send + Sync {
         head_dir: &Path,
         deleted: Vec<String>,
     ) -> Result<CommitResult>;
+    /// Merge a command-local COW layer into a durable shadow and stop the
+    /// runtime. Service-free callers do not need the post-commit restart used
+    /// by a warm server session.
+    fn materialize_changes(
+        &mut self,
+        session_id: &str,
+        head_dir: &Path,
+        deleted: Vec<String>,
+    ) -> Result<usize> {
+        Ok(self
+            .commit_changes(session_id, "materialize", head_dir, deleted)?
+            .applied)
+    }
     /// Discard pending changes and restore the head checkpoint state.
     fn abort_changes(
         &mut self,

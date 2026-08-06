@@ -7,6 +7,7 @@
 pub mod backend;
 pub mod changeset;
 pub mod checkpoint;
+pub mod durable;
 pub mod error;
 pub mod journal;
 pub mod policy;
