@@ -34,6 +34,11 @@ same concept.
 Skipped reviews retain their changes. A later cumulative review must keep the
 earliest still-pending savepoint as its abort target.
 
+The core persists this scope through `review.begin|status|diff|commit|abort|skip`.
+Calling `review.begin` while a scope is active returns the existing scope;
+commit and abort close it. Adapters must not create their own per-tool
+checkpoint chain to infer the rollback target.
+
 ## Process model
 
 Normal CLI operations are service-free and synchronous. Each mutating command
@@ -51,3 +56,28 @@ Only one mutating operation may own a session at a time. A per-session process
 lock serializes operations and stale locks are recoverable after process death.
 Commit must reject external changes to the real project instead of silently
 overwriting them.
+
+## Crash recovery and storage
+
+Working-view updates record changed paths, back up their previous values, and
+then incrementally materialize the command-local COW layer. A durable
+transaction marker identifies every phase; reopening the session either
+restores the path backups or finalizes an applied update. Direct working-tree
+operations use a candidate-tree swap. Host commit keeps both a host backup and
+the pre-commit working tree until its journal record is durable, so a killed
+commit cannot leave a partially published project.
+
+Accepted and working scan indexes are persisted and refreshed only at
+transaction boundaries. Checkpoint trees are prepared under a temporary name,
+atomically published, capped at 100 manifest entries, and removed from disk
+when pruned. Linux uses `FICLONE` where supported and falls back to ordinary
+copying on other filesystems.
+
+## Linux backend limitation
+
+Sandlock 0.8.5 cannot reliably use a directory that exists only in the COW
+upper layer as a later child-process `chdir` target within the same `exec`.
+Existing project directories and repositories work normally. Workflows such as
+`git init new-repo && git -C new-repo ...` should split creation and subsequent
+use into separate `deltabox exec` calls so the durable working view is
+materialized between them.

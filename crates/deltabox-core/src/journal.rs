@@ -16,6 +16,9 @@ pub enum JournalKind {
     Abort,
     Diff,
     Error,
+    ReviewBegin,
+    ReviewSkip,
+    Recovery,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

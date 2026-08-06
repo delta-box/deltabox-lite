@@ -82,7 +82,8 @@ pub fn is_excluded_dir(name: &str) -> bool {
 }
 
 /// Run the worker loop until stdin reaches EOF.
-pub fn run_worker(root: &Path) -> Result<()> {
+pub fn run_worker(root: &Path, runtime: &Path) -> Result<()> {
+    configure_parent_death_signal()?;
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     writeln!(out, "{}", serde_json::to_string(&WorkerEvent::Ready)?)?;
@@ -111,7 +112,7 @@ pub fn run_worker(root: &Path) -> Result<()> {
                 id,
                 result: serde_json::json!(true),
             },
-            WorkerCommand::Exec { id, exec } => match run_exec(root, &exec) {
+            WorkerCommand::Exec { id, exec } => match run_exec(root, runtime, &exec) {
                 Ok(result) => WorkerEvent::Ok {
                     id,
                     result: serde_json::to_value(&result)?,
@@ -152,7 +153,24 @@ pub fn run_worker(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_exec(root: &Path, exec: &WorkerExec) -> Result<WorkerExecResult> {
+#[cfg(target_os = "linux")]
+fn configure_parent_death_signal() -> Result<()> {
+    let parent = unsafe { libc::getppid() };
+    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if unsafe { libc::getppid() } != parent || parent == 1 {
+        unsafe { libc::raise(libc::SIGKILL) };
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn configure_parent_death_signal() -> Result<()> {
+    Ok(())
+}
+
+fn run_exec(root: &Path, runtime: &Path, exec: &WorkerExec) -> Result<WorkerExecResult> {
     let argv = &exec.argv;
     if argv.is_empty() {
         return Err(Error::InvalidPolicy("empty argv".into()));
@@ -164,15 +182,22 @@ fn run_exec(root: &Path, exec: &WorkerExec) -> Result<WorkerExecResult> {
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    if !exec.env.is_empty() {
-        let mut env: std::collections::HashMap<String, String> = std::env::vars().collect();
-        for (k, v) in &exec.env {
-            env.insert(k.clone(), v.clone());
+    cmd.env_clear();
+    for key in [
+        "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "PATH", "SHELL", "TERM", "TZ", "USER",
+    ] {
+        if let Some(value) = std::env::var_os(key) {
+            cmd.env(key, value);
         }
-        cmd.env_clear();
-        for (k, v) in env {
-            cmd.env(k, v);
-        }
+    }
+    let sandbox_home = runtime.join("home");
+    let sandbox_tmp = runtime.join("tmp");
+    cmd.env("HOME", &sandbox_home);
+    cmd.env("TMPDIR", &sandbox_tmp);
+    cmd.env("XDG_CACHE_HOME", sandbox_home.join(".cache"));
+    cmd.env("XDG_CONFIG_HOME", sandbox_home.join(".config"));
+    for (key, value) in &exec.env {
+        cmd.env(key, value);
     }
 
     let start = now_ms();

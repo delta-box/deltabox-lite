@@ -46,20 +46,24 @@ fn write(project: &Path, sid: &str, path: &str, content: &str) {
     );
 }
 
-fn exec(project: &Path, sid: &str, script: &str) {
-    run(
-        project,
-        &[
-            "exec",
-            sid,
-            "--project",
-            project.to_str().unwrap(),
-            "--",
-            "sh",
-            "-c",
-            script,
-        ],
-    );
+fn exec(project: &Path, sid: &str, script: &str) -> Value {
+    serde_json::from_slice(
+        &run(
+            project,
+            &[
+                "exec",
+                sid,
+                "--project",
+                project.to_str().unwrap(),
+                "--",
+                "sh",
+                "-c",
+                script,
+            ],
+        )
+        .stdout,
+    )
+    .unwrap()
 }
 
 fn diff(project: &Path, sid: &str, from: Option<&str>) -> Value {
@@ -324,4 +328,377 @@ fn commit_does_not_publish_or_retain_shadow_git_metadata() {
         .unwrap(),
         "host\n"
     );
+}
+
+#[test]
+fn skipped_review_preserves_earliest_scope_and_aborts_all_tools() {
+    let project = tempfile::tempdir().unwrap();
+    let sid = start(project.path());
+    let first: Value = serde_json::from_slice(
+        &run(
+            project.path(),
+            &[
+                "review",
+                "begin",
+                &sid,
+                "--project",
+                project.path().to_str().unwrap(),
+                "--kind",
+                "task",
+                "--label",
+                "turn-start",
+            ],
+        )
+        .stdout,
+    )
+    .unwrap();
+    write(project.path(), &sid, "first.txt", "one");
+    run(
+        project.path(),
+        &[
+            "review",
+            "skip",
+            &sid,
+            "--project",
+            project.path().to_str().unwrap(),
+        ],
+    );
+
+    let second: Value = serde_json::from_slice(
+        &run(
+            project.path(),
+            &[
+                "review",
+                "begin",
+                &sid,
+                "--project",
+                project.path().to_str().unwrap(),
+                "--kind",
+                "tool",
+            ],
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(first["checkpoint_id"], second["checkpoint_id"]);
+
+    write(project.path(), &sid, "second.txt", "two");
+    let review_diff: Value = serde_json::from_slice(
+        &run(
+            project.path(),
+            &[
+                "review",
+                "diff",
+                &sid,
+                "--project",
+                project.path().to_str().unwrap(),
+                "--json",
+            ],
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(review_diff["pending_changes"], 2);
+
+    run(
+        project.path(),
+        &[
+            "review",
+            "abort",
+            &sid,
+            "--project",
+            project.path().to_str().unwrap(),
+        ],
+    );
+    assert_eq!(diff(project.path(), &sid, None)["pending_changes"], 0);
+    let status: Value = serde_json::from_slice(
+        &run(
+            project.path(),
+            &[
+                "review",
+                "status",
+                &sid,
+                "--project",
+                project.path().to_str().unwrap(),
+            ],
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert!(status.is_null());
+}
+
+#[test]
+fn review_and_raw_boundaries_clear_active_scope_across_processes() {
+    let project = tempfile::tempdir().unwrap();
+    let sid = start(project.path());
+    for boundary in ["review", "raw"] {
+        run(
+            project.path(),
+            &[
+                "review",
+                "begin",
+                &sid,
+                "--project",
+                project.path().to_str().unwrap(),
+                "--kind",
+                "task",
+            ],
+        );
+        write(project.path(), &sid, &format!("{boundary}.txt"), boundary);
+        if boundary == "review" {
+            run(
+                project.path(),
+                &[
+                    "review",
+                    "commit",
+                    &sid,
+                    "--project",
+                    project.path().to_str().unwrap(),
+                ],
+            );
+        } else {
+            run(
+                project.path(),
+                &[
+                    "commit",
+                    &sid,
+                    "--project",
+                    project.path().to_str().unwrap(),
+                ],
+            );
+        }
+        let status: Value = serde_json::from_slice(
+            &run(
+                project.path(),
+                &[
+                    "review",
+                    "status",
+                    &sid,
+                    "--project",
+                    project.path().to_str().unwrap(),
+                ],
+            )
+            .stdout,
+        )
+        .unwrap();
+        assert!(status.is_null(), "{boundary} commit retained review scope");
+    }
+
+    run(
+        project.path(),
+        &[
+            "review",
+            "begin",
+            &sid,
+            "--project",
+            project.path().to_str().unwrap(),
+            "--kind",
+            "task",
+        ],
+    );
+    write(project.path(), &sid, "aborted.txt", "pending");
+    run(
+        project.path(),
+        &["abort", &sid, "--project", project.path().to_str().unwrap()],
+    );
+    let status: Value = serde_json::from_slice(
+        &run(
+            project.path(),
+            &[
+                "review",
+                "status",
+                &sid,
+                "--project",
+                project.path().to_str().unwrap(),
+            ],
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert!(status.is_null(), "raw abort retained review scope");
+}
+
+#[test]
+fn crash_during_working_swap_restores_previous_tree() {
+    let project = tempfile::tempdir().unwrap();
+    let sid = start(project.path());
+    let output = Command::new(bin())
+        .env("DELTABOX_TEST_CRASH_AT", "working_moved")
+        .args([
+            "write",
+            &sid,
+            "--project",
+            project.path().to_str().unwrap(),
+            "partial.txt",
+            "--content",
+            "must-not-survive",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+
+    let recovered = diff(project.path(), &sid, None);
+    assert_eq!(
+        recovered["pending_changes"], 0,
+        "recovered diff: {recovered}"
+    );
+    assert!(!project
+        .path()
+        .join(".deltabox")
+        .join(&sid)
+        .join("working/partial.txt")
+        .exists());
+}
+
+#[test]
+fn crash_during_host_commit_rolls_back_host_and_keeps_pending_work() {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("base.txt"), "base").unwrap();
+    let sid = start(project.path());
+    write(project.path(), &sid, "pending.txt", "pending");
+    let output = Command::new(bin())
+        .env("DELTABOX_TEST_CRASH_AT", "commit_host_applied")
+        .args([
+            "commit",
+            &sid,
+            "--project",
+            project.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+
+    let recovered = diff(project.path(), &sid, None);
+    assert_eq!(recovered["pending_changes"], 1);
+    assert!(!project.path().join("pending.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("base.txt")).unwrap(),
+        "base"
+    );
+}
+
+#[test]
+fn crash_during_incremental_materialize_restores_every_changed_path() {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("a.txt"), "a-old").unwrap();
+    std::fs::write(project.path().join("b.txt"), "b-old").unwrap();
+    let sid = start(project.path());
+    let output = Command::new(bin())
+        .env("DELTABOX_TEST_CRASH_AT", "materialize_after_copy")
+        .args([
+            "exec",
+            &sid,
+            "--project",
+            project.path().to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            "printf a-new > a.txt; rm b.txt; printf added > c.txt",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+
+    let recovered = diff(project.path(), &sid, None);
+    assert_eq!(
+        recovered["pending_changes"], 0,
+        "recovered diff: {recovered}"
+    );
+    let working = project.path().join(".deltabox").join(&sid).join("working");
+    assert_eq!(
+        std::fs::read_to_string(working.join("a.txt")).unwrap(),
+        "a-old"
+    );
+    assert_eq!(
+        std::fs::read_to_string(working.join("b.txt")).unwrap(),
+        "b-old"
+    );
+    assert!(!working.join("c.txt").exists());
+}
+
+#[test]
+fn exec_does_not_inherit_supervisor_secrets_but_accepts_explicit_env() {
+    let project = tempfile::tempdir().unwrap();
+    let sid = start(project.path());
+    let output = Command::new(bin())
+        .env("DELTABOX_PARENT_SECRET", "must-not-leak")
+        .args([
+            "exec",
+            &sid,
+            "--project",
+            project.path().to_str().unwrap(),
+            "--env",
+            "EXPLICIT_VALUE=visible",
+            "--",
+            "sh",
+            "-c",
+            "test -z \"$DELTABOX_PARENT_SECRET\" && test \"$EXPLICIT_VALUE\" = visible",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "exec failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["exit_code"], 0);
+}
+
+#[test]
+fn representative_cli_tools_and_dev_null_work_inside_sandbox() {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("tracked.txt"), "host").unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "tracked.txt"],
+        vec![
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "user.name=deltabox-test",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+    ] {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(project.path())
+            .status()
+            .unwrap()
+            .success());
+    }
+    let sid = start(project.path());
+    let cases = [
+        ("dev-null", "printf sink-test > /dev/null"),
+        (
+            "git",
+            concat!(
+                "git status --short > /dev/null; ",
+                "printf sandbox > tracked.txt; git add tracked.txt; ",
+                "git -c user.email=test@example.invalid -c user.name=deltabox-test commit -qm sandbox"
+            ),
+        ),
+        (
+            "python",
+            "python3 -c 'open(\"python.txt\", \"w\").write(\"ok\")'",
+        ),
+        (
+            "node",
+            "node -e 'require(\"fs\").writeFileSync(\"node.txt\", \"ok\")'",
+        ),
+        ("cargo", "cargo --version > /dev/null"),
+        ("npm", "npm --version > /dev/null"),
+    ];
+    for (name, script) in cases {
+        let result = exec(project.path(), &sid, script);
+        assert_eq!(
+            result["exit_code"], 0,
+            "{name} compatibility failed: {result}"
+        );
+    }
+    let pending = diff(project.path(), &sid, None);
+    assert!(pending["pending_changes"].as_u64().unwrap() >= 3);
 }

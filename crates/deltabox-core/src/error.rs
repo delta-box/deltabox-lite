@@ -20,6 +20,8 @@ pub enum Error {
     ProjectConflict(String),
     #[error("checkpoint not found: {0}")]
     CheckpointNotFound(String),
+    #[error("no active review scope for session: {0}")]
+    ReviewNotActive(String),
     #[error("backend error: {0}")]
     Backend(String),
     #[error("unsupported on this platform: {0}")]

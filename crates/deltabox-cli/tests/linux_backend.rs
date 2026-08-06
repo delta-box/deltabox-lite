@@ -199,9 +199,18 @@ fn checkpoint_before_deletion_abort_restores() {
             label: Some("before-rm".into()),
         })
         .unwrap();
-    exec_sh(&mut manager, &sid, "rm -rf sub");
-    let (code, _, _) = exec_sh(&mut manager, &sid, "test -e sub/b.txt");
-    assert_ne!(code, 0, "deleted inside sandbox view");
+    let (code, stdout, stderr) = exec_sh(&mut manager, &sid, "rm -rf sub");
+    assert_eq!(
+        code, 0,
+        "rm -rf failed: stdout={stdout:?} stderr={stderr:?}"
+    );
+    for script in ["cat sub/b.txt", "ls sub/b.txt", "test -e sub/b.txt"] {
+        let (code, stdout, stderr) = exec_sh(&mut manager, &sid, script);
+        assert_ne!(
+            code, 0,
+            "{script:?} saw a file deleted inside the sandbox: stdout={stdout:?} stderr={stderr:?}"
+        );
+    }
 
     manager
         .abort(AbortParams {

@@ -35,7 +35,7 @@ The JSON-RPC protocol in action — sandboxed edits, diff, abort, redo, commit:
   limits, and an audited network allowlist.
 - **Service-free durable sessions** — accepted and pending views live on disk,
   so separate CLI processes can continue a session without a daemon. Optional
-  warm `serve` mode remains available for adapters and latency-sensitive use.
+  `serve` transport remains available for adapters that prefer JSON-RPC.
 - **Diff / commit / abort** — unified text diffs, binary and large-file
   markers, and a checkpoint chain. Apply changes to the real project or
   discard them in milliseconds.
@@ -100,7 +100,8 @@ The optional server speaks line-delimited JSON-RPC (see
 ```
 
 From there, `session.exec`, `fs.write`, `checkpoint.create`, `diff.list`,
-`changes.commit`, and `changes.abort` drive the whole lifecycle.
+`changes.commit`, `changes.abort`, and the `review.*` scope methods drive the
+whole lifecycle.
 
 The fastest way to see it with an agent is the Pi extension:
 
@@ -110,21 +111,22 @@ pi install npm:pi-deltabox
 
 ## Performance
 
-Measured on x86-server (Linux 6.18, ext4, release build; 1000-file tree unless noted).
+Measured on x86-server (Linux 6.18, ext4, release build). Each row reports 25
+no-op commands over the same durable session; CLI mode starts a fresh sandbox
+process for every command.
 
-| Operation | p50 |
-|---|---|
-| `exec sh -c true` (warm session) | 8.6 ms |
-| protocol ping | 87 µs |
-| checkpoint (200-file tree, 20 changes) | 10.9 ms |
-| checkpoint (no changes) | 5.4 ms |
-| diff / scan (1000 files) | ~26 ms |
-| commit (100 pending files) | ~58 ms |
-| abort (100 pending files) | ~77 ms |
+| Transport | Files | p50 | p95 |
+|---|---:|---:|---:|
+| service-free CLI (default) | 10 | 51 ms | 80 ms |
+| service-free CLI (default) | 200 | 41 ms | 78 ms |
+| service-free CLI (default) | 1000 | 69 ms | 90 ms |
+| optional `serve` | 10 | 59 ms | 73 ms |
+| optional `serve` | 200 | 54 ms | 84 ms |
+| optional `serve` | 1000 | 81 ms | 227 ms |
 
-For comparison, a fresh `bwrap sh -c true` on the same host is 9.83 ms (p50):
-deltabox-lite pays a similar isolation cost per command, then keeps the session
-warm so checkpoints and diffs stay in the millisecond range.
+The 1000-file CLI run had one 211 ms outlier; the serve run had a 397 ms
+outlier. Persisted scan indexes and changed-path materialization keep median CLI
+latency from scaling with a full working-tree copy.
 
 ## Project layout
 

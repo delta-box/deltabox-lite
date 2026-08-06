@@ -4,6 +4,7 @@ use deltabox_core::backend::DefaultBackend;
 use deltabox_core::durable::DurableSessionManager;
 use deltabox_core::protocol::{
     AbortParams, CheckpointParams, CommitParams, DiffParams, ExecParams, Request,
+    ReviewBeginParams, ReviewKind,
 };
 use deltabox_core::server::Server;
 use std::io::{BufRead, Write};
@@ -41,6 +42,11 @@ enum Command {
     Commit(CommitArgs),
     /// Abort pending changes back to a checkpoint.
     Abort(AbortArgs),
+    /// Manage a persistent task/tool review scope.
+    Review {
+        #[command(subcommand)]
+        cmd: ReviewCmd,
+    },
     /// Run the in-sandbox worker loop (spawned by the Linux backend).
     #[command(hide = true)]
     Worker(WorkerArgs),
@@ -56,6 +62,49 @@ enum SessionCmd {
     Stop(StopArgs),
     /// Show session status.
     Status(StatusArgs),
+}
+
+#[derive(Subcommand)]
+enum ReviewCmd {
+    /// Begin a review scope, preserving an existing skipped scope.
+    Begin(ReviewBeginArgs),
+    /// Show the active review scope.
+    Status(SessionProjectArgs),
+    /// Show changes since the active review scope began.
+    Diff(ReviewDiffArgs),
+    /// Commit pending changes and close the active scope.
+    Commit(SessionProjectArgs),
+    /// Abort to the active scope and close it.
+    Abort(SessionProjectArgs),
+    /// Keep changes pending and preserve the original rollback point.
+    Skip(SessionProjectArgs),
+}
+
+#[derive(clap::Args)]
+struct SessionProjectArgs {
+    session: String,
+    #[arg(long, default_value = ".")]
+    project: PathBuf,
+}
+
+#[derive(clap::Args)]
+struct ReviewBeginArgs {
+    session: String,
+    #[arg(long, default_value = ".")]
+    project: PathBuf,
+    #[arg(long, value_parser = ["task", "tool", "risky"])]
+    kind: String,
+    #[arg(long)]
+    label: Option<String>,
+}
+
+#[derive(clap::Args)]
+struct ReviewDiffArgs {
+    session: String,
+    #[arg(long, default_value = ".")]
+    project: PathBuf,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -115,6 +164,9 @@ struct WriteArgs {
     content_base64: Option<String>,
     #[arg(long)]
     content: Option<String>,
+    /// Read raw file content from stdin (avoids command-line size limits).
+    #[arg(long)]
+    stdin: bool,
 }
 
 #[derive(clap::Args)]
@@ -161,6 +213,8 @@ struct AbortArgs {
 struct WorkerArgs {
     #[arg(long)]
     root: PathBuf,
+    #[arg(long)]
+    runtime: PathBuf,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -213,11 +267,17 @@ fn main() -> anyhow::Result<()> {
             std::io::stdout().lock().write_all(&bytes)?;
         }
         Command::Write(args) => {
-            let bytes = match (args.content_base64, args.content) {
-                (Some(b64), _) => base64_decode(&b64)?,
-                (None, Some(text)) => text.into_bytes(),
-                (None, None) => {
-                    anyhow::bail!("provide --content or --content-base64")
+            let bytes = if args.stdin {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut std::io::stdin().lock(), &mut bytes)?;
+                bytes
+            } else {
+                match (args.content_base64, args.content) {
+                    (Some(b64), _) => base64_decode(&b64)?,
+                    (None, Some(text)) => text.into_bytes(),
+                    (None, None) => {
+                        anyhow::bail!("provide --content or --content-base64")
+                    }
                 }
             };
             let manager = DurableSessionManager::new(&args.project, None)?;
@@ -261,12 +321,66 @@ fn main() -> anyhow::Result<()> {
             })?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
+        Command::Review { cmd } => match cmd {
+            ReviewCmd::Begin(args) => {
+                let manager = DurableSessionManager::new(&args.project, None)?;
+                let kind = match args.kind.as_str() {
+                    "task" => ReviewKind::Task,
+                    "tool" => ReviewKind::Tool,
+                    "risky" => ReviewKind::Risky,
+                    _ => unreachable!("clap validates review kind"),
+                };
+                let active = manager.begin_review(ReviewBeginParams {
+                    session_id: args.session,
+                    kind,
+                    label: args.label,
+                })?;
+                println!("{}", serde_json::to_string_pretty(&active)?);
+            }
+            ReviewCmd::Status(args) => {
+                let manager = DurableSessionManager::new(&args.project, None)?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&manager.review_status(&args.session)?)?
+                );
+            }
+            ReviewCmd::Diff(args) => {
+                let manager = DurableSessionManager::new(&args.project, None)?;
+                let diff = manager.review_diff(&args.session)?;
+                if args.json {
+                    println!("{}", serde_json::to_string_pretty(&diff)?);
+                } else {
+                    print!("{}", deltabox_core::changeset::render_diff_text(&diff));
+                }
+            }
+            ReviewCmd::Commit(args) => {
+                let manager = DurableSessionManager::new(&args.project, None)?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&manager.review_commit(&args.session)?)?
+                );
+            }
+            ReviewCmd::Abort(args) => {
+                let manager = DurableSessionManager::new(&args.project, None)?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&manager.review_abort(&args.session)?)?
+                );
+            }
+            ReviewCmd::Skip(args) => {
+                let manager = DurableSessionManager::new(&args.project, None)?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&manager.review_skip(&args.session)?)?
+                );
+            }
+        },
         Command::Worker(args) => {
-            deltabox_core::worker::run_worker(&args.root)?;
+            deltabox_core::worker::run_worker(&args.root, &args.runtime)?;
         }
         Command::Serve => {
             let project = std::env::current_dir()?;
-            let mut server = Server::new(&project, Box::new(DefaultBackend::default()))?;
+            let mut server = Server::new(&project, Box::new(default_backend()))?;
             let stdin = std::io::stdin();
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
@@ -289,6 +403,16 @@ fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn default_backend() -> DefaultBackend {
+    DefaultBackend::default()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn default_backend() -> DefaultBackend {
+    DefaultBackend
 }
 
 fn split_env(s: &str) -> anyhow::Result<(String, String)> {

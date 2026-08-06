@@ -6,6 +6,8 @@ use crate::session::now_ms;
 use crate::worker::ScanEntry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::copy;
 use std::path::Path;
 
 pub const BASE_SCAN_FILE: &str = "base_scan.json";
@@ -107,13 +109,43 @@ pub fn copy_tree(src: &Path, dst: &Path) -> Result<usize> {
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::copy(entry.path(), &target)?;
-            copy_mode(entry.path(), &target)?;
+            clone_or_copy_file(entry.path(), &target)?;
             preserve_mtime(entry.path(), &target)?;
+            copy_mode(entry.path(), &target)?;
             copied += 1;
         }
     }
     Ok(copied)
+}
+
+/// Clone a regular file with copy-on-write when the filesystem supports it.
+/// Unsupported filesystems and non-Linux platforms transparently fall back
+/// to an ordinary byte copy.
+pub fn clone_or_copy_file(src: &Path, dst: &Path) -> Result<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        const FICLONE: libc::c_ulong = 0x4004_9409;
+        use std::os::fd::AsRawFd;
+        let source = File::open(src)?;
+        let target = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(dst)?;
+        let cloned = unsafe { libc::ioctl(target.as_raw_fd(), FICLONE, source.as_raw_fd()) } == 0;
+        drop(target);
+        if cloned {
+            return Ok(std::fs::metadata(dst)?.len());
+        }
+        std::fs::remove_file(dst)?;
+    }
+    let mut source = File::open(src)?;
+    let mut target = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(dst)?;
+    Ok(copy(&mut source, &mut target)?)
 }
 
 /// Copy `src` to `dst`, skipping files already frozen in `prev` with the same
@@ -133,7 +165,7 @@ pub fn copy_tree_incremental(src: &Path, prev: Option<&Path>, dst: &Path) -> Res
             std::fs::create_dir_all(&target)?;
             continue;
         }
-        let unchanged = prev.map_or(false, |p| {
+        let unchanged = prev.is_some_and(|p| {
             let prev_path = p.join(rel);
             match (
                 std::fs::symlink_metadata(&prev_path),
@@ -159,8 +191,8 @@ pub fn copy_tree_incremental(src: &Path, prev: Option<&Path>, dst: &Path) -> Res
                 std::fs::create_dir_all(parent)?;
             }
             std::fs::copy(entry.path(), &target)?;
-            copy_mode(entry.path(), &target)?;
             preserve_mtime(entry.path(), &target)?;
+            copy_mode(entry.path(), &target)?;
             copied += 1;
         }
     }

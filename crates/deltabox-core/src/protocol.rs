@@ -33,6 +33,18 @@ pub enum Method {
     ChangesCommit(CommitParams),
     #[serde(rename = "changes.abort")]
     ChangesAbort(AbortParams),
+    #[serde(rename = "review.begin")]
+    ReviewBegin(ReviewBeginParams),
+    #[serde(rename = "review.status")]
+    ReviewStatus(ReviewStatusParams),
+    #[serde(rename = "review.diff")]
+    ReviewDiff(ReviewStatusParams),
+    #[serde(rename = "review.commit")]
+    ReviewCommit(ReviewStatusParams),
+    #[serde(rename = "review.abort")]
+    ReviewAbort(ReviewStatusParams),
+    #[serde(rename = "review.skip")]
+    ReviewSkip(ReviewStatusParams),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +123,35 @@ pub struct AbortParams {
     pub session_id: String,
     #[serde(default)]
     pub checkpoint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewBeginParams {
+    pub session_id: String,
+    pub kind: ReviewKind,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewStatusParams {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewKind {
+    Task,
+    Tool,
+    Risky,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActiveReview {
+    pub checkpoint_id: String,
+    pub kind: ReviewKind,
+    pub label: Option<String>,
+    pub started_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -284,6 +325,36 @@ mod tests {
         match parsed.method {
             Method::FsWrite(p) => assert_eq!(p.content_base64, "aGk="),
             other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn review_methods_round_trip() {
+        let begin = Request {
+            id: 20,
+            method: Method::ReviewBegin(ReviewBeginParams {
+                session_id: "session".into(),
+                kind: ReviewKind::Risky,
+                label: Some("before install".into()),
+            }),
+        };
+        let json = serde_json::to_string(&begin).unwrap();
+        assert!(json.contains("\"method\":\"review.begin\""));
+        assert!(json.contains("\"kind\":\"risky\""));
+        let parsed: Request = serde_json::from_str(&json).unwrap();
+        match parsed.method {
+            Method::ReviewBegin(params) => {
+                assert_eq!(params.session_id, "session");
+                assert_eq!(params.kind, ReviewKind::Risky);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        for method in ["status", "diff", "commit", "abort", "skip"] {
+            let raw = format!(
+                "{{\"id\":21,\"method\":\"review.{method}\",\"params\":{{\"session_id\":\"s\"}}}}"
+            );
+            let _: Request = serde_json::from_str(&raw).unwrap();
         }
     }
 }

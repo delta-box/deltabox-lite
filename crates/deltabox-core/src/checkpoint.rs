@@ -28,6 +28,7 @@ pub struct CheckpointStore {
     path: PathBuf,
     manifest: CheckpointManifest,
     cap: usize,
+    pruned: Vec<String>,
 }
 
 impl CheckpointStore {
@@ -43,12 +44,32 @@ impl CheckpointStore {
             path,
             manifest,
             cap,
+            pruned: Vec::new(),
         })
     }
 
     pub fn create(&mut self, label: Option<&str>, change_count: usize) -> Result<CheckpointMeta> {
+        self.create_with_id(Uuid::new_v4().to_string(), label, change_count)
+    }
+
+    pub fn create_with_id(
+        &mut self,
+        id: String,
+        label: Option<&str>,
+        change_count: usize,
+    ) -> Result<CheckpointMeta> {
+        self.create_with_id_protected(id, label, change_count, None)
+    }
+
+    pub fn create_with_id_protected(
+        &mut self,
+        id: String,
+        label: Option<&str>,
+        change_count: usize,
+        protected: Option<&str>,
+    ) -> Result<CheckpointMeta> {
         let meta = CheckpointMeta {
-            id: Uuid::new_v4().to_string(),
+            id,
             label: label.map(str::to_string),
             created_at_ms: crate::session::now_ms(),
             change_count,
@@ -56,7 +77,7 @@ impl CheckpointStore {
         };
         self.manifest.checkpoints.push(meta.clone());
         self.manifest.head = Some(meta.id.clone());
-        self.prune();
+        self.prune(protected);
         self.persist()?;
         Ok(meta)
     }
@@ -80,6 +101,21 @@ impl CheckpointStore {
             .ok_or_else(|| Error::CheckpointNotFound(id.to_string()))
     }
 
+    pub fn remove(&mut self, id: &str) -> Result<bool> {
+        let before = self.manifest.checkpoints.len();
+        self.manifest
+            .checkpoints
+            .retain(|checkpoint| checkpoint.id != id);
+        if self.manifest.head.as_deref() == Some(id) {
+            self.manifest.head = self.manifest.checkpoints.last().map(|c| c.id.clone());
+        }
+        let removed = self.manifest.checkpoints.len() != before;
+        if removed {
+            self.persist()?;
+        }
+        Ok(removed)
+    }
+
     pub fn list(&self) -> Vec<&CheckpointMeta> {
         self.manifest.checkpoints.iter().collect()
     }
@@ -88,15 +124,26 @@ impl CheckpointStore {
         self.manifest.head.as_deref()
     }
 
-    fn prune(&mut self) {
+    pub fn take_pruned(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pruned)
+    }
+
+    fn prune(&mut self, protected: Option<&str>) {
         while self.manifest.checkpoints.len() > self.cap {
             let idx = self
                 .manifest
                 .checkpoints
                 .iter()
-                .position(|c| !c.committed)
+                .position(|c| !c.committed && Some(c.id.as_str()) != protected)
+                .or_else(|| {
+                    self.manifest
+                        .checkpoints
+                        .iter()
+                        .position(|c| Some(c.id.as_str()) != protected)
+                })
                 .unwrap_or(0);
             let removed = self.manifest.checkpoints.remove(idx);
+            self.pruned.push(removed.id.clone());
             if self.manifest.head.as_deref() == Some(removed.id.as_str()) {
                 self.manifest.head = self.manifest.checkpoints.last().map(|c| c.id.clone());
             }

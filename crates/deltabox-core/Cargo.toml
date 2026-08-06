@@ -16,6 +16,7 @@ toml.workspace = true
 similar.workspace = true
 walkdir = "2"
 base64 = "0.22"
+libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

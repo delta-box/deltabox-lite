@@ -26,22 +26,12 @@ pub struct Policy {
     pub limits: LimitsPolicy,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct FilesystemPolicy {
     pub read: Vec<PathBuf>,
     pub write: Vec<PathBuf>,
     pub deny: Vec<String>,
-}
-
-impl Default for FilesystemPolicy {
-    fn default() -> Self {
-        Self {
-            read: Vec::new(),
-            write: Vec::new(),
-            deny: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,7 +97,9 @@ impl Policy {
                 mode: NetworkMode::AllowAudit,
             },
             limits: LimitsPolicy {
-                max_memory_bytes: Some(512 * 1024 * 1024),
+                // sandlock's memory limiter is opt-in because it is not
+                // compatible with V8's virtual-memory reservation strategy.
+                max_memory_bytes: None,
                 max_processes: Some(32),
                 max_open_files: Some(1024),
                 max_cpu_percent: None,

@@ -539,6 +539,7 @@ async fn serve_loop(
                         fail_all(&mut pending, "session interrupted");
                         let result: crate::error::Result<usize> = (|| {
                             let copied = copy_tree(&current_upper, &spec.project)?;
+                            maybe_test_crash("materialize_after_copy");
                             let moved = move_paths_to_dir(
                                 &spec.project,
                                 &deleted,
@@ -641,6 +642,12 @@ async fn serve_loop(
     Ok(())
 }
 
+fn maybe_test_crash(point: &str) {
+    if cfg!(debug_assertions) && std::env::var("DELTABOX_TEST_CRASH_AT").as_deref() == Ok(point) {
+        std::process::abort();
+    }
+}
+
 fn handle_event(
     event: WorkerEvent,
     pending: &mut HashMap<u64, oneshot::Sender<ChanResult<serde_json::Value>>>,
@@ -689,8 +696,11 @@ fn build_sandbox(spec: &SessionSpec, worker_bin: &Path) -> Result<Sandbox> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     spec.project.hash(&mut hasher);
     let sandbox_name = format!("deltabox-{:016x}", hasher.finish());
-    let mut builder = Sandbox::builder();
-    builder = builder
+    let sandbox_home = spec.store_dir.join("home");
+    let sandbox_tmp = spec.store_dir.join("tmp");
+    std::fs::create_dir_all(&sandbox_home)?;
+    std::fs::create_dir_all(&sandbox_tmp)?;
+    let mut builder = Sandbox::builder()
         .name(sandbox_name)
         .workdir(&spec.project)
         .fs_storage(spec.store_dir.join("cow"))
@@ -701,10 +711,18 @@ fn build_sandbox(spec: &SessionSpec, worker_bin: &Path) -> Result<Sandbox> {
         .fs_write(&spec.project)
         .fs_read("/proc")
         .fs_read("/dev")
+        .fs_write("/dev/null")
         .fs_read("/tmp")
         .fs_read_if_exists("/lib64")
         .fs_read_if_exists("/usr/local")
         .net_allow("*");
+    if !sandbox_home.starts_with(&spec.project) {
+        builder = builder
+            .fs_read(&sandbox_home)
+            .fs_write(&sandbox_home)
+            .fs_read(&sandbox_tmp)
+            .fs_write(&sandbox_tmp);
+    }
     if let Some(parent) = worker_bin.parent() {
         builder = builder.fs_read(parent);
     }
@@ -826,11 +844,13 @@ async fn spawn_worker<'a>(
     tokio_mpsc::Receiver<Option<WorkerEvent>>,
 )> {
     let before = list_branch_dirs(fs_storage)?;
-    let argv = vec![
+    let argv = [
         worker_bin.to_string_lossy().into_owned(),
         "worker".to_string(),
         "--root".to_string(),
         spec.project.to_string_lossy().into_owned(),
+        "--runtime".to_string(),
+        spec.store_dir.to_string_lossy().into_owned(),
     ];
     let argv_refs: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
     let mut process = sandbox

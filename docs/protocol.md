@@ -1,7 +1,7 @@
 # deltabox-lite JSON-RPC protocol (v0.1)
 
 The core exposes a line-delimited JSON-RPC 2.0-style protocol over stdio
-(`deltabox serve`) or a Unix socket. Each request is one JSON object per line;
+(`deltabox serve`). Each request is one JSON object per line;
 each response is one JSON object per line.
 
 ## Request
@@ -29,6 +29,12 @@ each response is one JSON object per line.
 | `diff.list` | `{session_id, from?, to?}` | `DiffResult` |
 | `changes.commit` | `{session_id, checkpoint?}` | `CommitResult` |
 | `changes.abort` | `{session_id, checkpoint?}` | `AbortResult` |
+| `review.begin` | `{session_id, kind, label?}` | `ActiveReview` |
+| `review.status` | `{session_id}` | `ActiveReview \| null` |
+| `review.diff` | `{session_id}` | `DiffResult` |
+| `review.commit` | `{session_id}` | `CommitResult` |
+| `review.abort` | `{session_id}` | `AbortResult` |
+| `review.skip` | `{session_id}` | `ActiveReview` |
 
 `SessionInfo` = `{session_id, project, started_at_ms, status, checkpoint_count,
 pending_changes}`.
@@ -44,3 +50,6 @@ the command that produced them.
 added_lines, removed_lines, text_diff?}`.
 
 This is the stable contract for adapters (`pi-deltabox`, MCP server, wrappers).
+The same operations are available as independent CLI commands; `serve` is an
+optional transport over the same durable state and may be restarted between
+requests.

@@ -1,19 +1,19 @@
 use crate::backend::SandboxBackend;
+use crate::durable::DurableSessionManager;
 use crate::error::Result as CoreResult;
 use crate::protocol::{Method, ProtocolError, Request, Response};
-use crate::session::SessionManager;
 use serde_json::Value;
 use std::path::Path;
 
 /// Synchronous JSON-RPC dispatcher used by `deltabox serve` and tests.
 pub struct Server {
-    manager: SessionManager,
+    manager: DurableSessionManager,
 }
 
 impl Server {
-    pub fn new(project: &Path, backend: Box<dyn SandboxBackend>) -> CoreResult<Self> {
+    pub fn new(project: &Path, _backend: Box<dyn SandboxBackend>) -> CoreResult<Self> {
         Ok(Self {
-            manager: SessionManager::new(project, backend)?,
+            manager: DurableSessionManager::new(project, None)?,
         })
     }
 
@@ -58,22 +58,50 @@ impl Server {
             Method::DiffList(p) => serde_json::to_value(self.manager.diff(p)?)?,
             Method::ChangesCommit(p) => serde_json::to_value(self.manager.commit(p)?)?,
             Method::ChangesAbort(p) => serde_json::to_value(self.manager.abort(p)?)?,
+            Method::ReviewBegin(p) => serde_json::to_value(self.manager.begin_review(p)?)?,
+            Method::ReviewStatus(p) => {
+                serde_json::to_value(self.manager.review_status(&p.session_id)?)?
+            }
+            Method::ReviewDiff(p) => {
+                serde_json::to_value(self.manager.review_diff(&p.session_id)?)?
+            }
+            Method::ReviewCommit(p) => {
+                serde_json::to_value(self.manager.review_commit(&p.session_id)?)?
+            }
+            Method::ReviewAbort(p) => {
+                serde_json::to_value(self.manager.review_abort(&p.session_id)?)?
+            }
+            Method::ReviewSkip(p) => {
+                serde_json::to_value(self.manager.review_skip(&p.session_id)?)?
+            }
         };
         Ok(value)
     }
 }
 
 #[cfg(test)]
-#[cfg(not(target_os = "linux"))]
 mod tests {
     use super::*;
-    use crate::backend::stub::StubBackend;
-    use crate::protocol::{Request, SessionStartParams, SessionStatusParams, SessionStopParams};
+    use crate::backend::DefaultBackend;
+    use crate::protocol::{
+        FsWriteParams, Request, ReviewBeginParams, ReviewKind, ReviewStatusParams,
+        SessionStartParams, SessionStatusParams, SessionStopParams,
+    };
+
+    #[cfg(target_os = "linux")]
+    fn default_backend() -> DefaultBackend {
+        DefaultBackend::default()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn default_backend() -> DefaultBackend {
+        DefaultBackend
+    }
 
     #[test]
     fn server_session_lifecycle_over_protocol() {
         let dir = tempfile::tempdir().unwrap();
-        let mut server = Server::new(dir.path(), Box::new(StubBackend::default())).unwrap();
+        let mut server = Server::new(dir.path(), Box::new(default_backend())).unwrap();
 
         let start = Request {
             id: 1,
@@ -105,5 +133,79 @@ mod tests {
             method: Method::SessionStop(SessionStopParams { session_id }),
         });
         assert!(stop.error.is_none());
+    }
+
+    #[test]
+    fn server_restart_reopens_durable_session() {
+        use base64::Engine;
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = Server::new(dir.path(), Box::new(default_backend())).unwrap();
+        let start = first.handle(Request {
+            id: 1,
+            method: Method::SessionStart(SessionStartParams {
+                project: dir.path().to_path_buf(),
+                policy: None,
+            }),
+        });
+        let sid = start.result.unwrap()["session_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let write = first.handle(Request {
+            id: 2,
+            method: Method::FsWrite(FsWriteParams {
+                session_id: sid.clone(),
+                path: dir.path().join("pending.txt"),
+                content_base64: base64::engine::general_purpose::STANDARD.encode("pending"),
+            }),
+        });
+        assert!(write.error.is_none(), "write failed: {:?}", write.error);
+        drop(first);
+
+        let mut reopened = Server::new(dir.path(), Box::new(default_backend())).unwrap();
+        let status = reopened.handle(Request {
+            id: 3,
+            method: Method::SessionStatus(SessionStatusParams { session_id: sid }),
+        });
+        assert!(status.error.is_none());
+        assert_eq!(status.result.unwrap()["pending_changes"], 1);
+        assert!(!dir.path().join("pending.txt").exists());
+    }
+
+    #[test]
+    fn server_restart_preserves_active_review() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = Server::new(dir.path(), Box::new(default_backend())).unwrap();
+        let start = first.handle(Request {
+            id: 1,
+            method: Method::SessionStart(SessionStartParams {
+                project: dir.path().to_path_buf(),
+                policy: None,
+            }),
+        });
+        let sid = start.result.unwrap()["session_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let begin = first.handle(Request {
+            id: 2,
+            method: Method::ReviewBegin(ReviewBeginParams {
+                session_id: sid.clone(),
+                kind: ReviewKind::Task,
+                label: Some("turn".into()),
+            }),
+        });
+        let checkpoint = begin.result.unwrap()["checkpoint_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        drop(first);
+
+        let mut reopened = Server::new(dir.path(), Box::new(default_backend())).unwrap();
+        let status = reopened.handle(Request {
+            id: 3,
+            method: Method::ReviewStatus(ReviewStatusParams { session_id: sid }),
+        });
+        assert_eq!(status.result.unwrap()["checkpoint_id"], checkpoint);
     }
 }
