@@ -7,7 +7,7 @@ use crate::worker::ScanEntry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::copy;
+use std::io::{copy, Write};
 use std::path::Path;
 
 pub const BASE_SCAN_FILE: &str = "base_scan.json";
@@ -32,8 +32,13 @@ pub fn save_snapshot(path: &Path, entries: &[ScanEntry]) -> Result<()> {
         taken_at_ms: now_ms(),
     };
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec(&snapshot)?)?;
+    let mut file = File::create(&tmp)?;
+    file.write_all(&serde_json::to_vec(&snapshot)?)?;
+    file.sync_all()?;
     std::fs::rename(&tmp, path)?;
+    if let Some(parent) = path.parent() {
+        File::open(parent)?.sync_all()?;
+    }
     Ok(())
 }
 

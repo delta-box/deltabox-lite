@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Default secret-ish patterns hard-denied for agent workloads.
@@ -34,16 +34,18 @@ pub struct FilesystemPolicy {
     pub deny: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Serialize)]
 pub struct NetworkPolicy {
     pub mode: NetworkMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
 }
 
 impl Default for NetworkPolicy {
     fn default() -> Self {
         Self {
             mode: NetworkMode::AllowAudit,
+            allow: Vec::new(),
         }
     }
 }
@@ -51,11 +53,53 @@ impl Default for NetworkPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkMode {
-    /// Default v0.1 posture: allow + audit; tightening to allowlists later.
+    /// Permit all network operations. The sandbox backend remains the audit
+    /// boundary, but this mode does not restrict destinations.
     #[default]
     AllowAudit,
     DenyAll,
-    Allowlist(Vec<String>),
+    Allowlist,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum NetworkModeWire {
+    Name(NetworkMode),
+    Legacy { allowlist: Vec<String> },
+}
+
+impl Default for NetworkModeWire {
+    fn default() -> Self {
+        Self::Name(NetworkMode::AllowAudit)
+    }
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct NetworkPolicyWire {
+    mode: NetworkModeWire,
+    allow: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for NetworkPolicy {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = NetworkPolicyWire::deserialize(deserializer)?;
+        let (mode, allow) = match wire.mode {
+            NetworkModeWire::Name(mode) => (mode, wire.allow),
+            NetworkModeWire::Legacy { allowlist } => {
+                if !wire.allow.is_empty() {
+                    return Err(serde::de::Error::custom(
+                        "network allowlist is specified in both mode and allow",
+                    ));
+                }
+                (NetworkMode::Allowlist, allowlist)
+            }
+        };
+        Ok(Self { mode, allow })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -65,6 +109,11 @@ pub struct LimitsPolicy {
     pub max_processes: Option<u32>,
     pub max_open_files: Option<u32>,
     pub max_cpu_percent: Option<u8>,
+    /// Maximum payload accepted by one `fs.write` operation.
+    pub max_write_bytes: Option<u64>,
+    /// Maximum aggregate size of added and modified regular files relative to
+    /// the accepted baseline.
+    pub max_storage_bytes: Option<u64>,
 }
 
 impl Policy {
@@ -72,6 +121,7 @@ impl Policy {
         let raw = std::fs::read_to_string(path)?;
         let policy: Policy =
             toml::from_str(&raw).map_err(|e| Error::InvalidPolicy(e.to_string()))?;
+        policy.validate()?;
         Ok(policy)
     }
 
@@ -95,6 +145,7 @@ impl Policy {
             },
             network: NetworkPolicy {
                 mode: NetworkMode::AllowAudit,
+                allow: Vec::new(),
             },
             limits: LimitsPolicy {
                 // sandlock's memory limiter is opt-in because it is not
@@ -103,8 +154,38 @@ impl Policy {
                 max_processes: Some(32),
                 max_open_files: Some(1024),
                 max_cpu_percent: None,
+                max_write_bytes: Some(16 * 1024 * 1024),
+                max_storage_bytes: Some(1024 * 1024 * 1024),
             },
         }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        match self.network.mode {
+            NetworkMode::Allowlist => {
+                for target in &self.network.allow {
+                    if target.trim().is_empty() || target.chars().any(char::is_control) {
+                        return Err(Error::InvalidPolicy(
+                            "network allowlist entries must be non-empty and contain no control characters"
+                                .into(),
+                        ));
+                    }
+                    if target == "*" {
+                        return Err(Error::InvalidPolicy(
+                            "network allowlist must not contain '*'; use allow_audit instead"
+                                .into(),
+                        ));
+                    }
+                }
+            }
+            NetworkMode::AllowAudit | NetworkMode::DenyAll if !self.network.allow.is_empty() => {
+                return Err(Error::InvalidPolicy(
+                    "network.allow is only valid when mode = \"allowlist\"".into(),
+                ));
+            }
+            NetworkMode::AllowAudit | NetworkMode::DenyAll => {}
+        }
+        Ok(())
     }
 
     /// True when `path` matches any deny pattern.
@@ -224,5 +305,44 @@ max_processes = 4
         assert_eq!(policy.network.mode, NetworkMode::DenyAll);
         assert_eq!(policy.limits.max_processes, Some(4));
         assert!(policy.path_is_denied(Path::new("/x/.env")));
+    }
+
+    #[test]
+    fn ergonomic_and_legacy_network_allowlists_load() {
+        let ergonomic: Policy = toml::from_str(
+            r#"
+[network]
+mode = "allowlist"
+allow = ["registry.npmjs.org:443", "127.0.0.1:3000"]
+"#,
+        )
+        .unwrap();
+        ergonomic.validate().unwrap();
+        assert_eq!(ergonomic.network.mode, NetworkMode::Allowlist);
+        assert_eq!(ergonomic.network.allow.len(), 2);
+
+        let legacy: Policy = toml::from_str(
+            r#"
+[network]
+mode = { allowlist = ["example.com:443"] }
+"#,
+        )
+        .unwrap();
+        legacy.validate().unwrap();
+        assert_eq!(legacy.network.mode, NetworkMode::Allowlist);
+        assert_eq!(legacy.network.allow, ["example.com:443"]);
+    }
+
+    #[test]
+    fn allow_entries_require_allowlist_mode() {
+        let policy: Policy = toml::from_str(
+            r#"
+[network]
+mode = "deny_all"
+allow = ["example.com:443"]
+"#,
+        )
+        .unwrap();
+        assert!(policy.validate().is_err());
     }
 }

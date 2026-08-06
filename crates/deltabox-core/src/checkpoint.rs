@@ -1,5 +1,7 @@
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -152,8 +154,13 @@ impl CheckpointStore {
 
     fn persist(&self) -> Result<()> {
         let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(&self.manifest)?)?;
+        let mut file = File::create(&tmp)?;
+        file.write_all(&serde_json::to_vec(&self.manifest)?)?;
+        file.sync_all()?;
         std::fs::rename(&tmp, &self.path)?;
+        if let Some(parent) = self.path.parent() {
+            File::open(parent)?.sync_all()?;
+        }
         Ok(())
     }
 }

@@ -38,6 +38,7 @@ const ACCEPTED_SCAN_FILE: &str = "accepted_scan.json";
 const WORKING_SCAN_FILE: &str = "working_scan.json";
 const TRANSACTION_FILE: &str = "transaction.json";
 const TRANSACTIONS_DIR: &str = "transactions";
+const MAX_FS_READ_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -65,6 +66,14 @@ struct TransactionMarker {
     phase: TransactionPhase,
     #[serde(default)]
     paths: Vec<TransactionPath>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    boundary: Option<TransactionBoundary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TransactionBoundary {
+    kind: JournalKind,
+    data: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,7 +122,7 @@ impl DurableSessionManager {
         copy_project_tree(&store.join(ACCEPTED_DIR), &store.join(WORKING_DIR))?;
         self.refresh_indexes(&store)?;
         CheckpointStore::open(&store, DEFAULT_CHECKPOINT_CAP)?;
-        self.append(
+        self.append_sync(
             &session_id,
             JournalKind::SessionStart,
             Some(serde_json::json!({"engine": "durable-service-free"})),
@@ -163,7 +172,7 @@ impl DurableSessionManager {
         let mut registry = SessionRegistry::load(&self.root)?;
         registry.upsert(meta);
         registry.save(&self.root)?;
-        self.append(session_id, JournalKind::SessionStop, None)?;
+        self.append_sync(session_id, JournalKind::SessionStop, None)?;
         drop(lock);
         self.status(session_id)
     }
@@ -199,10 +208,21 @@ impl DurableSessionManager {
         if policy.path_is_denied(&rel) {
             return Err(Error::Backend("path denied by policy".into()));
         }
-        let bytes = match std::fs::read(self.working_dir(session_id).join(rel)) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => return Err(e.into()),
+        let working = self.working_dir(session_id);
+        let bytes = match resolve_read_path(&working, &rel, &policy)? {
+            Some(path) => {
+                let meta = std::fs::metadata(&path)?;
+                if !meta.is_file() {
+                    return Err(Error::Backend(
+                        "fs.read target is not a regular file".into(),
+                    ));
+                }
+                if meta.len() > MAX_FS_READ_BYTES {
+                    return Err(Error::Backend("fs.read file exceeds 16 MiB limit".into()));
+                }
+                std::fs::read(path)?
+            }
+            None => Vec::new(),
         };
         Ok(FsReadResult {
             content_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
@@ -217,6 +237,14 @@ impl DurableSessionManager {
         if policy.path_is_denied(&rel) {
             return Err(Error::Backend("path denied by policy".into()));
         }
+        if policy
+            .limits
+            .max_write_bytes
+            .is_some_and(|limit| content.len() as u64 > limit)
+        {
+            return Err(Error::Backend("fs.write exceeds max_write_bytes".into()));
+        }
+        let accepted_scan = self.accepted_scan(&self.store_dir(session_id))?;
         self.update_working_transaction(session_id, |candidate| {
             let target = candidate.join(&rel);
             if let Some(parent) = target.parent() {
@@ -224,6 +252,8 @@ impl DurableSessionManager {
             }
             remove_path(&target)?;
             std::fs::write(&target, content)?;
+            let candidate_scan = scan_tree(candidate)?;
+            validate_pending_scan(&policy, &accepted_scan, &candidate_scan)?;
             Ok(())
         })?;
         self.append(
@@ -276,7 +306,8 @@ impl DurableSessionManager {
         for id in manifest.take_pruned() {
             remove_path(&store.join("checkpoints").join(id))?;
         }
-        self.append(
+        sync_dir(&store.join("checkpoints"))?;
+        self.append_sync(
             &params.session_id,
             JournalKind::Checkpoint,
             Some(serde_json::to_value(&meta).unwrap_or_default()),
@@ -311,7 +342,9 @@ impl DurableSessionManager {
             .unwrap_or_else(|| store.join(WORKING_DIR));
         let from_scan = self.scan_for_tree(&store, &from)?;
         let to_scan = self.scan_for_tree(&store, &to)?;
-        let changes = describe_tree_diff_with_scans(&from, &to, &from_scan, &to_scan)?;
+        let policy = self.policy(&params.session_id)?;
+        let changes =
+            describe_tree_diff_with_scans(&from, &to, &from_scan, &to_scan, Some(&policy))?;
         Ok(DiffResult {
             from: params.from,
             to: params.to,
@@ -330,6 +363,10 @@ impl DurableSessionManager {
         let accepted = store.join(ACCEPTED_DIR);
         let working = store.join(WORKING_DIR);
         let expected = self.accepted_scan(&store)?;
+        let working_scan = self.working_scan(&store)?;
+        let policy = self.policy(&params.session_id)?;
+        validate_pending_scan(&policy, &expected, &working_scan)?;
+        validate_tree_symlinks(&working, &policy)?;
         let actual = scan_tree(&self.project)?;
         if !diff_snapshots(&expected, &actual).is_empty() {
             return Err(Error::ProjectConflict(
@@ -350,6 +387,7 @@ impl DurableSessionManager {
                 kind: TransactionKind::Commit,
                 phase: TransactionPhase::Prepared,
                 paths: Vec::new(),
+                boundary: None,
             },
         )?;
         maybe_crash("commit_prepared");
@@ -409,17 +447,18 @@ impl DurableSessionManager {
             .transpose()?
             .unwrap_or_else(|| store.join(ACCEPTED_DIR));
         let restored = describe_tree_diff(&source, &store.join(WORKING_DIR))?.len();
-        self.update_working_transaction(&params.session_id, |candidate| {
-            copy_project_tree(&source, candidate)?;
-            Ok(())
-        })?;
         let id = params.checkpoint.unwrap_or_else(|| "accepted".into());
-        self.append_sync(
+        self.update_working_transaction_with_boundary(
             &params.session_id,
-            JournalKind::Abort,
-            Some(serde_json::json!({"checkpoint_id": id, "restored": restored})),
+            |candidate| {
+                copy_project_tree(&source, candidate)?;
+                Ok(())
+            },
+            Some(TransactionBoundary {
+                kind: JournalKind::Abort,
+                data: serde_json::json!({"checkpoint_id": id.clone(), "restored": restored}),
+            }),
         )?;
-        self.save_active_review(&params.session_id, None)?;
         Ok(AbortResult {
             checkpoint_id: id,
             restored,
@@ -442,7 +481,7 @@ impl DurableSessionManager {
             started_at_ms: now_ms(),
         };
         self.save_active_review(&params.session_id, Some(&active))?;
-        self.append(
+        self.append_sync(
             &params.session_id,
             JournalKind::ReviewBegin,
             Some(serde_json::to_value(&active).unwrap_or_default()),
@@ -490,7 +529,7 @@ impl DurableSessionManager {
     pub fn review_skip(&self, session_id: &str) -> Result<ActiveReview> {
         let _lock = self.lock_running(session_id)?;
         let active = self.require_active_review(session_id)?;
-        self.append(
+        self.append_sync(
             session_id,
             JournalKind::ReviewSkip,
             Some(serde_json::to_value(&active).unwrap_or_default()),
@@ -505,11 +544,13 @@ impl DurableSessionManager {
     ) -> Result<T> {
         let store = self.store_dir(session_id);
         let before = self.working_scan(&store)?;
+        let accepted = self.accepted_scan(&store)?;
         let working = store.join(WORKING_DIR);
+        let policy = self.policy(session_id)?;
         let spec = SessionSpec {
             project: working.clone(),
             store_dir: store.join("runtime"),
-            policy: self.policy(session_id)?,
+            policy: policy.clone(),
         };
         let mut backend = make_backend(self.worker_bin.clone());
         backend.start_session(session_id, &spec)?;
@@ -527,6 +568,16 @@ impl DurableSessionManager {
                 let upper = backend.current_upper(session_id)?;
                 let mut changed_paths: HashSet<String> = upper_paths(&upper)?.into_iter().collect();
                 changed_paths.extend(deleted.iter().cloned());
+                if let Err(error) = validate_materialized_result(
+                    &policy,
+                    &accepted,
+                    &current,
+                    &upper,
+                    &changed_paths,
+                ) {
+                    let _ = backend.stop_session(session_id);
+                    return Err(error);
+                }
                 if changed_paths.is_empty() {
                     backend.stop_session(session_id)?;
                     return Ok(value);
@@ -558,6 +609,7 @@ impl DurableSessionManager {
                         kind: TransactionKind::Working,
                         phase: TransactionPhase::Prepared,
                         paths,
+                        boundary: None,
                     },
                 )?;
                 maybe_crash("materialize_prepared");
@@ -579,12 +631,12 @@ impl DurableSessionManager {
     }
 
     fn lock_running(&self, session_id: &str) -> Result<SessionLock> {
+        let lock = SessionLock::acquire(&self.store_dir(session_id))?;
+        self.recover(session_id)?;
         let meta = self.require_meta(session_id)?;
         if meta.status != SessionStatus::Running {
             return Err(Error::SessionStopped(session_id.into()));
         }
-        let lock = SessionLock::acquire(&self.store_dir(session_id))?;
-        self.recover(session_id)?;
         Ok(lock)
     }
 
@@ -625,8 +677,11 @@ impl DurableSessionManager {
         match active {
             Some(active) => {
                 let tmp = store.join(format!("{ACTIVE_REVIEW_FILE}.tmp"));
-                std::fs::write(&tmp, serde_json::to_vec_pretty(active)?)?;
+                let mut file = File::create(&tmp)?;
+                file.write_all(&serde_json::to_vec_pretty(active)?)?;
+                file.sync_all()?;
                 std::fs::rename(tmp, path)?;
+                sync_dir(&store)?;
             }
             None => match std::fs::remove_file(path) {
                 Ok(()) => {}
@@ -634,6 +689,7 @@ impl DurableSessionManager {
                 Err(e) => return Err(e.into()),
             },
         }
+        sync_dir(&store)?;
         Ok(())
     }
 
@@ -641,6 +697,15 @@ impl DurableSessionManager {
         &self,
         session_id: &str,
         update: impl FnOnce(&Path) -> Result<T>,
+    ) -> Result<T> {
+        self.update_working_transaction_with_boundary(session_id, update, None)
+    }
+
+    fn update_working_transaction_with_boundary<T>(
+        &self,
+        session_id: &str,
+        update: impl FnOnce(&Path) -> Result<T>,
+        boundary: Option<TransactionBoundary>,
     ) -> Result<T> {
         let store = self.store_dir(session_id);
         let transaction_id = Uuid::new_v4().to_string();
@@ -655,15 +720,28 @@ impl DurableSessionManager {
                 kind: TransactionKind::Working,
                 phase: TransactionPhase::Building,
                 paths: Vec::new(),
+                boundary,
             },
         )?;
-        let value = update(&candidate)?;
+        let value = match update(&candidate) {
+            Ok(value) => value,
+            Err(error) => {
+                self.finish_transaction(&store, &txn)?;
+                return Err(error);
+            }
+        };
         let scan = scan_tree(&candidate)?;
-        self.swap_working_candidate(&store, &txn, &scan)?;
+        self.swap_working_candidate(session_id, &store, &txn, &scan)?;
         Ok(value)
     }
 
-    fn swap_working_candidate(&self, store: &Path, txn: &Path, scan: &[ScanEntry]) -> Result<()> {
+    fn swap_working_candidate(
+        &self,
+        session_id: &str,
+        store: &Path,
+        txn: &Path,
+        scan: &[ScanEntry],
+    ) -> Result<()> {
         let transaction_id = txn
             .file_name()
             .ok_or_else(|| Error::Backend("transaction has no id".into()))?
@@ -696,6 +774,24 @@ impl DurableSessionManager {
         )?;
         maybe_crash("working_swapped");
         save_snapshot(&store.join(WORKING_SCAN_FILE), scan)?;
+        let marker: TransactionMarker =
+            serde_json::from_slice(&std::fs::read(store.join(TRANSACTION_FILE))?)?;
+        if let Some(boundary) = marker.boundary {
+            self.append_sync(
+                session_id,
+                boundary.kind.clone(),
+                Some(transaction_data(boundary.data, &transaction_id)),
+            )?;
+            if boundary.kind == JournalKind::Abort {
+                clear_active_review(store)?;
+            }
+            self.set_transaction_phase(
+                store,
+                &transaction_id,
+                TransactionKind::Working,
+                TransactionPhase::Journaled,
+            )?;
+        }
         self.finish_transaction(store, txn)
     }
 
@@ -730,7 +826,11 @@ impl DurableSessionManager {
     fn finish_transaction(&self, store: &Path, txn: &Path) -> Result<()> {
         remove_path(&store.join(TRANSACTION_FILE))?;
         sync_dir(store)?;
-        remove_path(txn)
+        remove_path(txn)?;
+        if let Some(parent) = txn.parent() {
+            sync_dir(parent)?;
+        }
+        Ok(())
     }
 
     fn recover(&self, session_id: &str) -> Result<()> {
@@ -742,7 +842,11 @@ impl DurableSessionManager {
             let txn = store.join(TRANSACTIONS_DIR).join(&marker.id);
             match marker.kind {
                 TransactionKind::Working => {
-                    if marker.phase != TransactionPhase::Swapped && !marker.paths.is_empty() {
+                    let published = matches!(
+                        marker.phase,
+                        TransactionPhase::Swapped | TransactionPhase::Journaled
+                    );
+                    if !published && !marker.paths.is_empty() {
                         for path in &marker.paths {
                             let target = store.join(WORKING_DIR).join(&path.path);
                             remove_path(&target)?;
@@ -755,12 +859,23 @@ impl DurableSessionManager {
                                 )?;
                             }
                         }
-                    } else if marker.phase != TransactionPhase::Swapped {
+                    } else if !published {
                         let working = store.join(WORKING_DIR);
                         let backup = txn.join("working_backup");
                         if backup.exists() {
                             remove_path(&working)?;
                             std::fs::rename(&backup, &working)?;
+                        }
+                    } else if let Some(boundary) = &marker.boundary {
+                        if !self.journal_has_transaction(session_id, &marker.id)? {
+                            self.append_sync(
+                                session_id,
+                                boundary.kind.clone(),
+                                Some(transaction_data(boundary.data.clone(), &marker.id)),
+                            )?;
+                        }
+                        if boundary.kind == JournalKind::Abort {
+                            clear_active_review(&store)?;
                         }
                     }
                 }
@@ -941,9 +1056,33 @@ impl DurableSessionManager {
 fn save_session_meta(store: &Path, meta: &SessionMeta) -> Result<()> {
     let path = store.join(SESSION_META_FILE);
     let tmp = store.join(format!("{SESSION_META_FILE}.tmp"));
-    std::fs::write(&tmp, serde_json::to_vec_pretty(meta)?)?;
+    let mut file = File::create(&tmp)?;
+    file.write_all(&serde_json::to_vec_pretty(meta)?)?;
+    file.sync_all()?;
     std::fs::rename(tmp, path)?;
-    Ok(())
+    sync_dir(store)
+}
+
+fn transaction_data(mut data: serde_json::Value, transaction_id: &str) -> serde_json::Value {
+    match &mut data {
+        serde_json::Value::Object(object) => {
+            object.insert(
+                "transaction_id".into(),
+                serde_json::Value::String(transaction_id.into()),
+            );
+            data
+        }
+        value => serde_json::json!({
+            "value": value.take(),
+            "transaction_id": transaction_id,
+        }),
+    }
+}
+
+fn clear_active_review(store: &Path) -> Result<()> {
+    remove_path(&store.join(ACTIVE_REVIEW_FILE))?;
+    remove_path(&store.join(format!("{ACTIVE_REVIEW_FILE}.tmp")))?;
+    sync_dir(store)
 }
 
 #[cfg(target_os = "linux")]
@@ -973,6 +1112,7 @@ impl SessionLock {
                 Ok(mut file) => {
                     writeln!(file, "{pid}")?;
                     file.sync_all()?;
+                    sync_dir(store)?;
                     return Ok(Self { path, pid });
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -982,7 +1122,11 @@ impl SessionLock {
                     if owner.is_some_and(process_is_alive) {
                         return Err(Error::SessionBusy(store.display().to_string()));
                     }
-                    let _ = std::fs::remove_file(&path);
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => sync_dir(store)?,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error.into()),
+                    }
                 }
                 Err(e) => return Err(e.into()),
             }
@@ -997,18 +1141,24 @@ impl Drop for SessionLock {
             .ok()
             .and_then(|s| s.trim().parse::<u32>().ok())
             == Some(self.pid);
-        if owned {
-            let _ = std::fs::remove_file(&self.path);
+        if owned && std::fs::remove_file(&self.path).is_ok() {
+            if let Some(parent) = self.path.parent() {
+                let _ = sync_dir(parent);
+            }
         }
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn process_is_alive(pid: u32) -> bool {
-    Path::new("/proc").join(pid.to_string()).exists()
+    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if result == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(unix))]
 fn process_is_alive(_pid: u32) -> bool {
     false
 }
@@ -1201,8 +1351,169 @@ fn scan_tree(root: &Path) -> Result<Vec<ScanEntry>> {
     Ok(entries)
 }
 
+fn validate_pending_scan(
+    policy: &Policy,
+    accepted: &[ScanEntry],
+    working: &[ScanEntry],
+) -> Result<()> {
+    let diffs = diff_snapshots(accepted, working);
+    let mut storage_bytes = 0u64;
+    for diff in diffs {
+        if policy.path_is_denied(Path::new(&diff.path)) {
+            return Err(Error::Backend(format!(
+                "path denied by policy: {}",
+                diff.path
+            )));
+        }
+        if matches!(diff.kind, ChangeKind::Added | ChangeKind::Modified) {
+            storage_bytes = storage_bytes.saturating_add(diff.new_size.unwrap_or(0));
+        }
+    }
+    if policy
+        .limits
+        .max_storage_bytes
+        .is_some_and(|limit| storage_bytes > limit)
+    {
+        return Err(Error::Backend(format!(
+            "pending changes use {storage_bytes} bytes, exceeding max_storage_bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_materialized_result(
+    policy: &Policy,
+    accepted: &[ScanEntry],
+    current: &[ScanEntry],
+    upper: &Path,
+    changed_paths: &HashSet<String>,
+) -> Result<()> {
+    for path in changed_paths {
+        if policy.path_is_denied(Path::new(path)) {
+            return Err(Error::Backend(format!("path denied by policy: {path}")));
+        }
+    }
+    validate_pending_scan(policy, accepted, current)?;
+    validate_tree_symlinks(upper, policy)
+}
+
+fn validate_tree_symlinks(root: &Path, policy: &Policy) -> Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+    for entry in walkdir::WalkDir::new(root).min_depth(1).follow_links(false) {
+        let entry = entry.map_err(|e| Error::Io(std::io::Error::other(e)))?;
+        if !entry.file_type().is_symlink() {
+            continue;
+        }
+        let rel = entry
+            .path()
+            .strip_prefix(root)
+            .map_err(|_| Error::Backend("symlink path escaped tree".into()))?;
+        validate_symlink_target(rel, &std::fs::read_link(entry.path())?, policy)?;
+        if let Ok(canonical) = entry.path().canonicalize() {
+            let canonical_root = root.canonicalize()?;
+            if !canonical.starts_with(&canonical_root) {
+                return Err(Error::Backend(format!(
+                    "symlink escapes project: {}",
+                    rel.display()
+                )));
+            }
+            let target_rel = canonical
+                .strip_prefix(&canonical_root)
+                .map_err(|_| Error::Backend("symlink target escaped tree".into()))?;
+            if policy.path_is_denied(target_rel) {
+                return Err(Error::Backend(format!(
+                    "symlink targets a denied path: {}",
+                    rel.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_symlink_target(rel: &Path, target: &Path, policy: &Policy) -> Result<()> {
+    if target.is_absolute() {
+        return Err(Error::Backend(format!(
+            "absolute symlink target is not allowed: {}",
+            rel.display()
+        )));
+    }
+    let mut normalized = PathBuf::new();
+    let combined = rel.parent().unwrap_or_else(|| Path::new("")).join(target);
+    for component in combined.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(value) => normalized.push(value),
+            std::path::Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(Error::Backend(format!(
+                        "symlink escapes project: {}",
+                        rel.display()
+                    )));
+                }
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return Err(Error::Backend(format!(
+                    "symlink escapes project: {}",
+                    rel.display()
+                )));
+            }
+        }
+    }
+    if policy.path_is_denied(&normalized) {
+        return Err(Error::Backend(format!(
+            "symlink targets a denied path: {}",
+            rel.display()
+        )));
+    }
+    Ok(())
+}
+
+fn resolve_read_path(root: &Path, rel: &Path, policy: &Policy) -> Result<Option<PathBuf>> {
+    let candidate = root.join(rel);
+    match std::fs::symlink_metadata(&candidate) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
+    let canonical_root = root.canonicalize()?;
+    let canonical = candidate.canonicalize().map_err(|error| {
+        Error::Backend(format!("fs.read cannot resolve {}: {error}", rel.display()))
+    })?;
+    if !canonical.starts_with(&canonical_root) {
+        return Err(Error::Backend(format!(
+            "fs.read symlink escapes project: {}",
+            rel.display()
+        )));
+    }
+    let resolved_rel = canonical
+        .strip_prefix(&canonical_root)
+        .map_err(|_| Error::Backend("fs.read target escaped project".into()))?;
+    if policy.path_is_denied(resolved_rel) {
+        return Err(Error::Backend("fs.read target denied by policy".into()));
+    }
+    Ok(Some(canonical))
+}
+
+fn read_capped_file_within(
+    root: &Path,
+    rel: &Path,
+    policy: Option<&Policy>,
+) -> Result<Option<Vec<u8>>> {
+    let path = match policy {
+        Some(policy) => match resolve_read_path(root, rel, policy)? {
+            Some(path) => path,
+            None => return Ok(None),
+        },
+        None => root.join(rel),
+    };
+    read_capped_file(&path)
+}
+
 fn describe_tree_diff(from: &Path, to: &Path) -> Result<Vec<Change>> {
-    describe_tree_diff_with_scans(from, to, &scan_tree(from)?, &scan_tree(to)?)
+    describe_tree_diff_with_scans(from, to, &scan_tree(from)?, &scan_tree(to)?, None)
 }
 
 fn describe_tree_diff_with_scans(
@@ -1210,13 +1521,15 @@ fn describe_tree_diff_with_scans(
     to: &Path,
     from_scan: &[ScanEntry],
     to_scan: &[ScanEntry],
+    policy: Option<&Policy>,
 ) -> Result<Vec<Change>> {
     let diffs = diff_snapshots(from_scan, to_scan);
     diffs
         .into_iter()
+        .filter(|diff| !policy.is_some_and(|policy| policy.path_is_denied(Path::new(&diff.path))))
         .map(|diff| {
-            let old = read_capped_file(&from.join(&diff.path))?;
-            let new = read_capped_file(&to.join(&diff.path))?;
+            let old = read_capped_file_within(from, Path::new(&diff.path), policy)?;
+            let new = read_capped_file_within(to, Path::new(&diff.path), policy)?;
             Ok(crate::snapshot::describe(
                 &diff.path,
                 diff.kind,
@@ -1374,5 +1687,37 @@ mod tests {
         let manifest = CheckpointStore::open(&store, DEFAULT_CHECKPOINT_CAP).unwrap();
         assert!(manifest.get(&review.checkpoint_id).is_ok());
         manager.review_abort(&session.session_id).unwrap();
+    }
+
+    #[test]
+    fn live_process_lock_is_busy_and_stale_lock_recovers() {
+        let store = tempfile::tempdir().unwrap();
+        std::fs::write(
+            store.path().join(LOCK_FILE),
+            format!("{}\n", std::process::id()),
+        )
+        .unwrap();
+        assert!(matches!(
+            SessionLock::acquire(store.path()),
+            Err(Error::SessionBusy(_))
+        ));
+
+        std::fs::write(store.path().join(LOCK_FILE), "4294967294\n").unwrap();
+        let lock = SessionLock::acquire(store.path()).unwrap();
+        drop(lock);
+        assert!(!store.path().join(LOCK_FILE).exists());
+    }
+
+    #[test]
+    fn status_propagates_corrupt_scan_index() {
+        let project = tempfile::tempdir().unwrap();
+        let manager = DurableSessionManager::new(project.path(), None).unwrap();
+        let session = manager.start(None).unwrap();
+        let index = manager
+            .store_dir(&session.session_id)
+            .join(WORKING_SCAN_FILE);
+        std::fs::write(index, b"not json").unwrap();
+
+        assert!(manager.status(&session.session_id).is_err());
     }
 }

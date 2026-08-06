@@ -47,8 +47,11 @@ durable working view. Live processes, file descriptors, and shell state are not
 part of a durable session. Workloads that require persistent background
 processes must explicitly use a future `run` or optional `serve` mode.
 
-`serve` may optimize transport or sandbox startup, but it must use the same
-on-disk state and remain restartable. It is never the source of truth.
+`serve` may optimize transport or sandbox startup, but it uses the same on-disk
+state and remains restartable. It is never the source of truth. A failed worker
+returns an error for its request; the next request in the same `serve` process
+rebuilds a worker from the durable working view. Live child processes and file
+descriptors are not recoverable state.
 
 ## Concurrency and conflicts
 
@@ -65,13 +68,21 @@ transaction marker identifies every phase; reopening the session either
 restores the path backups or finalizes an applied update. Direct working-tree
 operations use a candidate-tree swap. Host commit keeps both a host backup and
 the pre-commit working tree until its journal record is durable, so a killed
-commit cannot leave a partially published project.
+commit cannot leave a partially published project. Abort records its journal
+boundary in the same candidate-swap marker; recovery either restores the old
+working view or completes the abort journal and closes its review scope.
 
 Accepted and working scan indexes are persisted and refreshed only at
 transaction boundaries. Checkpoint trees are prepared under a temporary name,
 atomically published, capped at 100 manifest entries, and removed from disk
 when pruned. Linux uses `FICLONE` where supported and falls back to ordinary
-copying on other filesystems.
+copying on other filesystems. Manifest, scan-index, registry, session, and
+review metadata updates use fsynced temporary files, atomic rename, and parent
+directory fsync. Boundary journal entries are fdatasynced.
+
+The default policy caps direct writes and aggregate pending storage. Denied
+paths and unsafe symlinks are validated before a command-local COW result is
+materialized, so policy failures cannot partially update the durable view.
 
 ## Linux backend limitation
 

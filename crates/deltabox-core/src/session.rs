@@ -15,6 +15,8 @@ use crate::snapshot::{
 use crate::worker::ScanEntry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -65,8 +67,11 @@ impl SessionRegistry {
     pub fn save(&self, root: &Path) -> Result<()> {
         let path = root.join(SESSION_REGISTRY_FILE);
         let tmp = root.join(format!("{SESSION_REGISTRY_FILE}.tmp"));
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        let mut file = File::create(&tmp)?;
+        file.write_all(&serde_json::to_vec_pretty(self)?)?;
+        file.sync_all()?;
         std::fs::rename(&tmp, &path)?;
+        File::open(root)?.sync_all()?;
         Ok(())
     }
 
@@ -197,15 +202,11 @@ impl SessionManager {
         let store_dir = self.store_dir(session_id);
         let manifest = CheckpointStore::open(&store_dir, DEFAULT_CHECKPOINT_CAP)?;
         let pending_changes = if meta.status == SessionStatus::Running {
-            match self.backend.scan(session_id) {
-                Ok(current) => {
-                    let base = load_snapshot(&store_dir.join(BASE_SCAN_FILE))?
-                        .map(|s| s.entries)
-                        .unwrap_or_default();
-                    diff_snapshots(&base, &current).len()
-                }
-                Err(_) => 0,
-            }
+            let current = self.backend.scan(session_id)?;
+            let base = load_snapshot(&store_dir.join(BASE_SCAN_FILE))?
+                .map(|s| s.entries)
+                .unwrap_or_default();
+            diff_snapshots(&base, &current).len()
         } else {
             0
         };
@@ -599,6 +600,7 @@ mod tests {
         pending: Arc<Mutex<usize>>,
         committed: Arc<Mutex<usize>>,
         aborted: Arc<Mutex<usize>>,
+        fail_scan: Arc<Mutex<bool>>,
     }
 
     impl TestBackend {
@@ -651,6 +653,9 @@ mod tests {
             Ok(())
         }
         fn scan(&mut self, _session_id: &str) -> Result<Vec<ScanEntry>> {
+            if *self.fail_scan.lock().unwrap() {
+                return Err(Error::Backend("injected scan failure".into()));
+            }
             Ok(self.fake_entries(*self.pending.lock().unwrap()))
         }
         fn current_upper(&mut self, _session_id: &str) -> Result<PathBuf> {
@@ -771,5 +776,18 @@ mod tests {
             SessionManager::new(dir.path(), Box::new(TestBackend::default())).unwrap();
         let status = reopened.status(&info.session_id).unwrap();
         assert_eq!(status.status, SessionStatus::Running);
+    }
+
+    #[test]
+    fn status_propagates_backend_scan_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = TestBackend::default();
+        let fail_scan = Arc::clone(&backend.fail_scan);
+        let mut manager = SessionManager::new(dir.path(), Box::new(backend)).unwrap();
+        let info = manager.start(None).unwrap();
+        *fail_scan.lock().unwrap() = true;
+
+        let error = manager.status(&info.session_id).unwrap_err();
+        assert!(error.to_string().contains("injected scan failure"));
     }
 }

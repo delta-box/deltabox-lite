@@ -45,7 +45,8 @@ The JSON-RPC protocol in action — sandboxed edits, diff, abort, redo, commit:
   adapter ships as [pi-deltabox](https://github.com/Ddnirvana/pi-deltabox);
   adapters for other agents speak the same protocol.
 - **Policy-first** — filesystem read/write rules, secret-path denial, network
-  allow + audit, and opt-in durability.
+  allow/audit, deny-all and allowlist modes, scrubbed child environments, and
+  bounded writes/storage.
 
 ## How it works
 
@@ -109,6 +110,28 @@ The fastest way to see it with an agent is the Pi extension:
 pi install npm:pi-deltabox
 ```
 
+## Policy
+
+`session start --policy policy.toml` accepts filesystem, network, and resource
+limits. The default agent policy uses the `allow_audit` network mode, denies
+common secret paths, passes only a small environment allowlist to commands,
+caps one direct write at 16 MiB, and caps pending added/modified file content at
+1 GiB. Network policy can instead deny all access or allow only explicit
+Sandlock targets:
+
+```toml
+[network]
+mode = "allowlist"
+allow = ["registry.npmjs.org:443", "127.0.0.1:3000"]
+
+[limits]
+max_write_bytes = 16777216
+max_storage_bytes = 1073741824
+```
+
+See [policy reference](docs/policy.md) for the full schema and enforcement
+semantics.
+
 ## Performance
 
 Measured on x86-server (Linux 6.18, ext4, release build). Each row reports 25
@@ -135,6 +158,7 @@ latency from scaling with a full working-tree copy.
 - `crates/deltabox-cli` — the `deltabox` binary (CLI + stdio JSON-RPC server).
 - `examples/rpc-demo.mjs` — a runnable JSON-RPC demo.
 - `docs/protocol.md` — the stable JSON-RPC contract.
+- `docs/policy.md` — policy schema and enforcement boundaries.
 
 
 ## Citation

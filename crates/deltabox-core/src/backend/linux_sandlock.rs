@@ -6,7 +6,7 @@
 
 use super::SandboxBackend;
 use crate::error::{Error, Result};
-use crate::policy::Policy;
+use crate::policy::{NetworkMode, Policy};
 use crate::protocol::{AbortResult, CommitResult, ExecRequest, ExecResult, SessionSpec};
 use crate::snapshot::{copy_tree, move_paths_to_dir};
 use crate::worker::{ScanEntry, WorkerCommand, WorkerEvent, WorkerExec};
@@ -201,12 +201,27 @@ impl SandboxBackend for SandlockBackend {
         let upper = self.current_upper(session_id)?;
         let candidates = [upper.join(rel), project.join(rel)];
         for candidate in candidates {
-            if let Ok(meta) = std::fs::metadata(&candidate) {
+            if let Ok(link_meta) = std::fs::symlink_metadata(&candidate) {
+                if link_meta.file_type().is_symlink() {
+                    return Err(Error::Backend(
+                        "fs.read refuses symlinks in the legacy backend".into(),
+                    ));
+                }
+                let canonical = candidate.canonicalize()?;
+                let allowed_root = if candidate.starts_with(&upper) {
+                    &upper
+                } else {
+                    &project
+                };
+                if !canonical.starts_with(allowed_root.canonicalize()?) {
+                    return Err(Error::Backend("fs.read symlink escapes project".into()));
+                }
+                let meta = std::fs::metadata(&canonical)?;
                 if meta.is_file() {
                     if meta.len() > 16 * 1024 * 1024 {
                         return Err(Error::Backend("fs.read file exceeds 16 MiB limit".into()));
                     }
-                    return Ok(Some(std::fs::read(&candidate)?));
+                    return Ok(Some(std::fs::read(canonical)?));
                 }
             }
         }
@@ -224,6 +239,13 @@ impl SandboxBackend for SandlockBackend {
             .map_err(|_| Error::InvalidPolicy("fs.write outside project".into()))?;
         if policy.path_is_denied(rel) {
             return Err(Error::Backend("path denied by policy".into()));
+        }
+        if policy
+            .limits
+            .max_write_bytes
+            .is_some_and(|limit| content.len() as u64 > limit)
+        {
+            return Err(Error::Backend("fs.write exceeds max_write_bytes".into()));
         }
         let _ = runtime;
         let path = rel.to_path_buf();
@@ -712,10 +734,21 @@ fn build_sandbox(spec: &SessionSpec, worker_bin: &Path) -> Result<Sandbox> {
         .fs_read("/proc")
         .fs_read("/dev")
         .fs_write("/dev/null")
+        .fs_write("/dev/full")
         .fs_read("/tmp")
         .fs_read_if_exists("/lib64")
-        .fs_read_if_exists("/usr/local")
-        .net_allow("*");
+        .fs_read_if_exists("/usr/local");
+    match spec.policy.network.mode {
+        NetworkMode::AllowAudit => {
+            builder = builder.net_allow("*");
+        }
+        NetworkMode::DenyAll => {}
+        NetworkMode::Allowlist => {
+            for target in &spec.policy.network.allow {
+                builder = builder.net_allow(target);
+            }
+        }
+    }
     if !sandbox_home.starts_with(&spec.project) {
         builder = builder
             .fs_read(&sandbox_home)

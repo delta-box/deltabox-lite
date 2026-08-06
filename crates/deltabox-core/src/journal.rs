@@ -4,7 +4,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JournalKind {
     SessionStart,
@@ -65,6 +65,9 @@ impl Journal {
         // fdatasync: flush journal data + size without a metadata fsync,
         // which is the durability level an append-only log needs.
         self.file.sync_data()?;
+        if let Some(parent) = self.path.parent() {
+            File::open(parent)?.sync_all()?;
+        }
         Ok(())
     }
 

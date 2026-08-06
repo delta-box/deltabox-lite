@@ -1,9 +1,10 @@
 #![cfg(target_os = "linux")]
 
 use serde_json::Value;
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Command, Output};
-use std::time::Duration;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_deltabox")
@@ -29,6 +30,72 @@ fn start(project: &Path) -> String {
         .next()
         .map(|s| String::from_utf8_lossy(s).trim().to_string())
         .unwrap()
+}
+
+fn start_with_policy(project: &Path, policy: &str) -> String {
+    let policy_path = project.join("policy.toml");
+    let policy = format!(
+        concat!(
+            "[filesystem]\n",
+            "read = [\".\", \"/usr\", \"/bin\", \"/lib\", \"/lib64\", \"/etc\", \"/run\"]\n",
+            "write = [\".\"]\n",
+            "deny = [\".env\", \".env.*\", \"*.pem\", \"*.key\"]\n\n",
+            "{}"
+        ),
+        policy
+    );
+    std::fs::write(&policy_path, policy).unwrap();
+    run(
+        project,
+        &[
+            "session",
+            "start",
+            project.to_str().unwrap(),
+            "--policy",
+            policy_path.to_str().unwrap(),
+        ],
+    )
+    .stdout
+    .split(|b| *b == b'\n')
+    .next()
+    .map(|s| String::from_utf8_lossy(s).trim().to_string())
+    .unwrap()
+}
+
+fn raw_exec(project: &Path, sid: &str, script: &str) -> Output {
+    Command::new(bin())
+        .args([
+            "exec",
+            sid,
+            "--project",
+            project.to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            script,
+        ])
+        .output()
+        .unwrap()
+}
+
+fn tcp_server() -> (u16, std::thread::JoinHandle<bool>) {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let thread = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Ok(_) => return true,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => return false,
+            }
+        }
+        false
+    });
+    (port, thread)
 }
 
 fn write(project: &Path, sid: &str, path: &str, content: &str) {
@@ -552,6 +619,71 @@ fn crash_during_working_swap_restores_previous_tree() {
 }
 
 #[test]
+fn crash_after_abort_swap_reconciles_journal_and_review_scope() {
+    let project = tempfile::tempdir().unwrap();
+    let sid = start(project.path());
+    run(
+        project.path(),
+        &[
+            "review",
+            "begin",
+            &sid,
+            "--project",
+            project.path().to_str().unwrap(),
+            "--kind",
+            "task",
+        ],
+    );
+    write(project.path(), &sid, "pending.txt", "pending");
+
+    let crashed = Command::new(bin())
+        .env("DELTABOX_TEST_CRASH_AT", "working_swapped")
+        .args([
+            "review",
+            "abort",
+            &sid,
+            "--project",
+            project.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!crashed.status.success());
+
+    assert_eq!(diff(project.path(), &sid, None)["pending_changes"], 0);
+    let review: Value = serde_json::from_slice(
+        &run(
+            project.path(),
+            &[
+                "review",
+                "status",
+                &sid,
+                "--project",
+                project.path().to_str().unwrap(),
+            ],
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert!(review.is_null());
+
+    let journal = std::fs::read_to_string(
+        project
+            .path()
+            .join(".deltabox")
+            .join(&sid)
+            .join("journal.jsonl"),
+    )
+    .unwrap();
+    let entries: Vec<Value> = journal
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(entries
+        .iter()
+        .any(|entry| { entry["kind"] == "abort" && entry["data"]["transaction_id"].is_string() }));
+}
+
+#[test]
 fn crash_during_host_commit_rolls_back_host_and_keeps_pending_work() {
     let project = tempfile::tempdir().unwrap();
     std::fs::write(project.path().join("base.txt"), "base").unwrap();
@@ -674,6 +806,18 @@ fn representative_cli_tools_and_dev_null_work_inside_sandbox() {
     let cases = [
         ("dev-null", "printf sink-test > /dev/null"),
         (
+            "dev-full",
+            concat!(
+                "python3 -c 'import errno, os\n",
+                "fd = os.open(\"/dev/full\", os.O_WRONLY)\n",
+                "try:\n",
+                "    os.write(fd, b\"x\")\n",
+                "except OSError as error:\n",
+                "    raise SystemExit(0 if error.errno == errno.ENOSPC else 1)\n",
+                "raise SystemExit(1)'"
+            ),
+        ),
+        (
             "git",
             concat!(
                 "git status --short > /dev/null; ",
@@ -701,4 +845,203 @@ fn representative_cli_tools_and_dev_null_work_inside_sandbox() {
     }
     let pending = diff(project.path(), &sid, None);
     assert!(pending["pending_changes"].as_u64().unwrap() >= 3);
+}
+
+#[test]
+fn network_modes_enforce_allow_audit_deny_all_and_allowlist() {
+    let allow_project = tempfile::tempdir().unwrap();
+    let allow_sid = start_with_policy(allow_project.path(), "[network]\nmode = \"allow_audit\"\n");
+    let (allow_port, allow_thread) = tcp_server();
+    let allow = exec(
+        allow_project.path(),
+        &allow_sid,
+        &format!(
+            "python3 -c 'import socket; socket.create_connection((\"127.0.0.1\", {allow_port}), 1)'"
+        ),
+    );
+    assert_eq!(allow["exit_code"], 0, "allow_audit result: {allow}");
+    assert!(allow_thread.join().unwrap());
+
+    let deny_project = tempfile::tempdir().unwrap();
+    let deny_sid = start_with_policy(deny_project.path(), "[network]\nmode = \"deny_all\"\n");
+    let deny = exec(
+        deny_project.path(),
+        &deny_sid,
+        "python3 -c 'import socket; socket.create_connection((\"127.0.0.1\", 9), 1)'",
+    );
+    assert_ne!(
+        deny["exit_code"], 0,
+        "deny_all unexpectedly connected: {deny}"
+    );
+
+    let list_project = tempfile::tempdir().unwrap();
+    let (listed_port, listed_thread) = tcp_server();
+    let list_sid = start_with_policy(
+        list_project.path(),
+        &format!("[network]\nmode = \"allowlist\"\nallow = [\"127.0.0.1:{listed_port}\"]\n"),
+    );
+    let listed = exec(
+        list_project.path(),
+        &list_sid,
+        &format!(
+            "python3 -c 'import socket; socket.create_connection((\"127.0.0.1\", {listed_port}), 1)'"
+        ),
+    );
+    assert_eq!(listed["exit_code"], 0, "allowlist result: {listed}");
+    assert!(listed_thread.join().unwrap());
+
+    let unlisted = exec(
+        list_project.path(),
+        &list_sid,
+        "python3 -c 'import socket; socket.create_connection((\"127.0.0.1\", 9), 1)'",
+    );
+    assert_ne!(
+        unlisted["exit_code"], 0,
+        "allowlist unexpectedly allowed an unlisted target: {unlisted}"
+    );
+}
+
+#[test]
+fn newly_created_denied_file_is_rejected_without_pending_state() {
+    let project = tempfile::tempdir().unwrap();
+    let sid = start(project.path());
+    let output = raw_exec(project.path(), &sid, "printf secret > .env");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("path denied by policy"));
+    assert_eq!(diff(project.path(), &sid, None)["pending_changes"], 0);
+    let working = project.path().join(".deltabox").join(&sid).join("working");
+    assert!(!working.join(".env").exists());
+}
+
+#[test]
+fn supervisor_read_and_diff_reject_external_symlinks() {
+    let project = tempfile::tempdir().unwrap();
+    let sid = start(project.path());
+    let store = project.path().join(".deltabox").join(&sid);
+    std::os::unix::fs::symlink("/etc/hostname", store.join("working/leak")).unwrap();
+    std::fs::remove_file(store.join("working_scan.json")).unwrap();
+
+    let read = Command::new(bin())
+        .args([
+            "read",
+            &sid,
+            "--project",
+            project.path().to_str().unwrap(),
+            "leak",
+        ])
+        .output()
+        .unwrap();
+    assert!(!read.status.success());
+    assert!(String::from_utf8_lossy(&read.stderr).contains("symlink escapes project"));
+    assert!(
+        read.stdout.is_empty(),
+        "external bytes leaked through fs.read"
+    );
+
+    let diff = Command::new(bin())
+        .args([
+            "diff",
+            &sid,
+            "--project",
+            project.path().to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(!diff.status.success());
+    assert!(String::from_utf8_lossy(&diff.stderr).contains("symlink escapes project"));
+    assert!(diff.stdout.is_empty(), "external bytes leaked through diff");
+}
+
+#[test]
+fn direct_write_and_exec_storage_limits_are_enforced_atomically() {
+    let project = tempfile::tempdir().unwrap();
+    let sid = start_with_policy(
+        project.path(),
+        "[limits]\nmax_write_bytes = 4\nmax_storage_bytes = 8\n",
+    );
+    let write = Command::new(bin())
+        .args([
+            "write",
+            &sid,
+            "--project",
+            project.path().to_str().unwrap(),
+            "too-big.txt",
+            "--content",
+            "12345",
+        ])
+        .output()
+        .unwrap();
+    assert!(!write.status.success());
+    assert!(String::from_utf8_lossy(&write.stderr).contains("max_write_bytes"));
+
+    let exec = raw_exec(project.path(), &sid, "printf 123456789 > cow-big.txt");
+    assert!(!exec.status.success());
+    assert!(String::from_utf8_lossy(&exec.stderr).contains("max_storage_bytes"));
+    assert_eq!(diff(project.path(), &sid, None)["pending_changes"], 0);
+}
+
+#[test]
+fn optional_serve_recovers_after_worker_failure() {
+    let project = tempfile::tempdir().unwrap();
+    let mut serve = Command::new(bin())
+        .arg("serve")
+        .current_dir(project.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = serve.stdin.take().unwrap();
+    let mut output = BufReader::new(serve.stdout.take().unwrap());
+    {
+        let mut rpc = |request: Value| -> Value {
+            writeln!(input, "{}", request).unwrap();
+            input.flush().unwrap();
+            let mut line = String::new();
+            output.read_line(&mut line).unwrap();
+            assert!(!line.is_empty(), "serve exited before responding");
+            serde_json::from_str(&line).unwrap()
+        };
+
+        let started = rpc(serde_json::json!({
+            "id": 1,
+            "method": "session.start",
+            "params": {"project": project.path()},
+        }));
+        let sid = started["result"]["session_id"].as_str().unwrap();
+        let failed = rpc(serde_json::json!({
+            "id": 2,
+            "method": "session.exec",
+            "params": {
+                "session_id": sid,
+                "argv": ["sh", "-c", "kill -KILL $PPID"],
+            },
+        }));
+        assert!(
+            failed["error"].is_object(),
+            "worker failure was hidden: {failed}"
+        );
+
+        let recovered = rpc(serde_json::json!({
+            "id": 3,
+            "method": "session.exec",
+            "params": {
+                "session_id": sid,
+                "argv": ["sh", "-c", "printf recovered > recovered.txt"],
+            },
+        }));
+        assert_eq!(
+            recovered["result"]["exit_code"], 0,
+            "serve did not recover: {recovered}"
+        );
+        let pending = rpc(serde_json::json!({
+            "id": 4,
+            "method": "diff.list",
+            "params": {"session_id": sid},
+        }));
+        assert_eq!(pending["result"]["pending_changes"], 1);
+    }
+    drop(input);
+    assert!(serve.wait().unwrap().success());
 }
