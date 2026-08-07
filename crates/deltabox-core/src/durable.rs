@@ -53,6 +53,7 @@ enum TransactionPhase {
     Building,
     Prepared,
     WorkingMoved,
+    Executing,
     Swapped,
     HostApplied,
     StateUpdated,
@@ -545,89 +546,29 @@ impl DurableSessionManager {
         let store = self.store_dir(session_id);
         let before = self.working_scan(&store)?;
         let accepted = self.accepted_scan(&store)?;
-        let working = store.join(WORKING_DIR);
         let policy = self.policy(session_id)?;
-        let spec = SessionSpec {
-            project: working.clone(),
-            store_dir: store.join("runtime"),
-            policy: policy.clone(),
-        };
-        let mut backend = make_backend(self.worker_bin.clone());
-        backend.start_session(session_id, &spec)?;
-        let result = operation(backend.as_mut(), session_id);
-        let current = backend.scan(session_id);
-        match (result, current) {
-            (Ok(value), Ok(current)) => {
-                let current_paths: HashSet<&str> =
-                    current.iter().map(|e| e.path.as_str()).collect();
-                let deleted: Vec<String> = before
-                    .iter()
-                    .filter(|entry| !current_paths.contains(entry.path.as_str()))
-                    .map(|entry| entry.path.clone())
-                    .collect();
-                let upper = backend.current_upper(session_id)?;
-                let mut changed_paths: HashSet<String> = upper_paths(&upper)?.into_iter().collect();
-                changed_paths.extend(deleted.iter().cloned());
-                if let Err(error) = validate_materialized_result(
-                    &policy,
-                    &accepted,
-                    &current,
-                    &upper,
-                    &changed_paths,
-                ) {
-                    let _ = backend.stop_session(session_id);
-                    return Err(error);
-                }
-                if changed_paths.is_empty() {
-                    backend.stop_session(session_id)?;
-                    return Ok(value);
-                }
-                let txn_id = Uuid::new_v4().to_string();
-                let txn = store.join(TRANSACTIONS_DIR).join(&txn_id);
-                let backup = txn.join("path_backup");
-                std::fs::create_dir_all(&backup)?;
-                let mut changed_paths: Vec<String> = changed_paths.into_iter().collect();
-                changed_paths.sort();
-                let mut paths = Vec::with_capacity(changed_paths.len());
-                for path in changed_paths {
-                    let source = working.join(&path);
-                    let existed = std::fs::symlink_metadata(&source).is_ok();
-                    if existed {
-                        let target = backup.join(&path);
-                        copy_entry(
-                            &source,
-                            &target,
-                            std::fs::symlink_metadata(&source)?.file_type(),
-                        )?;
-                    }
-                    paths.push(TransactionPath { path, existed });
-                }
-                self.save_transaction(
-                    &store,
-                    &TransactionMarker {
-                        id: txn_id.clone(),
-                        kind: TransactionKind::Working,
-                        phase: TransactionPhase::Prepared,
-                        paths,
-                        boundary: None,
-                    },
-                )?;
-                maybe_crash("materialize_prepared");
-                backend.materialize_changes(session_id, &txn.join("materialized"), deleted)?;
-                self.set_transaction_phase(
-                    &store,
-                    &txn_id,
-                    TransactionKind::Working,
-                    TransactionPhase::Swapped,
-                )?;
-                maybe_crash("materialize_applied");
-                save_snapshot(&store.join(WORKING_SCAN_FILE), &current)?;
-                self.finish_transaction(&store, &txn)?;
-                Ok(value)
-            }
-            (Err(error), _) => Err(error),
-            (_, Err(error)) => Err(error),
-        }
+        self.update_working_copy_transaction(session_id, |candidate| {
+            let spec = SessionSpec {
+                project: candidate.to_path_buf(),
+                store_dir: store.join("runtime"),
+                policy: policy.clone(),
+            };
+            let mut backend = make_direct_backend(self.worker_bin.clone());
+            backend.start_session(session_id, &spec)?;
+            let result = operation(backend.as_mut(), session_id);
+            let current = backend.scan(session_id);
+            let stop = backend.stop_session(session_id);
+            let value = result?;
+            let current = current?;
+            stop?;
+
+            let changed_paths: HashSet<String> = diff_snapshots(&before, &current)
+                .into_iter()
+                .map(|change| change.path)
+                .collect();
+            validate_materialized_result(&policy, &accepted, &current, candidate, &changed_paths)?;
+            Ok(value)
+        })
     }
 
     fn lock_running(&self, session_id: &str) -> Result<SessionLock> {
@@ -701,7 +642,84 @@ impl DurableSessionManager {
         self.update_working_transaction_with_boundary(session_id, update, None)
     }
 
+    fn update_working_copy_transaction<T>(
+        &self,
+        session_id: &str,
+        update: impl FnOnce(&Path) -> Result<T>,
+    ) -> Result<T> {
+        let store = self.store_dir(session_id);
+        let transaction_id = Uuid::new_v4().to_string();
+        let txn = store.join(TRANSACTIONS_DIR).join(&transaction_id);
+        let candidate = txn.join("candidate");
+        let working = store.join(WORKING_DIR);
+        let backup = txn.join("working_backup");
+        std::fs::create_dir_all(&txn)?;
+        copy_project_tree(&working, &candidate)?;
+        self.save_transaction(
+            &store,
+            &TransactionMarker {
+                id: transaction_id.clone(),
+                kind: TransactionKind::Working,
+                phase: TransactionPhase::Building,
+                paths: Vec::new(),
+                boundary: None,
+            },
+        )?;
+        self.set_transaction_phase(
+            &store,
+            &transaction_id,
+            TransactionKind::Working,
+            TransactionPhase::Prepared,
+        )?;
+        std::fs::rename(&working, &backup)?;
+        self.set_transaction_phase(
+            &store,
+            &transaction_id,
+            TransactionKind::Working,
+            TransactionPhase::WorkingMoved,
+        )?;
+        maybe_crash("working_moved");
+        std::fs::rename(&candidate, &working)?;
+        self.set_transaction_phase(
+            &store,
+            &transaction_id,
+            TransactionKind::Working,
+            TransactionPhase::Executing,
+        )?;
+
+        let value = match update(&working) {
+            Ok(value) => value,
+            Err(error) => {
+                remove_path(&working)?;
+                std::fs::rename(&backup, &working)?;
+                self.finish_transaction(&store, &txn)?;
+                return Err(error);
+            }
+        };
+        maybe_crash("exec_candidate_complete");
+        let scan = scan_tree(&working)?;
+        self.set_transaction_phase(
+            &store,
+            &transaction_id,
+            TransactionKind::Working,
+            TransactionPhase::Swapped,
+        )?;
+        maybe_crash("working_swapped");
+        save_snapshot(&store.join(WORKING_SCAN_FILE), &scan)?;
+        self.finish_transaction(&store, &txn)?;
+        Ok(value)
+    }
+
     fn update_working_transaction_with_boundary<T>(
+        &self,
+        session_id: &str,
+        update: impl FnOnce(&Path) -> Result<T>,
+        boundary: Option<TransactionBoundary>,
+    ) -> Result<T> {
+        self.update_working_transaction_inner(session_id, update, boundary)
+    }
+
+    fn update_working_transaction_inner<T>(
         &self,
         session_id: &str,
         update: impl FnOnce(&Path) -> Result<T>,
@@ -1086,14 +1104,14 @@ fn clear_active_review(store: &Path) -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn make_backend(worker_bin: Option<PathBuf>) -> Box<dyn SandboxBackend> {
-    Box::new(crate::backend::linux_sandlock::SandlockBackend::new(
+fn make_direct_backend(worker_bin: Option<PathBuf>) -> Box<dyn SandboxBackend> {
+    Box::new(crate::backend::linux_sandlock::SandlockBackend::new_direct(
         worker_bin,
     ))
 }
 
 #[cfg(not(target_os = "linux"))]
-fn make_backend(_worker_bin: Option<PathBuf>) -> Box<dyn SandboxBackend> {
+fn make_direct_backend(_worker_bin: Option<PathBuf>) -> Box<dyn SandboxBackend> {
     Box::new(crate::backend::DefaultBackend)
 }
 
@@ -1258,27 +1276,6 @@ fn project_tree(src: &Path, dst: &Path, hardlink_files: bool) -> Result<usize> {
     Ok(copied)
 }
 
-fn upper_paths(upper: &Path) -> Result<Vec<String>> {
-    let mut paths = Vec::new();
-    if !upper.exists() {
-        return Ok(paths);
-    }
-    for entry in walkdir::WalkDir::new(upper)
-        .min_depth(1)
-        .follow_links(false)
-    {
-        let entry = entry.map_err(|e| Error::Io(std::io::Error::other(e)))?;
-        if entry.file_type().is_file() || entry.file_type().is_symlink() {
-            let rel = entry
-                .path()
-                .strip_prefix(upper)
-                .map_err(|_| Error::Backend("upper path escaped root".into()))?;
-            paths.push(rel.to_string_lossy().into_owned());
-        }
-    }
-    Ok(paths)
-}
-
 fn copy_entry(src: &Path, dst: &Path, file_type: std::fs::FileType) -> Result<()> {
     if file_type.is_dir() {
         std::fs::create_dir_all(dst)?;
@@ -1394,24 +1391,28 @@ fn validate_materialized_result(
         }
     }
     validate_pending_scan(policy, accepted, current)?;
-    validate_tree_symlinks(upper, policy)
+    validate_changed_symlinks(upper, policy, changed_paths)
 }
 
-fn validate_tree_symlinks(root: &Path, policy: &Policy) -> Result<()> {
+fn validate_changed_symlinks(
+    root: &Path,
+    policy: &Policy,
+    changed_paths: &HashSet<String>,
+) -> Result<()> {
     if !root.exists() {
         return Ok(());
     }
-    for entry in walkdir::WalkDir::new(root).min_depth(1).follow_links(false) {
-        let entry = entry.map_err(|e| Error::Io(std::io::Error::other(e)))?;
-        if !entry.file_type().is_symlink() {
+    for changed in changed_paths {
+        let path = root.join(changed);
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.file_type().is_symlink() {
             continue;
         }
-        let rel = entry
-            .path()
-            .strip_prefix(root)
-            .map_err(|_| Error::Backend("symlink path escaped tree".into()))?;
-        validate_symlink_target(rel, &std::fs::read_link(entry.path())?, policy)?;
-        if let Ok(canonical) = entry.path().canonicalize() {
+        let rel = Path::new(changed);
+        validate_symlink_target(rel, &std::fs::read_link(&path)?, policy)?;
+        if let Ok(canonical) = path.canonicalize() {
             let canonical_root = root.canonicalize()?;
             if !canonical.starts_with(&canonical_root) {
                 return Err(Error::Backend(format!(
@@ -1431,6 +1432,23 @@ fn validate_tree_symlinks(root: &Path, policy: &Policy) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn validate_tree_symlinks(root: &Path, policy: &Policy) -> Result<()> {
+    let mut paths = HashSet::new();
+    if root.exists() {
+        for entry in walkdir::WalkDir::new(root).min_depth(1).follow_links(false) {
+            let entry = entry.map_err(|e| Error::Io(std::io::Error::other(e)))?;
+            if entry.file_type().is_symlink() {
+                let rel = entry
+                    .path()
+                    .strip_prefix(root)
+                    .map_err(|_| Error::Backend("symlink path escaped tree".into()))?;
+                paths.insert(rel.to_string_lossy().into_owned());
+            }
+        }
+    }
+    validate_changed_symlinks(root, policy, &paths)
 }
 
 fn validate_symlink_target(rel: &Path, target: &Path, policy: &Policy) -> Result<()> {

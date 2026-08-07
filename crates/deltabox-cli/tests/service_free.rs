@@ -79,11 +79,15 @@ fn raw_exec(project: &Path, sid: &str, script: &str) -> Output {
 }
 
 fn tcp_server() -> (u16, std::thread::JoinHandle<bool>) {
+    tcp_server_for(Duration::from_secs(30))
+}
+
+fn tcp_server_for(timeout: Duration) -> (u16, std::thread::JoinHandle<bool>) {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
     let port = listener.local_addr().unwrap().port();
     let thread = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             match listener.accept() {
                 Ok(_) => return true,
@@ -174,6 +178,22 @@ fn separate_processes_preserve_pending_state_and_default_abort_contract() {
         std::fs::read_to_string(project.path().join("README.md")).unwrap(),
         "accepted\n"
     );
+}
+
+#[test]
+fn separate_execs_keep_a_stable_working_path() {
+    let project = tempfile::tempdir().unwrap();
+    let sid = start(project.path());
+
+    let first = exec(project.path(), &sid, "pwd > recorded-working-path.txt");
+    assert_eq!(first["exit_code"], 0, "first exec: {first}");
+    let second = exec(
+        project.path(),
+        &sid,
+        "test \"$(cat recorded-working-path.txt)\" = \"$PWD\"",
+    );
+    assert_eq!(second["exit_code"], 0, "second exec: {second}");
+    assert!(!project.path().join("recorded-working-path.txt").exists());
 }
 
 #[test]
@@ -711,13 +731,13 @@ fn crash_during_host_commit_rolls_back_host_and_keeps_pending_work() {
 }
 
 #[test]
-fn crash_during_incremental_materialize_restores_every_changed_path() {
+fn crash_during_exec_candidate_swap_restores_every_changed_path() {
     let project = tempfile::tempdir().unwrap();
     std::fs::write(project.path().join("a.txt"), "a-old").unwrap();
     std::fs::write(project.path().join("b.txt"), "b-old").unwrap();
     let sid = start(project.path());
     let output = Command::new(bin())
-        .env("DELTABOX_TEST_CRASH_AT", "materialize_after_copy")
+        .env("DELTABOX_TEST_CRASH_AT", "exec_candidate_complete")
         .args([
             "exec",
             &sid,
@@ -848,6 +868,70 @@ fn representative_cli_tools_and_dev_null_work_inside_sandbox() {
 }
 
 #[test]
+fn openat2_reads_a_file_created_in_the_same_exec() {
+    let project = tempfile::tempdir().unwrap();
+    let sid = start_with_policy(project.path(), "[network]\nmode = \"deny_all\"\n");
+    let script = format!(
+        concat!(
+            "python3 -c 'import ctypes, os\n",
+            "class OpenHow(ctypes.Structure):\n",
+            "    _fields_ = [(\"flags\", ctypes.c_ulonglong), ",
+            "(\"mode\", ctypes.c_ulonglong), (\"resolve\", ctypes.c_ulonglong)]\n",
+            "open(\"openat2.txt\", \"wb\").write(b\"ok\")\n",
+            "path = ctypes.create_string_buffer(b\"openat2.txt\")\n",
+            "how = OpenHow(os.O_RDONLY, 0, 0)\n",
+            "fd = ctypes.CDLL(None, use_errno=True).syscall(",
+            "{}, -100, path, ctypes.byref(how), ctypes.sizeof(how))\n",
+            "assert fd >= 0, ctypes.get_errno()\n",
+            "assert os.read(fd, 2) == b\"ok\"\n",
+            "os.close(fd)'"
+        ),
+        libc::SYS_openat2,
+    );
+    let result = exec(project.path(), &sid, &script);
+    assert_eq!(result["exit_code"], 0, "openat2 result: {result}");
+}
+
+#[test]
+fn renameat_keeps_an_atomic_output_visible_in_the_same_exec() {
+    let project = tempfile::tempdir().unwrap();
+    let sid = start_with_policy(project.path(), "[network]\nmode = \"deny_all\"\n");
+    let script = concat!(
+        "python3 -c 'import os\n",
+        "os.mkdir(\"build\")\n",
+        "directory = os.open(\"build\", os.O_RDONLY | os.O_DIRECTORY)\n",
+        "output = os.open(\"output.tmp\", os.O_WRONLY | os.O_CREAT, ",
+        "0o644, dir_fd=directory)\n",
+        "os.write(output, b\"ready\")\n",
+        "os.close(output)\n",
+        "os.rename(\"output.tmp\", \"output.d\", ",
+        "src_dir_fd=directory, dst_dir_fd=directory)\n",
+        "result = os.open(\"output.d\", os.O_RDONLY, dir_fd=directory)\n",
+        "assert os.read(result, 5) == b\"ready\"\n",
+        "os.close(result)\n",
+        "os.close(directory)'"
+    );
+    let result = exec(project.path(), &sid, script);
+    assert_eq!(result["exit_code"], 0, "renameat result: {result}");
+}
+
+#[test]
+fn access_sees_a_file_created_in_the_same_exec() {
+    let project = tempfile::tempdir().unwrap();
+    let sid = start_with_policy(project.path(), "[network]\nmode = \"deny_all\"\n");
+    let result = exec(
+        project.path(),
+        &sid,
+        concat!(
+            "python3 -c 'open(\"access.txt\", \"w\").write(\"visible\")'; ",
+            "test -r access.txt; test -f access.txt; cat access.txt"
+        ),
+    );
+    assert_eq!(result["exit_code"], 0, "access result: {result}");
+    assert_eq!(result["stdout"], "visible");
+}
+
+#[test]
 fn network_modes_enforce_allow_audit_deny_all_and_allowlist() {
     let allow_project = tempfile::tempdir().unwrap();
     let allow_sid = start_with_policy(allow_project.path(), "[network]\nmode = \"allow_audit\"\n");
@@ -890,15 +974,19 @@ fn network_modes_enforce_allow_audit_deny_all_and_allowlist() {
     assert_eq!(listed["exit_code"], 0, "allowlist result: {listed}");
     assert!(listed_thread.join().unwrap());
 
+    let (unlisted_port, unlisted_thread) = tcp_server_for(Duration::from_secs(1));
     let unlisted = exec(
         list_project.path(),
         &list_sid,
-        "python3 -c 'import socket; socket.create_connection((\"127.0.0.1\", 9), 1)'",
+        &format!(
+            "python3 -c 'import socket; socket.create_connection((\"127.0.0.1\", {unlisted_port}), 1)'"
+        ),
     );
     assert_ne!(
         unlisted["exit_code"], 0,
         "allowlist unexpectedly allowed an unlisted target: {unlisted}"
     );
+    assert!(!unlisted_thread.join().unwrap());
 }
 
 #[test]

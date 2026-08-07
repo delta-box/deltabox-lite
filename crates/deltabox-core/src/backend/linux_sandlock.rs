@@ -27,6 +27,7 @@ type ChanResult<T> = std::result::Result<T, String>;
 
 pub struct SandlockBackend {
     worker_bin: PathBuf,
+    direct_write: bool,
     sessions: HashMap<String, SessionRuntime>,
 }
 
@@ -80,8 +81,18 @@ impl SandlockBackend {
         });
         Self {
             worker_bin,
+            direct_write: false,
             sessions: HashMap::new(),
         }
+    }
+
+    /// Run directly against a private, caller-owned transaction tree.
+    /// Sandlock still provides Landlock, seccomp, network, and resource
+    /// isolation, but its syscall-level COW layer is disabled.
+    pub fn new_direct(worker_bin: Option<PathBuf>) -> Self {
+        let mut backend = Self::new(worker_bin);
+        backend.direct_write = true;
+        backend
     }
 
     fn call<T: Send + 'static>(
@@ -138,9 +149,11 @@ impl SandboxBackend for SandlockBackend {
         let (ready_tx, ready_rx) = std_mpsc::channel();
         let thread_spec = spec.clone();
         let worker_bin = self.worker_bin.clone();
+        let direct_write = self.direct_write;
         let sid = session_id.to_string();
-        let thread =
-            std::thread::spawn(move || run_session(sid, thread_spec, worker_bin, rx, ready_tx));
+        let thread = std::thread::spawn(move || {
+            run_session(sid, thread_spec, worker_bin, direct_write, rx, ready_tx)
+        });
         ready_rx
             .recv_timeout(READY_TIMEOUT)
             .map_err(|_| Error::Backend("session startup timed out".into()))?
@@ -407,6 +420,7 @@ fn run_session(
     session_id: String,
     spec: SessionSpec,
     worker_bin: PathBuf,
+    direct_write: bool,
     rx: tokio_mpsc::Receiver<InnerCmd>,
     ready_tx: std_mpsc::Sender<ChanResult<()>>,
 ) {
@@ -421,7 +435,7 @@ fn run_session(
             return;
         }
     };
-    let result = runtime.block_on(serve_loop(spec, worker_bin, rx, ready_tx));
+    let result = runtime.block_on(serve_loop(spec, worker_bin, direct_write, rx, ready_tx));
     if let Err(e) = result {
         eprintln!("deltabox: session {session_id} runtime error: {e}");
     }
@@ -430,18 +444,19 @@ fn run_session(
 async fn serve_loop(
     spec: SessionSpec,
     worker_bin: PathBuf,
+    direct_write: bool,
     mut cmd_rx: tokio_mpsc::Receiver<InnerCmd>,
     ready_tx: std_mpsc::Sender<ChanResult<()>>,
 ) -> Result<()> {
     let fs_storage = spec.store_dir.join("cow");
     std::fs::create_dir_all(&fs_storage)?;
-    let mut sandbox = build_sandbox(&spec, &worker_bin)?;
+    let mut sandbox = build_sandbox(&spec, &worker_bin, direct_write)?;
     let mut pending: HashMap<u64, oneshot::Sender<ChanResult<serde_json::Value>>> = HashMap::new();
     let mut next_id: u64 = 1;
     let mut fatal: Option<String> = None;
 
     let (mut process, current_upper, writer_tx, mut evt_rx) =
-        match spawn_worker(&mut sandbox, &worker_bin, &spec, &fs_storage).await {
+        match spawn_worker(&mut sandbox, &worker_bin, &spec, &fs_storage, direct_write).await {
             Ok((p, upper, wtx, erx)) => (Some(p), upper, Some(wtx), Some(erx)),
             Err(e) => {
                 let _ = ready_tx.send(Err(e.to_string()));
@@ -560,6 +575,9 @@ async fn serve_loop(
                         }
                         fail_all(&mut pending, "session interrupted");
                         let result: crate::error::Result<usize> = (|| {
+                            if direct_write {
+                                return Ok(0);
+                            }
                             let copied = copy_tree(&current_upper, &spec.project)?;
                             maybe_test_crash("materialize_after_copy");
                             let moved = move_paths_to_dir(
@@ -581,8 +599,10 @@ async fn serve_loop(
                             let _ = p.wait().await;
                         }
                         fail_all(&mut pending, "session interrupted");
-                        if let Some(branch) = upper_branch_dir(&current_upper) {
-                            let _ = std::fs::remove_dir_all(branch);
+                        if !direct_write {
+                            if let Some(branch) = upper_branch_dir(&current_upper) {
+                                let _ = std::fs::remove_dir_all(branch);
+                            }
                         }
                         let _ = resp.send(Ok(()));
                         break;
@@ -593,8 +613,10 @@ async fn serve_loop(
                             let _ = p.wait().await;
                         }
                         fail_all(&mut pending, "session interrupted");
-                        if let Some(branch) = upper_branch_dir(&current_upper) {
-                            let _ = std::fs::remove_dir_all(branch);
+                        if !direct_write {
+                            if let Some(branch) = upper_branch_dir(&current_upper) {
+                                let _ = std::fs::remove_dir_all(branch);
+                            }
                         }
                         let _ = resp.send(Ok(()));
                         break;
@@ -713,7 +735,7 @@ fn upper_branch_dir(upper: &Path) -> Option<PathBuf> {
     upper.parent().map(|p| p.to_path_buf())
 }
 
-fn build_sandbox(spec: &SessionSpec, worker_bin: &Path) -> Result<Sandbox> {
+fn build_sandbox(spec: &SessionSpec, worker_bin: &Path, direct_write: bool) -> Result<Sandbox> {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     spec.project.hash(&mut hasher);
@@ -724,8 +746,6 @@ fn build_sandbox(spec: &SessionSpec, worker_bin: &Path) -> Result<Sandbox> {
     std::fs::create_dir_all(&sandbox_tmp)?;
     let mut builder = Sandbox::builder()
         .name(sandbox_name)
-        .workdir(&spec.project)
-        .fs_storage(spec.store_dir.join("cow"))
         .cwd(&spec.project)
         .on_exit(BranchAction::Keep)
         .on_error(BranchAction::Keep)
@@ -738,6 +758,11 @@ fn build_sandbox(spec: &SessionSpec, worker_bin: &Path) -> Result<Sandbox> {
         .fs_read("/tmp")
         .fs_read_if_exists("/lib64")
         .fs_read_if_exists("/usr/local");
+    if !direct_write {
+        builder = builder
+            .workdir(&spec.project)
+            .fs_storage(spec.store_dir.join("cow"));
+    }
     match spec.policy.network.mode {
         NetworkMode::AllowAudit => {
             builder = builder.net_allow("*");
@@ -870,6 +895,7 @@ async fn spawn_worker<'a>(
     worker_bin: &Path,
     spec: &SessionSpec,
     fs_storage: &Path,
+    direct_write: bool,
 ) -> Result<(
     Process<'a>,
     PathBuf,
@@ -981,12 +1007,16 @@ async fn spawn_worker<'a>(
     .await
     .map_err(|_| Error::Backend("worker ready timeout".into()))??;
 
-    let after = list_branch_dirs(fs_storage)?;
-    let new_branch = after
-        .into_iter()
-        .find(|name| !before.contains(name))
-        .ok_or_else(|| Error::Backend("COW branch not created".into()))?;
-    let upper = fs_storage.join(new_branch).join("upper");
+    let upper = if direct_write {
+        spec.project.clone()
+    } else {
+        let after = list_branch_dirs(fs_storage)?;
+        let new_branch = after
+            .into_iter()
+            .find(|name| !before.contains(name))
+            .ok_or_else(|| Error::Backend("COW branch not created".into()))?;
+        fs_storage.join(new_branch).join("upper")
+    };
     Ok((process, upper, wtx, erx))
 }
 
