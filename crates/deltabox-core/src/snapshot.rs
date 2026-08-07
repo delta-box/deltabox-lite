@@ -109,6 +109,7 @@ pub fn copy_tree(src: &Path, dst: &Path) -> Result<usize> {
             }
             let _ = std::fs::remove_file(&target);
             std::os::unix::fs::symlink(link, &target)?;
+            preserve_symlink_times(entry.path(), &target)?;
             copied += 1;
         } else if ft.is_file() {
             if let Some(parent) = target.parent() {
@@ -124,9 +125,36 @@ pub fn copy_tree(src: &Path, dst: &Path) -> Result<usize> {
 }
 
 /// Clone a regular file with copy-on-write when the filesystem supports it.
-/// Unsupported filesystems and non-Linux platforms transparently fall back
-/// to an ordinary byte copy.
+/// Unsupported filesystems transparently fall back to an ordinary byte copy.
 pub fn clone_or_copy_file(src: &Path, dst: &Path) -> Result<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let source = CString::new(src.as_os_str().as_bytes())
+            .map_err(|_| Error::Backend("source path contains a NUL byte".into()))?;
+        let target = CString::new(dst.as_os_str().as_bytes())
+            .map_err(|_| Error::Backend("target path contains a NUL byte".into()))?;
+        if unsafe { libc::clonefile(source.as_ptr(), target.as_ptr(), 0) } == 0 {
+            make_owner_writable(dst)?;
+            return Ok(std::fs::metadata(dst)?.len());
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ENOTSUP | libc::EXDEV | libc::EINVAL) => {}
+            Some(libc::EEXIST) => {
+                std::fs::remove_file(dst)?;
+                if unsafe { libc::clonefile(source.as_ptr(), target.as_ptr(), 0) } == 0 {
+                    make_owner_writable(dst)?;
+                    return Ok(std::fs::metadata(dst)?.len());
+                }
+            }
+            _ => {}
+        }
+        if dst.exists() {
+            std::fs::remove_file(dst)?;
+        }
+    }
     #[cfg(target_os = "linux")]
     {
         const FICLONE: libc::c_ulong = 0x4004_9409;
@@ -151,6 +179,15 @@ pub fn clone_or_copy_file(src: &Path, dst: &Path) -> Result<u64> {
         .truncate(true)
         .open(dst)?;
     Ok(copy(&mut source, &mut target)?)
+}
+
+#[cfg(target_os = "macos")]
+fn make_owner_writable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_mode(permissions.mode() | 0o200);
+    std::fs::set_permissions(path, permissions)?;
+    Ok(())
 }
 
 /// Copy `src` to `dst`, skipping files already frozen in `prev` with the same
@@ -190,6 +227,7 @@ pub fn copy_tree_incremental(src: &Path, prev: Option<&Path>, dst: &Path) -> Res
             }
             let _ = std::fs::remove_file(&target);
             std::os::unix::fs::symlink(link, &target)?;
+            preserve_symlink_times(entry.path(), &target)?;
             copied += 1;
         } else if ft.is_file() {
             if let Some(parent) = target.parent() {
@@ -208,6 +246,38 @@ fn same_entry(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
     a.len() == b.len()
         && a.file_type().is_symlink() == b.file_type().is_symlink()
         && a.modified().ok() == b.modified().ok()
+}
+
+pub fn preserve_symlink_times(src: &Path, dst: &Path) -> Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = std::fs::symlink_metadata(src)?;
+    let times = [
+        libc::timespec {
+            tv_sec: metadata.atime(),
+            tv_nsec: metadata.atime_nsec(),
+        },
+        libc::timespec {
+            tv_sec: metadata.mtime(),
+            tv_nsec: metadata.mtime_nsec(),
+        },
+    ];
+    let path = CString::new(dst.as_os_str().as_bytes())
+        .map_err(|_| Error::Backend("symlink path contains a NUL byte".into()))?;
+    if unsafe {
+        libc::utimensat(
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            times.as_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
 }
 
 /// Move project files out of the way (used to persist deletions on

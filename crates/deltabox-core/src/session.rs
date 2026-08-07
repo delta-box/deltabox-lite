@@ -135,6 +135,7 @@ impl SessionManager {
         };
         let spec = SessionSpec {
             project: self.project.clone(),
+            host_project: Some(self.project.clone()),
             store_dir: store_dir.clone(),
             policy: policy.clone(),
         };

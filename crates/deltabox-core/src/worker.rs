@@ -219,7 +219,7 @@ fn run_exec(root: &Path, runtime: &Path, exec: &WorkerExec) -> Result<WorkerExec
     })
 }
 
-fn read_capped(mut reader: impl Read) -> (String, bool) {
+pub(crate) fn read_capped(mut reader: impl Read) -> (String, bool) {
     let mut buf = Vec::with_capacity(64 * 1024);
     let mut chunk = [0u8; 64 * 1024];
     let mut truncated = false;
@@ -246,7 +246,7 @@ fn read_capped(mut reader: impl Read) -> (String, bool) {
 /// Walk the merged sandbox view and return relative paths of files and
 /// symlinks. Metadata is built supervisor-side (native stats), so this scan
 /// only pays interception cost for readdir calls.
-fn scan_root(root: &Path) -> Result<Vec<String>> {
+pub(crate) fn scan_root(root: &Path) -> Result<Vec<String>> {
     let mut paths = Vec::new();
     let walker = walkdir::WalkDir::new(root)
         .min_depth(1)
@@ -303,7 +303,7 @@ fn resolve_within(root: &Path, rel: &str) -> Result<PathBuf> {
     Ok(root.join(p))
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)

@@ -17,7 +17,8 @@ use crate::protocol::{
 };
 use crate::session::{now_ms, SessionMeta, SessionRegistry};
 use crate::snapshot::{
-    clone_or_copy_file, diff_snapshots, load_snapshot, read_capped_file, save_snapshot,
+    clone_or_copy_file, diff_snapshots, load_snapshot, preserve_symlink_times, read_capped_file,
+    save_snapshot,
 };
 use crate::worker::{is_excluded_dir, ScanEntry, ScanEntryKind};
 use base64::Engine;
@@ -550,6 +551,7 @@ impl DurableSessionManager {
         self.update_working_copy_transaction(session_id, |candidate| {
             let spec = SessionSpec {
                 project: candidate.to_path_buf(),
+                host_project: Some(self.project.clone()),
                 store_dir: store.join("runtime"),
                 policy: policy.clone(),
             };
@@ -1110,7 +1112,12 @@ fn make_direct_backend(worker_bin: Option<PathBuf>) -> Box<dyn SandboxBackend> {
     ))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+fn make_direct_backend(_worker_bin: Option<PathBuf>) -> Box<dyn SandboxBackend> {
+    Box::new(crate::backend::macos_seatbelt::SeatbeltBackend::new_direct())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn make_direct_backend(_worker_bin: Option<PathBuf>) -> Box<dyn SandboxBackend> {
     Box::new(crate::backend::DefaultBackend)
 }
@@ -1285,6 +1292,7 @@ fn copy_entry(src: &Path, dst: &Path, file_type: std::fs::FileType) -> Result<()
         }
         remove_path(dst)?;
         std::os::unix::fs::symlink(std::fs::read_link(src)?, dst)?;
+        preserve_symlink_times(src, dst)?;
     } else if file_type.is_file() {
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)?;

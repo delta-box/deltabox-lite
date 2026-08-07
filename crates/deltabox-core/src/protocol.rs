@@ -178,6 +178,9 @@ pub struct Notification {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSpec {
     pub project: PathBuf,
+    /// Real host project when `project` is a private transaction or shadow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_project: Option<PathBuf>,
     pub store_dir: PathBuf,
     pub policy: Policy,
 }

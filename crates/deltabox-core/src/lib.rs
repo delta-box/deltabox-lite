@@ -10,6 +10,7 @@ pub mod checkpoint;
 pub mod durable;
 pub mod error;
 pub mod journal;
+pub mod pathmap;
 pub mod policy;
 pub mod protocol;
 pub mod server;

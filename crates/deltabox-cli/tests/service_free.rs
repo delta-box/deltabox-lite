@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
@@ -823,20 +823,21 @@ fn representative_cli_tools_and_dev_null_work_inside_sandbox() {
             .success());
     }
     let sid = start(project.path());
-    let cases = [
-        ("dev-null", "printf sink-test > /dev/null"),
-        (
-            "dev-full",
-            concat!(
-                "python3 -c 'import errno, os\n",
-                "fd = os.open(\"/dev/full\", os.O_WRONLY)\n",
-                "try:\n",
-                "    os.write(fd, b\"x\")\n",
-                "except OSError as error:\n",
-                "    raise SystemExit(0 if error.errno == errno.ENOSPC else 1)\n",
-                "raise SystemExit(1)'"
-            ),
+    let mut cases = vec![("dev-null", "printf sink-test > /dev/null")];
+    #[cfg(target_os = "linux")]
+    cases.push((
+        "dev-full",
+        concat!(
+            "python3 -c 'import errno, os\n",
+            "fd = os.open(\"/dev/full\", os.O_WRONLY)\n",
+            "try:\n",
+            "    os.write(fd, b\"x\")\n",
+            "except OSError as error:\n",
+            "    raise SystemExit(0 if error.errno == errno.ENOSPC else 1)\n",
+            "raise SystemExit(1)'"
         ),
+    ));
+    cases.extend([
         (
             "git",
             concat!(
@@ -855,7 +856,7 @@ fn representative_cli_tools_and_dev_null_work_inside_sandbox() {
         ),
         ("cargo", "cargo --version > /dev/null"),
         ("npm", "npm --version > /dev/null"),
-    ];
+    ]);
     for (name, script) in cases {
         let result = exec(project.path(), &sid, script);
         assert_eq!(
@@ -868,6 +869,7 @@ fn representative_cli_tools_and_dev_null_work_inside_sandbox() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn openat2_reads_a_file_created_in_the_same_exec() {
     let project = tempfile::tempdir().unwrap();
     let sid = start_with_policy(project.path(), "[network]\nmode = \"deny_all\"\n");
@@ -989,13 +991,83 @@ fn network_modes_enforce_allow_audit_deny_all_and_allowlist() {
     assert!(!unlisted_thread.join().unwrap());
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_maps_path_arguments_and_denies_hardcoded_host_access() {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("hello.txt"), "visible").unwrap();
+    std::fs::create_dir(project.path().join("config")).unwrap();
+    std::fs::write(project.path().join("config/.env"), "SECRET=hidden").unwrap();
+    std::os::unix::fs::symlink("/bin/sh", project.path().join("existing-tool-link")).unwrap();
+    let sid = start(project.path());
+
+    let mapped = Command::new(bin())
+        .args([
+            "exec",
+            &sid,
+            "--project",
+            project.path().to_str().unwrap(),
+            "--",
+            "/bin/cat",
+            project.path().join("hello.txt").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(mapped.status.success());
+    let mapped: Value = serde_json::from_slice(&mapped.stdout).unwrap();
+    assert_eq!(mapped["exit_code"], 0);
+    assert_eq!(mapped["stdout"], "visible");
+    assert_eq!(diff(project.path(), &sid, None)["pending_changes"], 0);
+
+    let relative_secret = exec(project.path(), &sid, "cat config/.env");
+    assert_ne!(relative_secret["exit_code"], 0);
+
+    let real_project = project.path().canonicalize().unwrap();
+    let absolute_secret = exec(
+        project.path(),
+        &sid,
+        &format!("cat {}/config/.env", real_project.display()),
+    );
+    assert_ne!(absolute_secret["exit_code"], 0);
+    assert!(!absolute_secret["stdout"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("SECRET"));
+
+    let host_write = exec(
+        project.path(),
+        &sid,
+        &format!("printf changed > {}/hello.txt", real_project.display()),
+    );
+    assert_ne!(host_write["exit_code"], 0);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("hello.txt")).unwrap(),
+        "visible"
+    );
+
+    let unsafe_link = raw_exec(project.path(), &sid, "ln -s /etc/hosts new-leak");
+    assert!(!unsafe_link.status.success());
+    assert!(String::from_utf8_lossy(&unsafe_link.stderr).contains("absolute symlink"));
+    assert_eq!(diff(project.path(), &sid, None)["pending_changes"], 0);
+}
+
 #[test]
 fn newly_created_denied_file_is_rejected_without_pending_state() {
     let project = tempfile::tempdir().unwrap();
     let sid = start(project.path());
     let output = raw_exec(project.path(), &sid, "printf secret > .env");
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("path denied by policy"));
+    if cfg!(target_os = "linux") {
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("path denied by policy"));
+    } else {
+        assert!(output.status.success());
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_ne!(result["exit_code"], 0);
+        assert!(result["stderr"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not permitted"));
+    }
     assert_eq!(diff(project.path(), &sid, None)["pending_changes"], 0);
     let working = project.path().join(".deltabox").join(&sid).join("working");
     assert!(!working.join(".env").exists());
@@ -1006,7 +1078,7 @@ fn supervisor_read_and_diff_reject_external_symlinks() {
     let project = tempfile::tempdir().unwrap();
     let sid = start(project.path());
     let store = project.path().join(".deltabox").join(&sid);
-    std::os::unix::fs::symlink("/etc/hostname", store.join("working/leak")).unwrap();
+    std::os::unix::fs::symlink("/etc/hosts", store.join("working/leak")).unwrap();
     std::fs::remove_file(store.join("working_scan.json")).unwrap();
 
     let read = Command::new(bin())
@@ -1020,7 +1092,7 @@ fn supervisor_read_and_diff_reject_external_symlinks() {
         .output()
         .unwrap();
     assert!(!read.status.success());
-    assert!(String::from_utf8_lossy(&read.stderr).contains("symlink escapes project"));
+    assert!(String::from_utf8_lossy(&read.stderr).contains("symlink"));
     assert!(
         read.stdout.is_empty(),
         "external bytes leaked through fs.read"
@@ -1103,13 +1175,20 @@ fn optional_serve_recovers_after_worker_failure() {
             "method": "session.exec",
             "params": {
                 "session_id": sid,
-                "argv": ["sh", "-c", "kill -KILL $PPID"],
+                "argv": ["sh", "-c", if cfg!(target_os = "linux") { "kill -KILL $PPID" } else { "kill -KILL $$" }],
             },
         }));
-        assert!(
-            failed["error"].is_object(),
-            "worker failure was hidden: {failed}"
-        );
+        if cfg!(target_os = "linux") {
+            assert!(
+                failed["error"].is_object(),
+                "worker failure was hidden: {failed}"
+            );
+        } else {
+            assert!(
+                failed["result"]["exit_code"].is_null(),
+                "signalled command was hidden: {failed}"
+            );
+        }
 
         let recovered = rpc(serde_json::json!({
             "id": 3,

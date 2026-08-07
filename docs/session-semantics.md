@@ -75,8 +75,9 @@ working view or completes the abort journal and closes its review scope.
 Accepted and working scan indexes are persisted and refreshed only at
 transaction boundaries. Checkpoint trees are prepared under a temporary name,
 atomically published, capped at 100 manifest entries, and removed from disk
-when pruned. Linux uses `FICLONE` where supported and falls back to ordinary
-copying on other filesystems. Manifest, scan-index, registry, session, and
+when pruned. Linux uses `FICLONE`; macOS uses APFS `clonefile`; both fall back
+to ordinary copying when cloning is unavailable. Manifest, scan-index,
+registry, session, and
 review metadata updates use fsynced temporary files, atomic rename, and parent
 directory fsync. Boundary journal entries are fdatasynced.
 
@@ -92,3 +93,13 @@ Existing project directories and repositories work normally. Workflows such as
 `git init new-repo && git -C new-repo ...` should split creation and subsequent
 use into separate `deltabox exec` calls so the durable working view is
 materialized between them.
+
+## macOS backend limitation
+
+The macOS backend maps complete path arguments, working directories, and
+path-list environment values from the real project to the APFS shadow. It does
+not rewrite arbitrary shell or program source strings. A script containing a
+hardcoded absolute real-project path therefore sees that path unchanged;
+Seatbelt denies writes there and still applies secret-path read denies. Prefer
+relative paths, pass project paths as separate argv values, or use an adapter
+that calls the shared path-mapping helper.

@@ -1,22 +1,33 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
+#[cfg(target_os = "linux")]
 use deltabox_core::backend::linux_sandlock::SandlockBackend;
+#[cfg(target_os = "macos")]
+use deltabox_core::backend::macos_seatbelt::SeatbeltBackend;
+use deltabox_core::backend::SandboxBackend;
 use deltabox_core::protocol::{
     AbortParams, CheckpointParams, CommitParams, DiffParams, ExecParams,
 };
 use deltabox_core::session::SessionManager;
 use std::path::PathBuf;
 
+#[cfg(target_os = "linux")]
 fn worker_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_deltabox"))
+}
+
+fn native_backend() -> Box<dyn SandboxBackend> {
+    #[cfg(target_os = "linux")]
+    return Box::new(SandlockBackend::new(Some(worker_bin())));
+    #[cfg(target_os = "macos")]
+    return Box::new(SeatbeltBackend::new());
 }
 
 fn start_project() -> (tempfile::TempDir, SessionManager, String) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("hello.txt"), "hello\n").unwrap();
     std::fs::write(dir.path().join("del.txt"), "delete me\n").unwrap();
-    let backend = SandlockBackend::new(Some(worker_bin()));
-    let mut manager = SessionManager::new(dir.path(), Box::new(backend)).unwrap();
+    let mut manager = SessionManager::new(dir.path(), native_backend()).unwrap();
     let info = manager.start(None).unwrap();
     (dir, manager, info.session_id)
 }
@@ -137,7 +148,7 @@ fn commit_applies_to_host() {
 }
 
 #[test]
-fn delete_survives_checkpoint_and_abort() {
+fn deletion_state_survives_checkpoint_and_abort() {
     let (dir, mut manager, sid) = start_project();
     exec_sh(&mut manager, &sid, "rm del.txt");
     manager
@@ -153,8 +164,20 @@ fn delete_survives_checkpoint_and_abort() {
             checkpoint: None,
         })
         .unwrap();
+    let (deleted_code, _, _) = exec_sh(&mut manager, &sid, "test -e del.txt");
+    let (new_code, _, _) = exec_sh(&mut manager, &sid, "test -e new.txt");
+    assert_ne!(
+        deleted_code, 0,
+        "checkpoint deletion remains visible after abort"
+    );
+    assert_ne!(new_code, 0, "post-checkpoint file is removed by abort");
+    #[cfg(target_os = "linux")]
     assert!(!dir.path().join("del.txt").exists());
-    assert!(!dir.path().join("new.txt").exists());
+    #[cfg(target_os = "macos")]
+    assert!(
+        dir.path().join("del.txt").exists(),
+        "macOS keeps the real project untouched until commit"
+    );
 }
 
 #[test]
@@ -162,8 +185,7 @@ fn secrets_are_hard_denied() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("hello.txt"), "hello\n").unwrap();
     std::fs::write(dir.path().join(".env"), "SECRET=1\n").unwrap();
-    let backend = SandlockBackend::new(Some(worker_bin()));
-    let mut manager = SessionManager::new(dir.path(), Box::new(backend)).unwrap();
+    let mut manager = SessionManager::new(dir.path(), native_backend()).unwrap();
     let info = manager.start(None).unwrap();
     let sid = info.session_id;
     let (code, _, _) = exec_sh(&mut manager, &sid, "cat .env");
@@ -188,8 +210,7 @@ fn checkpoint_before_deletion_abort_restores() {
     std::fs::create_dir_all(dir.path().join("sub/deep")).unwrap();
     std::fs::write(dir.path().join("sub/deep/a.txt"), "a").unwrap();
     std::fs::write(dir.path().join("sub/b.txt"), "b").unwrap();
-    let backend = SandlockBackend::new(Some(worker_bin()));
-    let mut manager = SessionManager::new(dir.path(), Box::new(backend)).unwrap();
+    let mut manager = SessionManager::new(dir.path(), native_backend()).unwrap();
     let info = manager.start(None).unwrap();
     let sid = info.session_id;
 
@@ -228,8 +249,7 @@ fn delete_then_checkpoint_then_commit_applies_deletion() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("sub")).unwrap();
     std::fs::write(dir.path().join("sub/b.txt"), "b").unwrap();
-    let backend = SandlockBackend::new(Some(worker_bin()));
-    let mut manager = SessionManager::new(dir.path(), Box::new(backend)).unwrap();
+    let mut manager = SessionManager::new(dir.path(), native_backend()).unwrap();
     let info = manager.start(None).unwrap();
     let sid = info.session_id;
 
@@ -257,8 +277,7 @@ fn binary_edit_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("hello.txt"), "hello\n").unwrap();
     std::fs::write(dir.path().join("bin.dat"), [1u8, 2, 3]).unwrap();
-    let backend = SandlockBackend::new(Some(worker_bin()));
-    let mut manager = SessionManager::new(dir.path(), Box::new(backend)).unwrap();
+    let mut manager = SessionManager::new(dir.path(), native_backend()).unwrap();
     let info = manager.start(None).unwrap();
     let sid = info.session_id;
 
@@ -296,8 +315,7 @@ fn exec_cwd_and_env() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("sub")).unwrap();
     std::fs::write(dir.path().join("sub/inner.txt"), "x").unwrap();
-    let backend = SandlockBackend::new(Some(worker_bin()));
-    let mut manager = SessionManager::new(dir.path(), Box::new(backend)).unwrap();
+    let mut manager = SessionManager::new(dir.path(), native_backend()).unwrap();
     let info = manager.start(None).unwrap();
     let sid = info.session_id;
 
@@ -364,8 +382,7 @@ fn fs_read_write_roundtrip() {
 fn fs_ops_deny_secrets_and_outside_paths() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(".env"), "SECRET=1\n").unwrap();
-    let backend = SandlockBackend::new(Some(worker_bin()));
-    let mut manager = SessionManager::new(dir.path(), Box::new(backend)).unwrap();
+    let mut manager = SessionManager::new(dir.path(), native_backend()).unwrap();
     let info = manager.start(None).unwrap();
     let sid = info.session_id;
 

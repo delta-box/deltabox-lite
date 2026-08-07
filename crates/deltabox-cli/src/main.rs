@@ -405,12 +405,12 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn default_backend() -> DefaultBackend {
     DefaultBackend::default()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn default_backend() -> DefaultBackend {
     DefaultBackend
 }

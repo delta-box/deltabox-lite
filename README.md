@@ -8,7 +8,7 @@ Give agents a workspace they can break - without ever breaking your project.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#license)
 [![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg)](#)
-[![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](#)
+[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey.svg)](#)
 [![API](https://img.shields.io/badge/API-JSON--RPC-blueviolet.svg)](docs/protocol.md)
 [![Pi](https://img.shields.io/badge/pi-deltabox-purple.svg)](https://github.com/Ddnirvana/pi-deltabox)
 
@@ -30,9 +30,9 @@ The JSON-RPC protocol in action — sandboxed edits, diff, abort, redo, commit:
 
 ## Highlights
 
-- **Real isolation, not a wrapper** — Linux commands run inside a local 
-  sandbox with seccomp copy-on-write, Landlock filesystem policy (based on sandlock), resource
-  limits, and an audited network allowlist.
+- **Native isolation, not a container** — Linux uses Landlock, seccomp and
+  sandlock COW; macOS uses Seatbelt plus APFS-cloned shadows. Both enforce the
+  same durable review and policy model without root.
 - **Service-free durable sessions** — accepted and pending views live on disk,
   so separate CLI processes can continue a session without a daemon. Optional
   `serve` transport remains available for adapters that prefer JSON-RPC.
@@ -53,7 +53,7 @@ The JSON-RPC protocol in action — sandboxed edits, diff, abort, redo, commit:
 ```mermaid
 flowchart LR
     A[CLI or agent adapter] --> D[Durable session store]
-    D -->|short-lived exec| W[Confined worker<br/>sandlock · seccomp-COW]
+    D -->|short-lived exec| W[Native confinement<br/>Sandlock or Seatbelt]
     W --> S[(Working shadow)]
     S -->|diff / abort| B[(Accepted baseline)]
     S -->|user commit| P[(Real project)]
@@ -63,8 +63,9 @@ flowchart LR
 The on-disk session store owns accepted and working project views. Each normal
 CLI `exec` launches a short-lived confined COW transaction and materializes its
 result into the working shadow; the real project remains untouched until user
-commit. `deltabox serve` is an optional transport/warm-runner surface, not the
-source of session truth. See [session semantics](docs/session-semantics.md).
+commit. `deltabox serve` is an optional persistent transport process that uses
+the same per-command transactions; it is not the source of session truth. See
+[session semantics](docs/session-semantics.md).
 
 ## Quick start
 
@@ -75,8 +76,7 @@ cargo build --release
 export PATH="$PWD/target/release:$PATH"
 ```
 
-Start a durable session and use it from independent CLI processes (Linux
-backend):
+Start a durable session and use it from independent CLI processes:
 
 ```bash
 deltabox session start /abs/path/my-project
@@ -117,7 +117,7 @@ limits. The default agent policy uses the `allow_audit` network mode, denies
 common secret paths, passes only a small environment allowlist to commands,
 caps one direct write at 16 MiB, and caps pending added/modified file content at
 1 GiB. Network policy can instead deny all access or allow only explicit
-Sandlock targets:
+host-and-port targets:
 
 ```toml
 [network]
@@ -130,7 +130,8 @@ max_storage_bytes = 1073741824
 ```
 
 See [policy reference](docs/policy.md) for the full schema and enforcement
-semantics.
+semantics, and [macOS compatibility](docs/macos.md) for path mapping and tool
+support.
 
 ## Performance
 
@@ -151,6 +152,25 @@ The 1000-file CLI run had one 211 ms outlier; the serve run had a 397 ms
 outlier. Persisted scan indexes and changed-path materialization keep median CLI
 latency from scaling with a full working-tree copy.
 
+Measured on an Apple-silicon MacBook Air (macOS 14.6, APFS, release build).
+Each row reports the p50 of 30 interleaved no-op commands after three warmups
+over a pre-created project and session.
+
+| Runner | 10 files | 200 files | 1000 files |
+|---|---:|---:|---:|
+| service-free CLI (default) | 88 ms | 142 ms | 333 ms |
+| optional `serve` | 84 ms | 138 ms | 324 ms |
+| Anthropic sandbox-runtime 0.0.70 | 137 ms | 137 ms | 137 ms |
+| Carderne sandbox-runtime 0.0.69 | 132 ms | 133 ms | 129 ms |
+| raw `sandbox-exec` | 10 ms | 10 ms | 10 ms |
+| plain shell | 3 ms | 3 ms | 3 ms |
+
+The raw Seatbelt row denies network but allows filesystem access, so it is a
+launch-overhead baseline rather than a sandbox with Deltabox semantics.
+Deltabox clones and validates a crash-recoverable candidate tree for every
+arbitrary command. APFS makes file contents copy-on-write, but directory entry
+creation and metadata validation still scale with the number of files.
+
 ## Project layout
 
 - `crates/deltabox-core` — sessions, checkpoints, diff/commit/abort, policy,
@@ -159,6 +179,7 @@ latency from scaling with a full working-tree copy.
 - `examples/rpc-demo.mjs` — a runnable JSON-RPC demo.
 - `docs/protocol.md` — the stable JSON-RPC contract.
 - `docs/policy.md` — policy schema and enforcement boundaries.
+- `docs/macos.md` — macOS backend behavior and compatibility matrix.
 
 
 ## Citation

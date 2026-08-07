@@ -22,9 +22,9 @@ Supervisor-side reads canonicalize the final target. A symlink that escapes the
 working tree, is absolute, or resolves to a denied path is rejected. Diff never
 dereferences such a link and therefore cannot expose its target bytes.
 
-`/dev/null` is writable. `/dev/full` is writable as a device and returns
-`ENOSPC`, which preserves the behavior expected by shells and common developer
-tools.
+`/dev/null` is writable. On Linux, `/dev/full` is writable as a device and
+returns `ENOSPC`, preserving the behavior expected by shells and developer
+tools; macOS does not provide `/dev/full`.
 
 ## Network
 
@@ -46,15 +46,23 @@ mode = "allowlist"
 allow = ["registry.npmjs.org:443", "127.0.0.1:3000"]
 ```
 
-`allow_audit` maps to Sandlock's unrestricted `*` network rule. `deny_all`
-installs no network rule, so outbound connect and bind/listen are denied.
-`allowlist` installs one Sandlock rule for each entry; an empty list is a valid
-deny-all allowlist. The legacy form
+`allow_audit` permits unrestricted networking. `deny_all` installs no network
+permission, so outbound connect and bind/listen are denied. On Linux,
+`allowlist` installs one Sandlock rule per entry. On macOS, literal loopback
+entries become Seatbelt rules; domain names and remote IPs use a
+session-local, randomly authenticated HTTP/HTTPS CONNECT proxy. The sandbox
+can reach that proxy but cannot open a direct unlisted connection. Proxy-aware
+tools such as curl, npm, pip and Cargo work with hostname entries; a program
+that ignores standard proxy variables remains network-denied.
+
+An empty list is a valid deny-all allowlist. The legacy form
 `mode = { allowlist = ["example.com:443"] }` remains accepted.
 
 Allowlist entries must be non-empty and contain no control characters. `*` is
 rejected in an allowlist; use `allow_audit` when unrestricted access is intended.
-Localhost is not implicitly privileged and must be listed explicitly.
+Localhost is not implicitly privileged and must be listed explicitly. macOS
+normalizes `localhost`, `127.0.0.0/8` and `::1` spellings to Seatbelt's
+`localhost` filter while retaining the exact listed port.
 
 ## Environment
 
@@ -82,6 +90,12 @@ All limit fields are optional in a custom policy. The default agent policy sets
 pending storage. Its memory and CPU limits are unset; Sandlock's memory limiter
 is incompatible with V8 virtual-address-space reservation in representative
 Node/npm workloads.
+
+On macOS, `max_open_files` and `max_memory_bytes` map to process rlimits.
+`max_processes` bounds allowlist-proxy concurrency but is not currently an OS
+process-count limit because Darwin's `RLIMIT_NPROC` is per user rather than per
+sandbox. `max_cpu_percent` is not currently enforced on macOS. Storage and
+direct-write limits are platform-neutral and remain fully enforced.
 
 `max_write_bytes` applies to one direct write request. `max_storage_bytes` is
 the aggregate size of regular files added or modified relative to the accepted

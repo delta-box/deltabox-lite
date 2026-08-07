@@ -66,7 +66,12 @@ pub mod linux_sandlock;
 #[cfg(target_os = "linux")]
 pub use linux_sandlock::SandlockBackend as DefaultBackend;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+pub mod macos_seatbelt;
+#[cfg(target_os = "macos")]
+pub use macos_seatbelt::SeatbeltBackend as DefaultBackend;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub mod stub;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub use stub::StubBackend as DefaultBackend;
