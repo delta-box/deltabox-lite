@@ -54,7 +54,7 @@ pub fn inspect() -> DoctorReport {
                 "macFUSE installation and extension approval require explicit user action".into(),
             );
         }
-        _ => notes.push("this Phase 0 prototype supports Linux and macOS only".into()),
+        _ => notes.push("deltafs-fuse supports Linux and macOS only".into()),
     }
     if !fuse_feature {
         notes.push("binary was built without an active FUSE mount feature".into());

@@ -5,15 +5,19 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Ddnirvana/deltabox-lite"
 rust-version = "1.85"
-description = "Standalone commit-biased filesystem prototype for Deltabox"
+description = "Standalone commit-biased filesystem for Deltabox"
 
 [[bin]]
 name = "deltafs-fuse"
 path = "src/main.rs"
 
+[[bench]]
+name = "empty_control"
+harness = false
+
 [features]
 default = []
-fuse = ["dep:fuser", "dep:xattr"]
+fuse = ["dep:fuser"]
 macos-no-mount = ["fuse", "fuser/macos-no-mount"]
 
 [dependencies]
@@ -23,13 +27,14 @@ libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+crc32fast = "1"
 fuser = { version = "0.18", optional = true }
-xattr = { version = "1", optional = true }
+xattr = "1"
 
 [dev-dependencies]
 tempfile = "3"
+proptest = "1"
 
-# Keep the Phase 0 filesystem independently buildable. It will join the parent
-# workspace only after the standalone feasibility gates pass.
+# Keep the filesystem independently buildable so the engine and FUSE adapter
+# can also be used outside Deltabox.
 [workspace]
-

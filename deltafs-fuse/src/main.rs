@@ -10,7 +10,7 @@ use std::path::PathBuf;
 #[command(
     name = "deltafs-fuse",
     version,
-    about = "Standalone DeltaFS FUSE prototype"
+    about = "Standalone DeltaFS FUSE filesystem"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -19,7 +19,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Inspect whether this host can mount the Phase 0 filesystem.
+    /// Inspect whether this host can mount DeltaFS.
     Doctor {
         /// Emit structured JSON.
         #[arg(long)]
