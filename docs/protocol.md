@@ -7,7 +7,7 @@ each response is one JSON object per line.
 ## Request
 
 ```json
-{"id": 1, "method": "session.start", "params": {"project": "/abs/path", "policy": null}}
+{"id": 1, "method": "session.start", "params": {"project": "/abs/path", "policy": null, "fs_mode": "cbcow-through", "require_fs_mode": false}}
 ```
 
 ## Response
@@ -21,7 +21,7 @@ each response is one JSON object per line.
 
 | Method | Params | Result |
 |---|---|---|
-| `session.start` | `{project, policy?}` | `SessionInfo` |
+| `session.start` | `{project, policy?, fs_mode?, require_fs_mode?}` | `SessionInfo` |
 | `session.stop` | `{session_id}` | `SessionInfo` |
 | `session.status` | `{session_id}` | `SessionInfo` |
 | `session.exec` | `{session_id, argv, cwd?, env?, label?}` | `ExecResult` |
@@ -36,8 +36,19 @@ each response is one JSON object per line.
 | `review.abort` | `{session_id}` | `AbortResult` |
 | `review.skip` | `{session_id}` | `ActiveReview` |
 
+`fs_mode` accepts `cbcow-through` or `copy-private`. On Linux, omitting it
+requests `cbcow-through`; a clean startup failure may resolve to
+`copy-private`. Set `require_fs_mode: true` to reject fallback.
+
 `SessionInfo` = `{session_id, project, started_at_ms, status, checkpoint_count,
-pending_changes}`.
+pending_changes, requested_fs_mode, resolved_fs_mode, host_visibility,
+durability, isolation, fuse_provider, fallback_reason, rollback_guarantee,
+tainted, mountpoint?, helper_pid?, helper_restarts, mount_namespace}`.
+
+For `cbcow-through`, `host_visibility` is `immediate`: commit accepts the
+current host-visible state and abort reverts it. `copy-private` reports
+`on-commit`. The helper PID may change after automatic recovery while the
+session and its durable state remain valid.
 
 `ExecResult` = `{exit_code, stdout, stderr, duration_ms, truncated}`.
 

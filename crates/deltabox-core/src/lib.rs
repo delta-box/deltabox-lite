@@ -5,8 +5,11 @@
 //! extension, wrappers) decide review granularity.
 
 pub mod backend;
+#[cfg(target_os = "linux")]
+pub mod cbcow;
 pub mod changeset;
 pub mod checkpoint;
+pub mod coordinator;
 pub mod durable;
 pub mod error;
 pub mod journal;

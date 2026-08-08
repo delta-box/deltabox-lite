@@ -1,22 +1,23 @@
-use crate::journal::{MutationTicket, UndoStore};
+use crate::engine::{EngineError, EngineOptions, StateEngine};
 use anyhow::{bail, Context, Result};
 use fuser::{
-    AccessFlags, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation,
-    INodeNo, LockOwner, MountOption, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
-    ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite,
-    ReplyXattr, Request, TimeOrNow, WriteFlags,
+    AccessFlags, BackgroundSession, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags,
+    Generation, INodeNo, LockOwner, MountOption, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr,
+    ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs,
+    ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
 use std::collections::HashMap;
 use std::ffi::{CString, OsStr, OsString};
-use std::fs::{self, File, FileTimes, Metadata, OpenOptions};
+use std::fs::{self, File, Metadata, OpenOptions};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const TTL: Duration = Duration::from_millis(100);
+const TTL: Duration = Duration::ZERO;
+const INTERNAL_DIR: &str = ".deltabox";
 
 #[derive(Debug)]
 struct InodeTable {
@@ -63,7 +64,7 @@ impl InodeTable {
             .filter_map(|(ino, path)| {
                 path.strip_prefix(old)
                     .ok()
-                    .map(|suffix| (*ino, path.clone(), new.join(suffix)))
+                    .map(|suffix| (*ino, path.clone(), renamed_path(new, suffix)))
             })
             .collect();
         for (ino, old_path, new_path) in replacements {
@@ -71,6 +72,17 @@ impl InodeTable {
             self.by_path.insert(new_path.clone(), ino);
             self.by_inode.insert(ino, new_path);
         }
+    }
+
+    fn entries(&self) -> Vec<(INodeNo, PathBuf)> {
+        self.by_inode
+            .iter()
+            .map(|(inode, path)| (INodeNo(*inode), path.clone()))
+            .collect()
+    }
+
+    fn inode(&self, path: &Path) -> Option<INodeNo> {
+        self.by_path.get(path).copied().map(INodeNo)
     }
 }
 
@@ -106,25 +118,31 @@ impl HandleTable {
         );
         FileHandle(handle)
     }
+
+    fn rename_prefix(&mut self, old: &Path, new: &Path) {
+        for open in self.files.values_mut() {
+            if let Ok(suffix) = open.mutation_path.strip_prefix(old) {
+                open.mutation_path = renamed_path(new, suffix);
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct DeltaFs {
     source: PathBuf,
-    undo: Arc<UndoStore>,
-    inodes: Mutex<InodeTable>,
+    engine: Arc<Mutex<StateEngine>>,
+    inodes: Arc<Mutex<InodeTable>>,
     handles: Mutex<HandleTable>,
-    mutation_lock: Mutex<()>,
 }
 
 impl DeltaFs {
-    fn new(source: PathBuf, undo: UndoStore) -> Self {
+    fn new(source: PathBuf, engine: Arc<Mutex<StateEngine>>) -> Self {
         Self {
-            inodes: Mutex::new(InodeTable::new(source.clone())),
+            inodes: Arc::new(Mutex::new(InodeTable::new(source.clone()))),
             source,
-            undo: Arc::new(undo),
+            engine,
             handles: Mutex::new(HandleTable::new()),
-            mutation_lock: Mutex::new(()),
         }
     }
 
@@ -149,20 +167,25 @@ impl DeltaFs {
         file_attr(ino, &metadata)
     }
 
-    fn begin(&self, operation: &str, paths: &[PathBuf]) -> io::Result<MutationTicket> {
-        self.undo.begin(operation, paths).map_err(io::Error::other)
+    fn relative(&self, path: &Path) -> io::Result<PathBuf> {
+        path.strip_prefix(&self.source)
+            .map(Path::to_path_buf)
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
     }
 
-    fn applied(&self, ticket: MutationTicket) -> io::Result<()> {
-        self.undo.applied(ticket).map_err(io::Error::other)
+    fn mutate<T>(
+        &self,
+        operation: impl FnOnce(&mut StateEngine) -> crate::engine::Result<T>,
+    ) -> io::Result<T> {
+        operation(&mut self.engine.lock().expect("engine lock")).map_err(engine_io)
     }
 
     fn open_handle(&self, ino: INodeNo, flags: OpenFlags) -> io::Result<FileHandle> {
         let path = self.path(ino)?;
         let file = if flags.0 & libc::O_TRUNC != 0 {
-            self.mutate("open_truncate", std::slice::from_ref(&path), || {
-                open_file(&path, flags.0, false, 0)
-            })?
+            let relative = self.relative(&path)?;
+            self.mutate(|engine| engine.truncate(&relative, 0))?;
+            open_file(&path, flags.0 & !libc::O_TRUNC, false, 0)?
         } else {
             open_file(&path, flags.0, false, 0)?
         };
@@ -172,23 +195,44 @@ impl DeltaFs {
             .expect("handle table poisoned")
             .insert(file, path))
     }
+}
 
-    fn mutate<T>(
-        &self,
-        operation: &str,
-        paths: &[PathBuf],
-        mutation: impl FnOnce() -> io::Result<T>,
-    ) -> io::Result<T> {
-        let _guard = self.mutation_lock.lock().expect("mutation lock poisoned");
-        let ticket = self.begin(operation, paths)?;
-        let value = mutation()?;
-        self.applied(ticket)?;
-        Ok(value)
+#[derive(Debug)]
+pub struct MountedEngine {
+    session: BackgroundSession,
+    inodes: Arc<Mutex<InodeTable>>,
+}
+
+impl MountedEngine {
+    pub fn invalidate(&self) -> io::Result<()> {
+        let notifier = self.session.notifier();
+        let inodes = self.inodes.lock().expect("inode table poisoned");
+        for (inode, path) in inodes.entries() {
+            notifier.inval_inode(inode, 0, -1)?;
+            if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+                if let Some(parent_inode) = inodes.inode(parent) {
+                    notifier.inval_entry(parent_inode, name)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn shutdown(self) -> io::Result<()> {
+        self.session.umount_and_join()
+    }
+
+    pub fn wait(self) -> io::Result<()> {
+        self.session.join()
     }
 }
 
 impl Filesystem for DeltaFs {
     fn lookup(&self, _request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
+        if parent == INodeNo::ROOT && name == OsStr::new(INTERNAL_DIR) {
+            reply.error(Errno::ENOENT);
+            return;
+        }
         let result = self
             .child_path(parent, name)
             .and_then(|path| self.intern_attr(path));
@@ -221,7 +265,7 @@ impl Filesystem for DeltaFs {
         atime: Option<TimeOrNow>,
         mtime: Option<TimeOrNow>,
         _ctime: Option<SystemTime>,
-        fh: Option<FileHandle>,
+        _fh: Option<FileHandle>,
         _crtime: Option<SystemTime>,
         _chgtime: Option<SystemTime>,
         _bkuptime: Option<SystemTime>,
@@ -230,57 +274,35 @@ impl Filesystem for DeltaFs {
     ) {
         let result = (|| {
             let path = self.path(ino)?;
-            self.mutate("setattr", std::slice::from_ref(&path), || {
-                if let Some(mode) = mode {
-                    fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
-                }
-                if uid.is_some() || gid.is_some() {
-                    let c_path = c_path(&path)?;
-                    let rc = unsafe {
-                        libc::chown(
-                            c_path.as_ptr(),
-                            uid.unwrap_or(u32::MAX),
-                            gid.unwrap_or(u32::MAX),
-                        )
-                    };
-                    if rc != 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-                }
-                if let Some(size) = size {
-                    if let Some(handle) = fh {
-                        let handles = self.handles.lock().expect("handle table poisoned");
-                        let open = handles
-                            .files
-                            .get(&handle.0)
-                            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
-                        open.file.set_len(size)?;
-                    } else {
-                        OpenOptions::new().write(true).open(&path)?.set_len(size)?;
-                    }
-                }
-                if atime.is_some() || mtime.is_some() {
-                    let now = SystemTime::now();
-                    let mut times = FileTimes::new();
-                    if let Some(atime) = atime {
-                        times = times.set_accessed(resolve_time(atime, now));
-                    }
-                    if let Some(mtime) = mtime {
-                        times = times.set_modified(resolve_time(mtime, now));
-                    }
-                    if let Some(handle) = fh {
-                        let handles = self.handles.lock().expect("handle table poisoned");
-                        let open = handles
-                            .files
-                            .get(&handle.0)
-                            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
-                        open.file.set_times(times)?;
-                    } else {
-                        File::open(&path)?.set_times(times)?;
-                    }
-                }
-                Ok(())
-            })?;
+            let relative = self.relative(&path)?;
+            let metadata = fs::symlink_metadata(&path)?;
+            if let Some(mode) = mode {
+                self.mutate(|engine| engine.set_mode(&relative, mode))?;
+            }
+            if uid.is_some() || gid.is_some() {
+                self.mutate(|engine| {
+                    engine.set_owner(
+                        &relative,
+                        uid.unwrap_or(metadata.uid()),
+                        gid.unwrap_or(metadata.gid()),
+                    )
+                })?;
+            }
+            if let Some(size) = size {
+                self.mutate(|engine| engine.truncate(&relative, size))?;
+            }
+            if atime.is_some() || mtime.is_some() {
+                let now = SystemTime::now();
+                let old_atime = system_time(metadata.atime(), metadata.atime_nsec());
+                let old_mtime = system_time(metadata.mtime(), metadata.mtime_nsec());
+                self.mutate(|engine| {
+                    engine.set_times(
+                        &relative,
+                        atime.map_or(old_atime, |value| resolve_time(value, now)),
+                        mtime.map_or(old_mtime, |value| resolve_time(value, now)),
+                    )
+                })?;
+            }
             let metadata = fs::symlink_metadata(&path)?;
             file_attr(ino, &metadata)
         })();
@@ -309,10 +331,8 @@ impl Filesystem for DeltaFs {
     ) {
         let result = (|| {
             let path = self.child_path(parent, name)?;
-            self.mutate("mkdir", std::slice::from_ref(&path), || {
-                fs::create_dir(&path)?;
-                fs::set_permissions(&path, fs::Permissions::from_mode(mode & !umask))
-            })?;
+            let relative = self.relative(&path)?;
+            self.mutate(|engine| engine.create_dir(&relative, mode & !umask))?;
             self.intern_attr(path)
         })();
         match result {
@@ -323,18 +343,16 @@ impl Filesystem for DeltaFs {
 
     fn unlink(&self, _request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         let result = self.child_path(parent, name).and_then(|path| {
-            self.mutate("unlink", std::slice::from_ref(&path), || {
-                fs::remove_file(&path)
-            })
+            let relative = self.relative(&path)?;
+            self.mutate(|engine| engine.unlink(&relative))
         });
         finish_empty(result, reply);
     }
 
     fn rmdir(&self, _request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         let result = self.child_path(parent, name).and_then(|path| {
-            self.mutate("rmdir", std::slice::from_ref(&path), || {
-                fs::remove_dir(&path)
-            })
+            let relative = self.relative(&path)?;
+            self.mutate(|engine| engine.unlink(&relative))
         });
         finish_empty(result, reply);
     }
@@ -349,9 +367,8 @@ impl Filesystem for DeltaFs {
     ) {
         let result: io::Result<FileAttr> = (|| {
             let path = self.child_path(parent, link_name)?;
-            self.mutate("symlink", std::slice::from_ref(&path), || {
-                std::os::unix::fs::symlink(target, &path)
-            })?;
+            let relative = self.relative(&path)?;
+            self.mutate(|engine| engine.symlink(target, &relative))?;
             self.intern_attr(path)
         })();
         match result {
@@ -377,12 +394,16 @@ impl Filesystem for DeltaFs {
         let result: io::Result<()> = (|| {
             let old = self.child_path(parent, name)?;
             let new = self.child_path(newparent, newname)?;
-            self.mutate("rename", &[old.clone(), new.clone()], || {
-                fs::rename(&old, &new)
-            })?;
+            let old_relative = self.relative(&old)?;
+            let new_relative = self.relative(&new)?;
+            self.mutate(|engine| engine.rename(&old_relative, &new_relative))?;
             self.inodes
                 .lock()
                 .expect("inode table poisoned")
+                .rename_prefix(&old, &new);
+            self.handles
+                .lock()
+                .expect("handle table poisoned")
                 .rename_prefix(&old, &new);
             Ok(())
         })();
@@ -400,9 +421,9 @@ impl Filesystem for DeltaFs {
         let result: io::Result<FileAttr> = (|| {
             let source = self.path(ino)?;
             let target = self.child_path(newparent, newname)?;
-            self.mutate("link", &[source.clone(), target.clone()], || {
-                fs::hard_link(&source, &target)
-            })?;
+            let source_relative = self.relative(&source)?;
+            let target_relative = self.relative(&target)?;
+            self.mutate(|engine| engine.hard_link(&source_relative, &target_relative))?;
             self.intern_attr(target)
         })();
         match result {
@@ -461,16 +482,14 @@ impl Filesystem for DeltaFs {
         reply: ReplyWrite,
     ) {
         let result: io::Result<usize> = (|| {
-            let _guard = self.mutation_lock.lock().expect("mutation lock poisoned");
             let handles = self.handles.lock().expect("handle table poisoned");
             let open = handles
                 .files
                 .get(&fh.0)
                 .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
-            let ticket = self.begin("write", std::slice::from_ref(&open.mutation_path))?;
-            let written = open.file.write_at(data, offset)?;
-            self.applied(ticket)?;
-            Ok(written)
+            let relative = self.relative(&open.mutation_path)?;
+            self.mutate(|engine| engine.write_file(&relative, &open.file, offset, data))?;
+            Ok(data.len())
         })();
         match result {
             Ok(size) => reply.written(size as u32),
@@ -482,19 +501,11 @@ impl Filesystem for DeltaFs {
         &self,
         _request: &Request,
         _ino: INodeNo,
-        fh: FileHandle,
+        _fh: FileHandle,
         _lock_owner: LockOwner,
         reply: ReplyEmpty,
     ) {
-        let result = self
-            .handles
-            .lock()
-            .expect("handle table poisoned")
-            .files
-            .get(&fh.0)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
-            .and_then(|open| open.file.sync_data());
-        finish_empty(result, reply);
+        reply.ok();
     }
 
     fn release(
@@ -557,6 +568,9 @@ impl Filesystem for DeltaFs {
             ];
             for entry in fs::read_dir(&path)? {
                 let entry = entry?;
+                if path == self.source && entry.file_name() == OsStr::new(INTERNAL_DIR) {
+                    continue;
+                }
                 let kind = FileType::from_std(entry.file_type()?)
                     .ok_or_else(|| io::Error::from(io::ErrorKind::Unsupported))?;
                 entries.push((entry.path(), kind, entry.file_name()));
@@ -642,16 +656,18 @@ impl Filesystem for DeltaFs {
         }
         let result = (|| {
             let path = self.path(ino)?;
-            self.mutate("setxattr", std::slice::from_ref(&path), || {
-                let existing = xattr::get(&path, name)?;
-                if flags & libc::XATTR_CREATE != 0 && existing.is_some() {
-                    return Err(io::Error::from_raw_os_error(libc::EEXIST));
-                }
-                if flags & libc::XATTR_REPLACE != 0 && existing.is_none() {
-                    return Err(io::Error::from_raw_os_error(no_xattr_errno()));
-                }
-                xattr::set(&path, name, value)
-            })
+            let existing = xattr::get(&path, name)?;
+            if flags & libc::XATTR_CREATE != 0 && existing.is_some() {
+                return Err(io::Error::from_raw_os_error(libc::EEXIST));
+            }
+            if flags & libc::XATTR_REPLACE != 0 && existing.is_none() {
+                return Err(io::Error::from_raw_os_error(no_xattr_errno()));
+            }
+            let relative = self.relative(&path)?;
+            let name = name
+                .to_str()
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+            self.mutate(|engine| engine.set_xattr(&relative, name, value))
         })();
         finish_empty(result, reply);
     }
@@ -694,9 +710,11 @@ impl Filesystem for DeltaFs {
     fn removexattr(&self, _request: &Request, ino: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         let result = (|| {
             let path = self.path(ino)?;
-            self.mutate("removexattr", std::slice::from_ref(&path), || {
-                xattr::remove(&path, name)
-            })
+            let relative = self.relative(&path)?;
+            let name = name
+                .to_str()
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+            self.mutate(|engine| engine.remove_xattr(&relative, name))
         })();
         finish_empty(result, reply);
     }
@@ -725,9 +743,9 @@ impl Filesystem for DeltaFs {
     ) {
         let result: io::Result<(FileAttr, FileHandle)> = (|| {
             let path = self.child_path(parent, name)?;
-            let file = self.mutate("create", std::slice::from_ref(&path), || {
-                open_file(&path, flags, true, mode & !umask)
-            })?;
+            let relative = self.relative(&path)?;
+            let file =
+                self.mutate(|engine| engine.create_file_open(&relative, mode & !umask, flags))?;
             let attr = self.intern_attr(path.clone())?;
             let handle = self
                 .handles
@@ -745,7 +763,22 @@ impl Filesystem for DeltaFs {
     }
 }
 
-pub fn mount(source: &Path, mountpoint: &Path, undo_dir: &Path) -> Result<()> {
+pub fn mount(source: &Path, mountpoint: &Path, state_dir: &Path) -> Result<()> {
+    let source = source.canonicalize()?;
+    let engine = if state_dir.join("session.json").exists() {
+        StateEngine::open(&source, state_dir)?
+    } else {
+        StateEngine::create(&source, state_dir, EngineOptions::default())?
+    };
+    spawn_engine(&source, mountpoint, Arc::new(Mutex::new(engine)))?.wait()?;
+    Ok(())
+}
+
+pub fn spawn_engine(
+    source: &Path,
+    mountpoint: &Path,
+    engine: Arc<Mutex<StateEngine>>,
+) -> Result<MountedEngine> {
     let source = source
         .canonicalize()
         .with_context(|| format!("source does not exist: {}", source.display()))?;
@@ -761,8 +794,8 @@ pub fn mount(source: &Path, mountpoint: &Path, undo_dir: &Path) -> Result<()> {
     if fs::read_dir(&mountpoint)?.next().is_some() {
         bail!("mountpoint must be empty");
     }
-    let undo = UndoStore::open(&source, undo_dir)?;
-    let filesystem = DeltaFs::new(source, undo);
+    let filesystem = DeltaFs::new(source, engine);
+    let inodes = filesystem.inodes.clone();
     let mut config = fuser::Config::default();
     config.mount_options.extend([
         MountOption::FSName("deltafs-fuse".into()),
@@ -778,8 +811,24 @@ pub fn mount(source: &Path, mountpoint: &Path, undo_dir: &Path) -> Result<()> {
     {
         config.clone_fd = true;
     }
-    fuser::mount(filesystem, mountpoint, &config)?;
-    Ok(())
+    let session = fuser::spawn_mount(filesystem, mountpoint, &config)?;
+    Ok(MountedEngine { session, inodes })
+}
+
+fn renamed_path(new: &Path, suffix: &Path) -> PathBuf {
+    if suffix.as_os_str().is_empty() {
+        new.to_path_buf()
+    } else {
+        new.join(suffix)
+    }
+}
+
+fn engine_io(error: EngineError) -> io::Error {
+    match error {
+        EngineError::Io(error) => error,
+        EngineError::QuotaExceeded { .. } => io::Error::from_raw_os_error(libc::ENOSPC),
+        other => io::Error::other(other),
+    }
 }
 
 fn finish_empty(result: io::Result<()>, reply: ReplyEmpty) {
@@ -863,45 +912,38 @@ fn no_xattr_errno() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::{JournalEvent, PreimageKind};
     use tempfile::tempdir;
 
     #[test]
     fn open_truncate_captures_preimage_before_mutation() {
         let parent = tempdir().unwrap();
         let source = parent.path().join("source");
-        let undo = parent.path().join("undo");
+        let state = parent.path().join("state");
         fs::create_dir(&source).unwrap();
         let source = source.canonicalize().unwrap();
         let target = source.join("file.txt");
         fs::write(&target, b"before truncate").unwrap();
 
-        let filesystem = DeltaFs::new(source.clone(), UndoStore::open(&source, &undo).unwrap());
+        let engine = StateEngine::create(&source, &state, EngineOptions::default()).unwrap();
+        let filesystem = DeltaFs::new(source.clone(), Arc::new(Mutex::new(engine)));
         let ino = filesystem.intern_attr(target.clone()).unwrap().ino;
         filesystem
             .open_handle(ino, OpenFlags(libc::O_WRONLY | libc::O_TRUNC))
             .unwrap();
 
         assert_eq!(fs::metadata(&target).unwrap().len(), 0);
-        let events: Vec<JournalEvent> = fs::read_to_string(filesystem.undo.journal_path())
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        let JournalEvent::Ready {
-            operation,
-            preimages,
-            ..
-        } = &events[0]
-        else {
-            panic!("first event must be ready");
-        };
-        assert_eq!(operation, "open_truncate");
-        assert_eq!(preimages[0].kind, PreimageKind::Regular);
         assert_eq!(
-            fs::read(undo.join(preimages[0].data.as_ref().unwrap())).unwrap(),
-            b"before truncate"
+            filesystem.engine.lock().unwrap().diff(None).unwrap().len(),
+            1
         );
-        assert!(matches!(events[1], JournalEvent::Applied { .. }));
+        filesystem.engine.lock().unwrap().rollback(None).unwrap();
+        assert_eq!(fs::read(target).unwrap(), b"before truncate");
+    }
+
+    #[test]
+    fn rename_prefix_preserves_exact_and_descendant_paths() {
+        let new = Path::new("root/new");
+        assert_eq!(renamed_path(new, Path::new("")), new);
+        assert_eq!(renamed_path(new, Path::new("child")), new.join("child"));
     }
 }

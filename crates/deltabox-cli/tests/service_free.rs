@@ -24,12 +24,22 @@ fn run(project: &Path, args: &[&str]) -> Output {
 }
 
 fn start(project: &Path) -> String {
-    run(project, &["session", "start", project.to_str().unwrap()])
-        .stdout
-        .split(|b| *b == b'\n')
-        .next()
-        .map(|s| String::from_utf8_lossy(s).trim().to_string())
-        .unwrap()
+    run(
+        project,
+        &[
+            "session",
+            "start",
+            project.to_str().unwrap(),
+            "--fs-mode",
+            "copy-private",
+            "--require-fs-mode",
+        ],
+    )
+    .stdout
+    .split(|b| *b == b'\n')
+    .next()
+    .map(|s| String::from_utf8_lossy(s).trim().to_string())
+    .unwrap()
 }
 
 fn start_with_policy(project: &Path, policy: &str) -> String {
@@ -53,6 +63,9 @@ fn start_with_policy(project: &Path, policy: &str) -> String {
             project.to_str().unwrap(),
             "--policy",
             policy_path.to_str().unwrap(),
+            "--fs-mode",
+            "copy-private",
+            "--require-fs-mode",
         ],
     )
     .stdout

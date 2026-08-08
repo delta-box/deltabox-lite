@@ -34,7 +34,3 @@ xattr = "1"
 [dev-dependencies]
 tempfile = "3"
 proptest = "1"
-
-# Keep the filesystem independently buildable so the engine and FUSE adapter
-# can also be used outside Deltabox.
-[workspace]

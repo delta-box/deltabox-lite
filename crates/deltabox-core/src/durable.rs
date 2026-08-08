@@ -12,8 +12,8 @@ use crate::journal::{Journal, JournalEntry, JournalKind};
 use crate::policy::Policy;
 use crate::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
-    CommitResult, DiffParams, DiffResult, ExecParams, ExecRequest, ExecResult, FsReadResult,
-    ReviewBeginParams, SessionInfo, SessionSpec, SessionStatus,
+    CommitResult, DiffParams, DiffResult, ExecParams, ExecRequest, ExecResult, FilesystemInfo,
+    FsReadResult, ReviewBeginParams, SessionInfo, SessionSpec, SessionStatus,
 };
 use crate::session::{now_ms, SessionMeta, SessionRegistry};
 use crate::snapshot::{
@@ -103,6 +103,14 @@ impl DurableSessionManager {
     }
 
     pub fn start(&self, policy_path: Option<&Path>) -> Result<SessionInfo> {
+        self.start_with_filesystem(policy_path, FilesystemInfo::default())
+    }
+
+    pub fn start_with_filesystem(
+        &self,
+        policy_path: Option<&Path>,
+        filesystem: FilesystemInfo,
+    ) -> Result<SessionInfo> {
         let session_id = Uuid::new_v4().to_string();
         let store = self.store_dir(&session_id);
         std::fs::create_dir_all(&store)?;
@@ -135,6 +143,7 @@ impl DurableSessionManager {
             policy_path,
             started_at_ms: now_ms(),
             status: SessionStatus::Running,
+            filesystem,
         };
         save_session_meta(&store, &meta)?;
         let mut registry = SessionRegistry::load(&self.root)?;
@@ -162,6 +171,7 @@ impl DurableSessionManager {
             status: meta.status,
             checkpoint_count: manifest.list().len(),
             pending_changes,
+            filesystem: meta.filesystem,
         })
     }
 
@@ -554,6 +564,7 @@ impl DurableSessionManager {
                 host_project: Some(self.project.clone()),
                 store_dir: store.join("runtime"),
                 policy: policy.clone(),
+                resolved_deny_paths: None,
             };
             let mut backend = make_direct_backend(self.worker_bin.clone());
             backend.start_session(session_id, &spec)?;

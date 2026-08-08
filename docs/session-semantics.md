@@ -1,24 +1,31 @@
 # Session and rollback semantics
 
-This document defines the behavioral spec for service-free sessions. The
-on-disk session store is authoritative; a daemon or `deltabox serve` process is
-never required to keep a session valid.
+This document defines the behavioral spec for service-free sessions. Durable
+files are authoritative; a global daemon or `deltabox serve` process is never
+required to keep a session valid.
 
-## User-visible lifecycle
+## Filesystem contracts
 
-`session start` creates an accepted baseline and a durable working view. It
-does not start a global service. Independent CLI processes may then execute,
-read, write, diff, commit, or abort the same session.
+`session start` creates an implicit initial checkpoint and chooses one resolved
+filesystem mode. `session status` reports both the requested and resolved mode,
+host visibility, rollback guarantee, helper state, and any fallback reason.
 
-- `diff` compares the durable working view with the accepted baseline.
-- `commit` applies the working diff to the real project and refreshes the
-  accepted baseline.
-- `abort` without a checkpoint restores the accepted baseline.
-- `checkpoint.create` is an advanced savepoint primitive. Normal commit and
-  abort operations do not require an explicit checkpoint.
+| Mode | Host visibility before commit | Commit | Abort |
+| --- | --- | --- | --- |
+| `cbcow-through` | Pending changes are visible immediately | Accepts the current state and retires undo history | Replays undo records into the host-visible tree |
+| `copy-private` | The host project remains unchanged | Validates and publishes the private working diff | Restores the private working view |
 
-The real project must remain byte-for-byte unchanged until commit. Abort must
-never move, delete, or rewrite real-project files.
+Linux requests `cbcow-through` by default when DeltaFS FUSE is mount-ready.
+If startup cannot establish a clean mounted session, Deltabox reports the
+reason and falls back to `copy-private`. `--require-fs-mode` converts that
+fallback into an error. Other supported platforms currently resolve to
+`copy-private`.
+
+Independent CLI processes may execute, read, write, diff, commit, checkpoint,
+or abort the same session. `diff` compares the current view with the accepted
+checkpoint. `abort` without a checkpoint restores the accepted state.
+`checkpoint.create` is an advanced savepoint primitive; normal commit and abort
+do not require a user-created checkpoint.
 
 ## Review scopes
 
@@ -41,11 +48,16 @@ checkpoint chain to infer the rollback target.
 
 ## Process model
 
-Normal CLI operations are service-free and synchronous. Each mutating command
-uses a short-lived sandbox transaction and materializes its result into the
-durable working view. Live processes, file descriptors, and shell state are not
-part of a durable session. Workloads that require persistent background
-processes must explicitly use a future `run` or optional `serve` mode.
+Normal CLI operations are service-free and synchronous. A Linux
+`cbcow-through` session owns one automatically launched filesystem helper and
+FUSE mount; each `exec` still launches a short-lived confined process. The
+helper can be restarted from its journal and state files after process failure.
+`copy-private` uses a short-lived sandbox transaction and materializes its
+result into a durable private working view.
+
+Live command processes, file descriptors, and shell state are not durable
+session state. A command must complete before its filesystem result becomes a
+completed transaction boundary.
 
 `serve` may optimize transport or sandbox startup, but it uses the same on-disk
 state and remains restartable. It is never the source of truth. A failed worker
@@ -57,20 +69,25 @@ descriptors are not recoverable state.
 
 Only one mutating operation may own a session at a time. A per-session process
 lock serializes operations and stale locks are recoverable after process death.
-Commit must reject external changes to the real project instead of silently
+Only one active `cbcow-through` session may lease a project. Host writes during
+that session are unsupported because they bypass FUSE pre-image capture.
+`copy-private` commit rejects external project changes instead of silently
 overwriting them.
 
 ## Crash recovery and storage
 
-Working-view updates record changed paths, back up their previous values, and
-then incrementally materialize the command-local COW layer. A durable
-transaction marker identifies every phase; reopening the session either
-restores the path backups or finalizes an applied update. Direct working-tree
-operations use a candidate-tree swap. Host commit keeps both a host backup and
-the pre-commit working tree until its journal record is durable, so a killed
-commit cannot leave a partially published project. Abort records its journal
-boundary in the same candidate-swap marker; recovery either restores the old
-working view or completes the abort journal and closes its review scope.
+In `cbcow-through`, every routed mutation writes a checksummed `READY` record
+after preserving the required bytes, metadata, or namespace state and before
+changing the host tree. `APPLIED` completes the mutation. Reopening the helper
+recovers incomplete records conservatively. Commit publishes an acceptance
+marker and schedules retired undo epochs for reclamation; abort replays records
+newest first. The default durability protects process crashes, not sudden
+power loss.
+
+In `copy-private`, working-view updates record changed paths, back up their
+previous values, and incrementally materialize the command-local COW layer.
+Candidate swaps and host publication are journaled so reopening either restores
+the old tree or completes the recorded boundary.
 
 Accepted and working scan indexes are persisted and refreshed only at
 transaction boundaries. Checkpoint trees are prepared under a temporary name,
@@ -81,25 +98,19 @@ registry, session, and
 review metadata updates use fsynced temporary files, atomic rename, and parent
 directory fsync. Boundary journal entries are fdatasynced.
 
-The default policy caps direct writes and aggregate pending storage. Denied
-paths and unsafe symlinks are validated before a command-local COW result is
-materialized, so policy failures cannot partially update the durable view.
+The default policy caps direct writes and aggregate pending storage. A Linux
+through session resolves existing deny-pattern matches once at session start
+and gives those exact mounted paths to Sandlock for every command; the external
+state root and direct backing project are always denied. Creating or modifying
+host files outside Deltabox while the session is active is outside the
+exclusive-writer contract.
 
-## Linux backend limitation
+## Path mapping limitation
 
-Sandlock 0.8.5 cannot reliably use a directory that exists only in the COW
-upper layer as a later child-process `chdir` target within the same `exec`.
-Existing project directories and repositories work normally. Workflows such as
-`git init new-repo && git -C new-repo ...` should split creation and subsequent
-use into separate `deltabox exec` calls so the durable working view is
-materialized between them.
-
-## macOS backend limitation
-
-The macOS backend maps complete path arguments, working directories, and
-path-list environment values from the real project to the APFS shadow. It does
-not rewrite arbitrary shell or program source strings. A script containing a
-hardcoded absolute real-project path therefore sees that path unchanged;
-Seatbelt denies writes there and still applies secret-path read denies. Prefer
-relative paths, pass project paths as separate argv values, or use an adapter
-that calls the shared path-mapping helper.
+Linux and macOS map complete absolute argv values, working directories, and
+path-list environment values from the host project to the sandbox view. They
+do not rewrite arbitrary shell or program source strings. A script containing
+a hardcoded host-project path therefore sees that literal unchanged, and the
+isolation policy denies direct backing writes. Prefer relative paths or pass
+project paths as separate argv values. `mount_namespace: false` in session
+status makes this limitation machine-readable.

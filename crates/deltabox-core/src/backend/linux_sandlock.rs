@@ -790,8 +790,17 @@ fn build_sandbox(spec: &SessionSpec, worker_bin: &Path, direct_write: bool) -> R
     for p in resolve_write_paths(&spec.policy, &spec.project) {
         builder = builder.fs_write(&p);
     }
-    for p in resolve_deny_paths(&spec.policy, &spec.project)? {
+    let deny_paths = match &spec.resolved_deny_paths {
+        Some(paths) => paths.clone(),
+        None => resolve_deny_paths(&spec.policy, &spec.project)?,
+    };
+    for p in deny_paths {
         builder = builder.fs_deny(&p);
+    }
+    if let Some(host_project) = &spec.host_project {
+        if host_project != &spec.project && !spec.project.starts_with(host_project) {
+            builder = builder.fs_deny(host_project);
+        }
     }
     if let Some(bytes) = spec.policy.limits.max_memory_bytes {
         builder = builder.max_memory(ByteSize::bytes(bytes));
@@ -846,7 +855,7 @@ fn resolve_write_paths(policy: &Policy, project: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn resolve_deny_paths(policy: &Policy, project: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn resolve_deny_paths(policy: &Policy, project: &Path) -> Result<Vec<PathBuf>> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
@@ -1048,5 +1057,42 @@ mod tests {
         let paths = resolve_deny_paths(&policy, dir.path()).unwrap();
         assert!(paths.contains(&dir.path().join(".env")));
         assert!(!paths.contains(&dir.path().join("ok.txt")));
+    }
+
+    #[test]
+    fn direct_backing_project_is_denied() {
+        let root = tempfile::tempdir().unwrap();
+        let backing = root.path().join("backing");
+        let mounted = root.path().join("mounted");
+        let runtime = root.path().join("runtime");
+        std::fs::create_dir_all(&backing).unwrap();
+        std::fs::create_dir_all(&mounted).unwrap();
+        let spec = SessionSpec {
+            project: mounted.clone(),
+            host_project: Some(backing.clone()),
+            store_dir: runtime,
+            policy: Policy::default_agent(),
+            resolved_deny_paths: None,
+        };
+        let sandbox = build_sandbox(&spec, Path::new("/bin/sh"), true).unwrap();
+        assert!(sandbox.fs_denied.contains(&backing));
+    }
+
+    #[test]
+    fn nested_private_working_tree_remains_accessible() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let working = project.join(".deltabox/session/working");
+        let runtime = root.path().join("runtime");
+        std::fs::create_dir_all(&working).unwrap();
+        let spec = SessionSpec {
+            project: working,
+            host_project: Some(project.clone()),
+            store_dir: runtime,
+            policy: Policy::default_agent(),
+            resolved_deny_paths: None,
+        };
+        let sandbox = build_sandbox(&spec, Path::new("/bin/sh"), true).unwrap();
+        assert!(!sandbox.fs_denied.contains(&project));
     }
 }

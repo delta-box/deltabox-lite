@@ -1,9 +1,9 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use deltabox_core::backend::DefaultBackend;
-use deltabox_core::durable::DurableSessionManager;
+use deltabox_core::coordinator::SessionCoordinator;
 use deltabox_core::protocol::{
-    AbortParams, CheckpointParams, CommitParams, DiffParams, ExecParams, Request,
+    AbortParams, CheckpointParams, CommitParams, DiffParams, ExecParams, FilesystemMode, Request,
     ReviewBeginParams, ReviewKind,
 };
 use deltabox_core::server::Server;
@@ -50,6 +50,10 @@ enum Command {
     /// Run the in-sandbox worker loop (spawned by the Linux backend).
     #[command(hide = true)]
     Worker(WorkerArgs),
+    /// Run a session-scoped filesystem helper.
+    #[cfg(target_os = "linux")]
+    #[command(hide = true)]
+    FsHelper(FsHelperArgs),
     /// Serve the JSON-RPC protocol over stdio.
     Serve,
 }
@@ -112,6 +116,10 @@ struct StartArgs {
     project: PathBuf,
     #[arg(long)]
     policy: Option<PathBuf>,
+    #[arg(long, value_parser = parse_filesystem_mode)]
+    fs_mode: Option<FilesystemMode>,
+    #[arg(long)]
+    require_fs_mode: bool,
     /// Deprecated: service-free sessions are durable by default.
     #[arg(long, hide = true)]
     durable: bool,
@@ -217,29 +225,56 @@ struct WorkerArgs {
     runtime: PathBuf,
 }
 
+#[cfg(target_os = "linux")]
+#[derive(clap::Args)]
+struct FsHelperArgs {
+    #[arg(long)]
+    source: PathBuf,
+    #[arg(long)]
+    mountpoint: PathBuf,
+    #[arg(long)]
+    state_dir: PathBuf,
+    #[arg(long)]
+    socket: PathBuf,
+    #[arg(long)]
+    token_file: PathBuf,
+    #[arg(long)]
+    ready_file: PathBuf,
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Session { cmd } => match cmd {
             SessionCmd::Start(args) => {
                 let _ = args.durable;
-                let manager = DurableSessionManager::new(&args.project, None)?;
-                let info = manager.start(args.policy.as_deref())?;
+                let manager = SessionCoordinator::new(&args.project, None)?;
+                let info =
+                    manager.start(args.policy.as_deref(), args.fs_mode, args.require_fs_mode)?;
                 println!("{}", info.session_id);
+                if info.filesystem.resolved_fs_mode == FilesystemMode::CbcowThrough {
+                    eprintln!(
+                        "deltabox: host changes are immediate; commit accepts them and abort reverts them"
+                    );
+                } else if let Some(reason) = &info.filesystem.fallback_reason {
+                    eprintln!(
+                        "deltabox: cbcow-through is unavailable; using copy-private: {reason}"
+                    );
+                }
             }
             SessionCmd::Stop(args) => {
-                let manager = DurableSessionManager::new(&args.project, None)?;
+                let manager = SessionCoordinator::new(&args.project, None)?;
                 let info = manager.stop(&args.session)?;
                 println!("{}", serde_json::to_string_pretty(&info)?);
             }
             SessionCmd::Status(args) => {
-                let manager = DurableSessionManager::new(&args.project, None)?;
+                let manager = SessionCoordinator::new(&args.project, None)?;
                 let info = manager.status(&args.session)?;
                 println!("{}", serde_json::to_string_pretty(&info)?);
             }
         },
         Command::Exec(args) => {
-            let manager = DurableSessionManager::new(&args.project, None)?;
+            let manager = SessionCoordinator::new(&args.project, None)?;
             let env = if args.env.is_empty() {
                 None
             } else {
@@ -261,7 +296,7 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Read(args) => {
             use std::io::Write as _;
-            let manager = DurableSessionManager::new(&args.project, None)?;
+            let manager = SessionCoordinator::new(&args.project, None)?;
             let result = manager.read_file(&args.session, &args.path)?;
             let bytes = base64_decode(&result.content_base64)?;
             std::io::stdout().lock().write_all(&bytes)?;
@@ -280,12 +315,12 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
             };
-            let manager = DurableSessionManager::new(&args.project, None)?;
+            let manager = SessionCoordinator::new(&args.project, None)?;
             manager.write_file(&args.session, &args.path, bytes)?;
             println!("written");
         }
         Command::Checkpoint(args) => {
-            let manager = DurableSessionManager::new(&args.project, None)?;
+            let manager = SessionCoordinator::new(&args.project, None)?;
             let info = manager.checkpoint(CheckpointParams {
                 session_id: args.session,
                 label: args.label,
@@ -293,7 +328,7 @@ fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&info)?);
         }
         Command::Diff(args) => {
-            let manager = DurableSessionManager::new(&args.project, None)?;
+            let manager = SessionCoordinator::new(&args.project, None)?;
             let result = manager.diff(DiffParams {
                 session_id: args.session,
                 from: args.from,
@@ -306,7 +341,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Command::Commit(args) => {
-            let manager = DurableSessionManager::new(&args.project, None)?;
+            let manager = SessionCoordinator::new(&args.project, None)?;
             let result = manager.commit(CommitParams {
                 session_id: args.session,
                 checkpoint: args.checkpoint,
@@ -314,7 +349,7 @@ fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Command::Abort(args) => {
-            let manager = DurableSessionManager::new(&args.project, None)?;
+            let manager = SessionCoordinator::new(&args.project, None)?;
             let result = manager.abort(AbortParams {
                 session_id: args.session,
                 checkpoint: args.checkpoint,
@@ -323,7 +358,7 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Review { cmd } => match cmd {
             ReviewCmd::Begin(args) => {
-                let manager = DurableSessionManager::new(&args.project, None)?;
+                let manager = SessionCoordinator::new(&args.project, None)?;
                 let kind = match args.kind.as_str() {
                     "task" => ReviewKind::Task,
                     "tool" => ReviewKind::Tool,
@@ -338,14 +373,14 @@ fn main() -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&active)?);
             }
             ReviewCmd::Status(args) => {
-                let manager = DurableSessionManager::new(&args.project, None)?;
+                let manager = SessionCoordinator::new(&args.project, None)?;
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&manager.review_status(&args.session)?)?
                 );
             }
             ReviewCmd::Diff(args) => {
-                let manager = DurableSessionManager::new(&args.project, None)?;
+                let manager = SessionCoordinator::new(&args.project, None)?;
                 let diff = manager.review_diff(&args.session)?;
                 if args.json {
                     println!("{}", serde_json::to_string_pretty(&diff)?);
@@ -354,21 +389,21 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             ReviewCmd::Commit(args) => {
-                let manager = DurableSessionManager::new(&args.project, None)?;
+                let manager = SessionCoordinator::new(&args.project, None)?;
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&manager.review_commit(&args.session)?)?
                 );
             }
             ReviewCmd::Abort(args) => {
-                let manager = DurableSessionManager::new(&args.project, None)?;
+                let manager = SessionCoordinator::new(&args.project, None)?;
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&manager.review_abort(&args.session)?)?
                 );
             }
             ReviewCmd::Skip(args) => {
-                let manager = DurableSessionManager::new(&args.project, None)?;
+                let manager = SessionCoordinator::new(&args.project, None)?;
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&manager.review_skip(&args.session)?)?
@@ -377,6 +412,17 @@ fn main() -> anyhow::Result<()> {
         },
         Command::Worker(args) => {
             deltabox_core::worker::run_worker(&args.root, &args.runtime)?;
+        }
+        #[cfg(target_os = "linux")]
+        Command::FsHelper(args) => {
+            deltafs_fuse::helper::run(deltafs_fuse::helper::Config {
+                source: args.source,
+                mountpoint: args.mountpoint,
+                state_dir: args.state_dir,
+                socket: args.socket,
+                token_file: args.token_file,
+                ready_file: args.ready_file,
+            })?;
         }
         Command::Serve => {
             let project = std::env::current_dir()?;
@@ -418,6 +464,14 @@ fn default_backend() -> DefaultBackend {
 fn split_env(s: &str) -> anyhow::Result<(String, String)> {
     let (k, v) = s.split_once('=').context("env entries must be KEY=VALUE")?;
     Ok((k.to_string(), v.to_string()))
+}
+
+fn parse_filesystem_mode(value: &str) -> Result<FilesystemMode, String> {
+    match value {
+        "cbcow-through" => Ok(FilesystemMode::CbcowThrough),
+        "copy-private" => Ok(FilesystemMode::CopyPrivate),
+        _ => Err("expected cbcow-through or copy-private".into()),
+    }
 }
 
 fn base64_decode(s: &str) -> anyhow::Result<Vec<u8>> {

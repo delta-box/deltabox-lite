@@ -52,6 +52,10 @@ pub struct SessionStartParams {
     pub project: PathBuf,
     #[serde(default)]
     pub policy: Option<PathBuf>,
+    #[serde(default)]
+    pub fs_mode: Option<FilesystemMode>,
+    #[serde(default)]
+    pub require_fs_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,6 +187,8 @@ pub struct SessionSpec {
     pub host_project: Option<PathBuf>,
     pub store_dir: PathBuf,
     pub policy: Policy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_deny_paths: Option<Vec<PathBuf>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,6 +199,91 @@ pub struct SessionInfo {
     pub status: SessionStatus,
     pub checkpoint_count: usize,
     pub pending_changes: usize,
+    #[serde(flatten)]
+    pub filesystem: FilesystemInfo,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum FilesystemMode {
+    CbcowThrough,
+    #[default]
+    CopyPrivate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FilesystemInfo {
+    pub requested_fs_mode: FilesystemMode,
+    pub resolved_fs_mode: FilesystemMode,
+    pub host_visibility: String,
+    pub durability: String,
+    pub isolation: String,
+    pub fuse_provider: Option<String>,
+    pub fallback_reason: Option<String>,
+    pub rollback_guarantee: String,
+    pub tainted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mountpoint: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub helper_pid: Option<u32>,
+    #[serde(default)]
+    pub helper_restarts: u64,
+    #[serde(default)]
+    pub mount_namespace: bool,
+}
+
+impl Default for FilesystemInfo {
+    fn default() -> Self {
+        Self::copy_private(FilesystemMode::CopyPrivate, None)
+    }
+}
+
+impl FilesystemInfo {
+    pub fn copy_private(requested: FilesystemMode, fallback_reason: Option<String>) -> Self {
+        Self {
+            requested_fs_mode: requested,
+            resolved_fs_mode: FilesystemMode::CopyPrivate,
+            host_visibility: "on-commit".into(),
+            durability: "process-crash".into(),
+            isolation: platform_isolation().into(),
+            fuse_provider: None,
+            fallback_reason,
+            rollback_guarantee: "private-working-tree".into(),
+            tainted: false,
+            mountpoint: None,
+            helper_pid: None,
+            helper_restarts: 0,
+            mount_namespace: false,
+        }
+    }
+
+    pub fn cbcow_through(mountpoint: PathBuf, helper_pid: u32, restarts: u64) -> Self {
+        Self {
+            requested_fs_mode: FilesystemMode::CbcowThrough,
+            resolved_fs_mode: FilesystemMode::CbcowThrough,
+            host_visibility: "immediate".into(),
+            durability: "process-crash".into(),
+            isolation: platform_isolation().into(),
+            fuse_provider: Some("linux-fuse3".into()),
+            fallback_reason: None,
+            rollback_guarantee: "fuse-routed-writes-only".into(),
+            tainted: false,
+            mountpoint: Some(mountpoint),
+            helper_pid: Some(helper_pid),
+            helper_restarts: restarts,
+            mount_namespace: false,
+        }
+    }
+}
+
+fn platform_isolation() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "sandlock"
+    } else if cfg!(target_os = "macos") {
+        "seatbelt"
+    } else {
+        "unsupported"
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -261,6 +352,8 @@ mod tests {
             method: Method::SessionStart(SessionStartParams {
                 project: "/tmp/proj".into(),
                 policy: None,
+                fs_mode: None,
+                require_fs_mode: false,
             }),
         };
         let json = serde_json::to_string(&request).unwrap();
@@ -271,6 +364,33 @@ mod tests {
             Method::SessionStart(p) => assert_eq!(p.project, PathBuf::from("/tmp/proj")),
             other => panic!("unexpected method: {other:?}"),
         }
+    }
+
+    #[test]
+    fn old_start_request_defaults_new_filesystem_fields() {
+        let parsed: Request = serde_json::from_str(
+            r#"{"id":7,"method":"session.start","params":{"project":"/tmp/proj"}}"#,
+        )
+        .unwrap();
+        match parsed.method {
+            Method::SessionStart(params) => {
+                assert_eq!(params.fs_mode, None);
+                assert!(!params.require_fs_mode);
+            }
+            other => panic!("unexpected method: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn filesystem_contract_uses_stable_mode_names() {
+        let info = FilesystemInfo::cbcow_through("/run/deltafs".into(), 42, 3);
+        let value = serde_json::to_value(info).unwrap();
+        assert_eq!(value["requested_fs_mode"], "cbcow-through");
+        assert_eq!(value["resolved_fs_mode"], "cbcow-through");
+        assert_eq!(value["host_visibility"], "immediate");
+        assert_eq!(value["durability"], "process-crash");
+        assert_eq!(value["helper_restarts"], 3);
+        assert_eq!(value["mount_namespace"], false);
     }
 
     #[test]

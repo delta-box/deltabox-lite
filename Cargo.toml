@@ -1,13 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/deltabox-core", "crates/deltabox-cli"]
+members = ["crates/deltabox-core", "crates/deltabox-cli", "deltafs-fuse"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Ddnirvana/deltabox-lite"
-rust-version = "1.85"
+rust-version = "1.87"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -20,3 +20,4 @@ similar = "2"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 libc = "0.2"
+deltafs-fuse = { path = "deltafs-fuse" }

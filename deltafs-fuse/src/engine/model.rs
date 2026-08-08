@@ -217,6 +217,7 @@ pub struct JournalEnvelope {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EpochIndex {
+    pub created: BTreeSet<String>,
     pub ranges: BTreeMap<VInodeId, RangeSet>,
     pub sizes: BTreeSet<VInodeId>,
     pub whole_inodes: BTreeSet<VInodeId>,

@@ -1,5 +1,5 @@
 use crate::backend::SandboxBackend;
-use crate::durable::DurableSessionManager;
+use crate::coordinator::SessionCoordinator;
 use crate::error::Result as CoreResult;
 use crate::protocol::{Method, ProtocolError, Request, Response};
 use serde_json::Value;
@@ -7,13 +7,13 @@ use std::path::Path;
 
 /// Synchronous JSON-RPC dispatcher used by `deltabox serve` and tests.
 pub struct Server {
-    manager: DurableSessionManager,
+    manager: SessionCoordinator,
 }
 
 impl Server {
     pub fn new(project: &Path, _backend: Box<dyn SandboxBackend>) -> CoreResult<Self> {
         Ok(Self {
-            manager: DurableSessionManager::new(project, None)?,
+            manager: SessionCoordinator::new(project, None)?,
         })
     }
 
@@ -37,9 +37,11 @@ impl Server {
 
     fn dispatch(&mut self, method: Method) -> CoreResult<Value> {
         let value = match method {
-            Method::SessionStart(p) => {
-                serde_json::to_value(self.manager.start(p.policy.as_deref())?)?
-            }
+            Method::SessionStart(p) => serde_json::to_value(self.manager.start(
+                p.policy.as_deref(),
+                p.fs_mode,
+                p.require_fs_mode,
+            )?)?,
             Method::SessionStop(p) => serde_json::to_value(self.manager.stop(&p.session_id)?)?,
             Method::SessionStatus(p) => serde_json::to_value(self.manager.status(&p.session_id)?)?,
             Method::SessionExec(p) => serde_json::to_value(self.manager.exec(p)?)?,
@@ -113,6 +115,8 @@ mod tests {
             method: Method::SessionStart(SessionStartParams {
                 project: dir.path().to_path_buf(),
                 policy: None,
+                fs_mode: Some(crate::protocol::FilesystemMode::CopyPrivate),
+                require_fs_mode: false,
             }),
         };
         let response = server.handle(start);
@@ -150,6 +154,8 @@ mod tests {
             method: Method::SessionStart(SessionStartParams {
                 project: dir.path().to_path_buf(),
                 policy: None,
+                fs_mode: Some(crate::protocol::FilesystemMode::CopyPrivate),
+                require_fs_mode: false,
             }),
         });
         let sid = start.result.unwrap()["session_id"]
@@ -186,6 +192,8 @@ mod tests {
             method: Method::SessionStart(SessionStartParams {
                 project: dir.path().to_path_buf(),
                 policy: None,
+                fs_mode: Some(crate::protocol::FilesystemMode::CopyPrivate),
+                require_fs_mode: false,
             }),
         });
         let sid = start.result.unwrap()["session_id"]

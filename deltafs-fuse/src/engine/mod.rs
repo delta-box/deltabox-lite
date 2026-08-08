@@ -25,7 +25,7 @@ use snapshot::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -104,7 +104,15 @@ pub enum ChangeKind {
 pub struct Change {
     pub path: String,
     pub kind: ChangeKind,
+    pub old_size: Option<u64>,
+    pub new_size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_bytes: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_bytes: Option<Vec<u8>>,
 }
+
+const DIFF_CONTENT_LIMIT: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EngineStatus {
@@ -153,7 +161,7 @@ impl StateEngine {
         if fs::read_dir(&state)?.next().is_some() {
             return Err(EngineError::StateNotEmpty);
         }
-        for directory in ["epochs", "commits", "recovery"] {
+        for directory in ["epochs", "commits", "recovery", "gc"] {
             fs::create_dir_all(state.join(directory))?;
         }
 
@@ -267,6 +275,29 @@ impl StateEngine {
             quota_used: active.meta.quota.used,
             touched_paths: self.touched_since(self.manifest.accepted_checkpoint).len(),
         }
+    }
+
+    pub fn prepare_gc(&mut self) -> Result<Vec<PathBuf>> {
+        self.ensure_usable()?;
+        let gc = self.state.join("gc");
+        fs::create_dir_all(&gc)?;
+        let retired: Vec<u64> = self
+            .epochs
+            .iter()
+            .filter_map(|(id, epoch)| (epoch.meta.status == EpochStatus::Retired).then_some(*id))
+            .collect();
+        for id in retired {
+            let source = epoch_dir(&self.state, id);
+            let destination = gc.join(format!("{id:08}"));
+            fs::rename(source, &destination)?;
+            self.epochs.remove(&id);
+        }
+        let mut paths = fs::read_dir(gc)?
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| entry.file_type().ok()?.is_dir().then_some(entry.path()))
+            .collect::<Vec<_>>();
+        paths.sort();
+        Ok(paths)
     }
 
     fn load_epochs(&mut self) -> Result<()> {
@@ -553,13 +584,13 @@ impl StateEngine {
         Ok(())
     }
 
-    fn run_record(
+    fn run_record<T>(
         &mut self,
         record_id: u64,
         reservation: QuotaReservation,
         record: ReadyRecord,
-        mutation: impl FnOnce(bool) -> Result<()>,
-    ) -> Result<()> {
+        mutation: impl FnOnce(bool) -> Result<T>,
+    ) -> Result<T> {
         let actual = self.record_storage_bytes(record_id, &record)?;
         if !reservation.covers(actual) {
             self.cleanup_orphan_preimages()?;
@@ -573,7 +604,7 @@ impl StateEngine {
             self.inject(FaultPoint::AfterReady)?;
 
             let partial = self.fault.take(FaultPoint::DuringMutation);
-            mutation(partial)?;
+            let value = mutation(partial)?;
             if partial {
                 return Err(EngineError::InjectedFault(FaultPoint::DuringMutation));
             }
@@ -593,7 +624,7 @@ impl StateEngine {
                 &self.touched_since(self.manifest.accepted_checkpoint),
             )?;
             self.inject(FaultPoint::AfterApplied)?;
-            Ok(())
+            Ok(value)
         })();
         if result.is_err() {
             self.poisoned = true;
@@ -659,6 +690,50 @@ impl StateEngine {
 
 impl StateEngine {
     pub fn create_file(&mut self, path: &Path, contents: &[u8], mode: u32) -> Result<()> {
+        self.create_file_record(path, |destination, partial| {
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(mode)
+                .open(destination)?;
+            let length = if partial {
+                contents.len().div_ceil(2)
+            } else {
+                contents.len()
+            };
+            file.write_all(&contents[..length])?;
+            Ok(())
+        })
+    }
+
+    pub fn create_file_open(&mut self, path: &Path, mode: u32, flags: i32) -> Result<File> {
+        self.create_file_record(path, |destination, _partial| {
+            let access = flags & libc::O_ACCMODE;
+            let mut options = OpenOptions::new();
+            options
+                .read(access == libc::O_RDONLY || access == libc::O_RDWR)
+                .write(access == libc::O_WRONLY || access == libc::O_RDWR)
+                .append(flags & libc::O_APPEND != 0)
+                .create_new(true)
+                .mode(mode)
+                .custom_flags(
+                    flags
+                        & !(libc::O_ACCMODE
+                            | libc::O_APPEND
+                            | libc::O_CREAT
+                            | libc::O_EXCL
+                            | libc::O_TRUNC),
+                )
+                .open(destination)
+                .map_err(EngineError::from)
+        })
+    }
+
+    fn create_file_record<T>(
+        &mut self,
+        path: &Path,
+        mutation: impl FnOnce(&Path, bool) -> Result<T>,
+    ) -> Result<T> {
         self.ensure_usable()?;
         let relative = normalize_relative(path)?;
         let destination = checked_path(&self.live, &relative)?;
@@ -677,27 +752,16 @@ impl StateEngine {
             preimage_bytes: 0,
         };
         let reservation = self.reserve_record(record_id, &record)?;
-        self.run_record(record_id, reservation, record, |partial| {
-            let mut options = OpenOptions::new();
-            let mut file = options
-                .create_new(true)
-                .write(true)
-                .mode(mode)
-                .open(&destination)?;
-            let length = if partial {
-                contents.len().div_ceil(2)
-            } else {
-                contents.len()
-            };
-            file.write_all(&contents[..length])?;
-            Ok(())
+        let value = self.run_record(record_id, reservation, record, |partial| {
+            mutation(&destination, partial)
         })?;
         let result = (|| {
             self.resolve_inode(&relative)?;
             self.persist_inodes()?;
             self.persist_manifest()
         })();
-        self.poison_on_error(result)
+        self.poison_on_error(result)?;
+        Ok(value)
     }
 
     pub fn create_dir(&mut self, path: &Path, mode: u32) -> Result<()> {
@@ -758,14 +822,58 @@ impl StateEngine {
     }
 
     pub fn write(&mut self, path: &Path, offset: u64, data: &[u8]) -> Result<()> {
-        self.write_internal(path, offset, data, OperationKind::Write)
+        self.write_internal(
+            path,
+            offset,
+            data,
+            OperationKind::Write,
+            |destination, offset, data, partial| {
+                let mut file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(destination)?;
+                file.seek(SeekFrom::Start(offset))?;
+                let length = mutation_length(data, partial);
+                file.write_all(&data[..length])?;
+                Ok(())
+            },
+        )
+    }
+
+    pub fn write_file(&mut self, path: &Path, file: &File, offset: u64, data: &[u8]) -> Result<()> {
+        self.write_internal(
+            path,
+            offset,
+            data,
+            OperationKind::Write,
+            |_destination, offset, data, partial| {
+                let length = mutation_length(data, partial);
+                file.write_all_at(&data[..length], offset)?;
+                Ok(())
+            },
+        )
     }
 
     pub fn append(&mut self, path: &Path, data: &[u8]) -> Result<()> {
         self.ensure_usable()?;
         let relative = normalize_relative(path)?;
         let size = fs::metadata(checked_path(&self.live, &relative)?)?.len();
-        self.write_internal(Path::new(&relative), size, data, OperationKind::Append)
+        self.write_internal(
+            Path::new(&relative),
+            size,
+            data,
+            OperationKind::Append,
+            |destination, offset, data, partial| {
+                let mut file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(destination)?;
+                file.seek(SeekFrom::Start(offset))?;
+                let length = mutation_length(data, partial);
+                file.write_all(&data[..length])?;
+                Ok(())
+            },
+        )
     }
 
     fn write_internal(
@@ -774,6 +882,7 @@ impl StateEngine {
         offset: u64,
         data: &[u8],
         operation: OperationKind,
+        mutation: impl FnOnce(&Path, u64, &[u8], bool) -> Result<()>,
     ) -> Result<()> {
         self.ensure_usable()?;
         let relative = normalize_relative(path)?;
@@ -784,12 +893,13 @@ impl StateEngine {
         }
         let inode = self.resolve_inode(&relative)?;
         let old_size = metadata.len();
+        let created = self.active_epoch().index.created.contains(&relative);
         let end = offset
             .checked_add(data.len() as u64)
             .ok_or_else(|| EngineError::Invariant("write range overflow".into()))?;
         let capture_end = end.min(old_size);
         let requested = ByteRange::new(offset.min(capture_end), capture_end);
-        let uncovered = if self.active_epoch().index.whole_inodes.contains(&inode) {
+        let uncovered = if created || self.active_epoch().index.whole_inodes.contains(&inode) {
             Vec::new()
         } else if let Some(requested) = requested {
             self.active_epoch()
@@ -813,9 +923,9 @@ impl StateEngine {
                 .ok_or_else(|| EngineError::Invariant("preimage size overflow".into()))?;
         }
         let capture_size_field =
-            end > old_size && !self.active_epoch().index.sizes.contains(&inode);
+            !created && end > old_size && !self.active_epoch().index.sizes.contains(&inode);
         let mut actions = Vec::new();
-        if !self.active_epoch().index.times.contains(&inode) {
+        if !created && !self.active_epoch().index.times.contains(&inode) {
             let snapshot = metadata_snapshot(&destination)?;
             actions.push(UndoAction::RestoreTimes {
                 path: relative.clone(),
@@ -864,18 +974,7 @@ impl StateEngine {
             *record_segments = segments;
         }
         self.run_record(record_id, reservation, record, |partial| {
-            let mut file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&destination)?;
-            file.seek(SeekFrom::Start(offset))?;
-            let length = if partial && !data.is_empty() {
-                data.len().div_ceil(2)
-            } else {
-                data.len()
-            };
-            file.write_all(&data[..length])?;
-            Ok(())
+            mutation(&destination, offset, data, partial)
         })
     }
 
@@ -1420,9 +1519,15 @@ impl StateEngine {
                     (old_links.get(path) != current_links.get(path)).then_some(ChangeKind::Modified)
                 });
                 if let Some(kind) = kind {
+                    let (old_size, old_bytes) = diff_content(&old);
+                    let (new_size, new_bytes) = diff_content(&current);
                     changes.push(Change {
                         path: path.clone(),
                         kind,
+                        old_size,
+                        new_size,
+                        old_bytes,
+                        new_bytes,
                     });
                 }
             }
@@ -1943,6 +2048,14 @@ fn session_id() -> String {
     format!("{:x}-{nanos:x}", std::process::id())
 }
 
+fn mutation_length(data: &[u8], partial: bool) -> usize {
+    if partial && !data.is_empty() {
+        data.len().div_ceil(2)
+    } else {
+        data.len()
+    }
+}
+
 fn epoch_dir(state: &Path, id: u64) -> PathBuf {
     state.join("epochs").join(format!("{id:08}"))
 }
@@ -2015,7 +2128,16 @@ fn rebuild_index(loaded: &journal::LoadedJournal) -> EpochIndex {
                 UndoAction::RestoreObject { snapshot, .. } => {
                     index.whole_inodes.insert(snapshot.inode);
                 }
-                UndoAction::RemoveCreated { .. } | UndoAction::UndoRename { .. } => {}
+                UndoAction::RemoveCreated { path } => {
+                    index.created.insert(path.clone());
+                }
+                UndoAction::UndoRename {
+                    old_path, new_path, ..
+                } => {
+                    if index.created.remove(old_path) {
+                        index.created.insert(new_path.clone());
+                    }
+                }
             }
         }
     }
@@ -2088,6 +2210,18 @@ fn classify_change(old: &PathState, current: &PathState) -> Option<ChangeKind> {
         }
         _ => Some(ChangeKind::Modified),
     }
+}
+
+fn diff_content(state: &PathState) -> (Option<u64>, Option<Vec<u8>>) {
+    let bytes = match state {
+        PathState::Regular { data, .. } => data.as_slice(),
+        PathState::Symlink { target, .. } => target.as_bytes(),
+        PathState::Absent | PathState::Directory { .. } => return (None, None),
+    };
+    (
+        Some(bytes.len() as u64),
+        (bytes.len() <= DIFF_CONTENT_LIMIT).then(|| bytes.to_vec()),
+    )
 }
 
 fn hardlink_peers(

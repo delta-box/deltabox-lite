@@ -4,6 +4,7 @@ use anyhow::bail;
 use anyhow::Context;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use deltafs_fuse::control::{self, Command as ControlCommand};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -31,9 +32,76 @@ enum Command {
         source: PathBuf,
         #[arg(long)]
         mountpoint: PathBuf,
-        #[arg(long)]
-        undo_dir: PathBuf,
+        #[arg(long, visible_alias = "undo-dir")]
+        state_dir: PathBuf,
     },
+    /// Run a mounted filesystem and its local control endpoint.
+    Serve(ServeArgs),
+    /// Send a request to a running filesystem helper.
+    Control(ControlArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct ServeArgs {
+    #[arg(long)]
+    source: PathBuf,
+    #[arg(long)]
+    mountpoint: PathBuf,
+    #[arg(long)]
+    state_dir: PathBuf,
+    #[arg(long)]
+    socket: PathBuf,
+    #[arg(long)]
+    token_file: PathBuf,
+    #[arg(long)]
+    ready_file: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+struct ControlArgs {
+    #[arg(long)]
+    socket: PathBuf,
+    #[arg(long)]
+    token_file: PathBuf,
+    #[command(subcommand)]
+    command: ControlSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ControlSubcommand {
+    Ping,
+    Status,
+    Checkpoint {
+        #[arg(long)]
+        label: Option<String>,
+    },
+    Diff {
+        #[arg(long)]
+        from: Option<u64>,
+    },
+    Commit {
+        #[arg(long)]
+        target: Option<u64>,
+    },
+    Abort {
+        #[arg(long)]
+        target: Option<u64>,
+    },
+    Shutdown,
+}
+
+impl From<ControlSubcommand> for ControlCommand {
+    fn from(command: ControlSubcommand) -> Self {
+        match command {
+            ControlSubcommand::Ping => Self::Ping,
+            ControlSubcommand::Status => Self::Status,
+            ControlSubcommand::Checkpoint { label } => Self::Checkpoint { label },
+            ControlSubcommand::Diff { from } => Self::Diff { from },
+            ControlSubcommand::Commit { target } => Self::Commit { target },
+            ControlSubcommand::Abort { target } => Self::Abort { target },
+            ControlSubcommand::Shutdown => Self::Shutdown,
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -55,18 +123,42 @@ fn main() -> Result<()> {
         Command::Mount {
             source,
             mountpoint,
-            undo_dir,
-        } => mount(source, mountpoint, undo_dir),
+            state_dir,
+        } => mount(source, mountpoint, state_dir),
+        Command::Serve(args) => serve(args),
+        Command::Control(args) => {
+            let token = std::fs::read_to_string(args.token_file)?;
+            let result = control::request(&args.socket, token.trim(), args.command.into())?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(())
+        }
     }
 }
 
 #[cfg(feature = "fuse")]
-fn mount(source: PathBuf, mountpoint: PathBuf, undo_dir: PathBuf) -> Result<()> {
-    deltafs_fuse::passthrough::mount(&source, &mountpoint, &undo_dir)
+fn mount(source: PathBuf, mountpoint: PathBuf, state_dir: PathBuf) -> Result<()> {
+    deltafs_fuse::passthrough::mount(&source, &mountpoint, &state_dir)
         .context("deltafs-fuse mount failed")
 }
 
+#[cfg(feature = "fuse")]
+fn serve(args: ServeArgs) -> Result<()> {
+    deltafs_fuse::helper::run(deltafs_fuse::helper::Config {
+        source: args.source,
+        mountpoint: args.mountpoint,
+        state_dir: args.state_dir,
+        socket: args.socket,
+        token_file: args.token_file,
+        ready_file: args.ready_file,
+    })
+}
+
 #[cfg(not(feature = "fuse"))]
-fn mount(_source: PathBuf, _mountpoint: PathBuf, _undo_dir: PathBuf) -> Result<()> {
+fn mount(_source: PathBuf, _mountpoint: PathBuf, _state_dir: PathBuf) -> Result<()> {
+    bail!("this binary was built without FUSE support; rebuild with --features fuse")
+}
+
+#[cfg(not(feature = "fuse"))]
+fn serve(_args: ServeArgs) -> Result<()> {
     bail!("this binary was built without FUSE support; rebuild with --features fuse")
 }

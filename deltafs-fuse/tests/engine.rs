@@ -96,14 +96,39 @@ fn mtime(path: &Path) -> (i64, i64) {
     (metadata.mtime(), metadata.mtime_nsec())
 }
 
-fn changes(items: &[(&str, ChangeKind)]) -> Vec<Change> {
+fn changes(items: &[(&str, ChangeKind)]) -> Vec<(String, ChangeKind)> {
     items
         .iter()
-        .map(|(path, kind)| Change {
-            path: (*path).to_owned(),
-            kind: kind.clone(),
-        })
+        .map(|(path, kind)| ((*path).to_owned(), kind.clone()))
         .collect()
+}
+
+fn change_kinds(changes: Vec<Change>) -> Vec<(String, ChangeKind)> {
+    changes
+        .into_iter()
+        .map(|change| (change.path, change.kind))
+        .collect()
+}
+
+#[test]
+fn create_returns_the_writable_descriptor_for_a_read_only_file() {
+    let fixture = Fixture::new();
+    let mut engine = fixture.engine();
+    let file = engine
+        .create_file_open(Path::new("object"), 0o444, libc::O_WRONLY)
+        .unwrap();
+    engine
+        .write_file(Path::new("object"), &file, 0, b"contents")
+        .unwrap();
+    drop(file);
+
+    assert_eq!(read(fixture.live.join("object")), b"contents");
+    assert_eq!(
+        fs::metadata(fixture.live.join("object")).unwrap().mode() & 0o777,
+        0o444
+    );
+    engine.rollback(None).unwrap();
+    assert!(!fixture.live.join("object").exists());
 }
 
 #[test]
@@ -154,11 +179,32 @@ fn commit_to_older_checkpoint_discards_future_and_starts_new_history() {
 
     engine.write(Path::new("a"), 0, b"v4").unwrap();
     assert_eq!(
-        engine.diff(None).unwrap(),
+        change_kinds(engine.diff(None).unwrap()),
         changes(&[("a", ChangeKind::Modified)])
     );
     engine.rollback(None).unwrap();
     assert_eq!(read(fixture.live.join("a")), b"v1");
+}
+
+#[test]
+fn committed_epochs_move_out_of_recovery_history_before_deletion() {
+    let fixture = Fixture::new();
+    fs::write(fixture.live.join("a"), b"old").unwrap();
+    let mut engine = fixture.engine();
+    engine.write(Path::new("a"), 0, b"new").unwrap();
+    engine.commit(None).unwrap();
+
+    let garbage = engine.prepare_gc().unwrap();
+    assert_eq!(garbage.len(), 1);
+    assert!(!fixture.state.join("epochs/00000001").exists());
+    assert_eq!(garbage[0].file_name().unwrap(), "00000001");
+    assert_eq!(garbage[0].parent().unwrap().file_name().unwrap(), "gc");
+    fs::remove_dir_all(&garbage[0]).unwrap();
+    drop(engine);
+
+    let reopened = fixture.reopen();
+    assert!(reopened.diff(None).unwrap().is_empty());
+    assert_eq!(read(fixture.live.join("a")), b"new");
 }
 
 #[test]
@@ -248,7 +294,7 @@ fn diff_detects_hardlink_topology_changes_with_identical_files() {
         .unwrap();
 
     assert_eq!(
-        engine.diff(None).unwrap(),
+        change_kinds(engine.diff(None).unwrap()),
         changes(&[("a", ChangeKind::Modified), ("b", ChangeKind::Modified),])
     );
     engine.rollback(None).unwrap();
@@ -289,8 +335,14 @@ fn diff_tracks_only_effective_touched_path_changes() {
     engine.write(Path::new("a"), 0, b"B").unwrap();
     engine.create_file(Path::new("new"), b"N", 0o600).unwrap();
     engine.unlink(Path::new("gone")).unwrap();
+    let diff = engine.diff(None).unwrap();
+    let modified = diff.iter().find(|change| change.path == "a").unwrap();
+    assert_eq!(modified.old_bytes.as_deref(), Some(b"A".as_slice()));
+    assert_eq!(modified.new_bytes.as_deref(), Some(b"B".as_slice()));
+    assert_eq!(modified.old_size, Some(1));
+    assert_eq!(modified.new_size, Some(1));
     assert_eq!(
-        engine.diff(None).unwrap(),
+        change_kinds(diff),
         changes(&[
             ("a", ChangeKind::Modified),
             ("gone", ChangeKind::Deleted),
@@ -604,7 +656,7 @@ fn reopen_rebuilds_truncate_range_and_touched_indexes() {
     let mut engine = fixture.reopen();
     engine.write(Path::new("a"), 0, b"ABCD").unwrap();
     assert_eq!(
-        engine.diff(None).unwrap(),
+        change_kinds(engine.diff(None).unwrap()),
         changes(&[("a", ChangeKind::Modified)])
     );
     engine.rollback(None).unwrap();
@@ -769,7 +821,7 @@ fn every_mutation_fault_recovers_to_its_allowed_state() {
         assert_eq!(read(fixture.live.join("a")), mutation_fault_expected(point));
         if point == FaultPoint::AfterApplied {
             assert_eq!(
-                engine.diff(None).unwrap(),
+                change_kinds(engine.diff(None).unwrap()),
                 changes(&[("a", ChangeKind::Modified)])
             );
         } else {
@@ -924,7 +976,7 @@ fn checkpoint_rollback_and_commit_faults_resume_idempotently() {
         assert_eq!(read(fixture.live.join("a")), b"new");
         if point == FaultPoint::BeforeCommitMarker {
             assert_eq!(
-                engine.diff(None).unwrap(),
+                change_kinds(engine.diff(None).unwrap()),
                 changes(&[("a", ChangeKind::Modified)])
             );
         } else {

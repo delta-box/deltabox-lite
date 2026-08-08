@@ -4,10 +4,10 @@
 
 **Lightweight, agent-native sandboxing with diff · commit · abort.**
 
-Give agents a workspace they can break - without ever breaking your project.
+Give agents a confined workspace with explicit diff, commit, and abort semantics.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#license)
-[![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg)](#)
+[![Rust](https://img.shields.io/badge/rust-1.87+-orange.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey.svg)](#)
 [![API](https://img.shields.io/badge/API-JSON--RPC-blueviolet.svg)](docs/protocol.md)
 [![Pi](https://img.shields.io/badge/pi-deltabox-purple.svg)](https://github.com/Ddnirvana/pi-deltabox)
@@ -15,9 +15,10 @@ Give agents a workspace they can break - without ever breaking your project.
 </div>
 
 deltabox-lite is a standalone sandbox runtime for AI coding agents. Agents keep
-full execution freedom inside a confined, copy-on-write workspace, and every
-change they make can be **reviewed**, **committed**, or **aborted** — per task
-or per tool call.
+full execution freedom inside a confined filesystem view, and every change
+they make can be **reviewed**, **committed**, or **aborted** - per task or per
+tool call. Linux defaults to a commit-biased FUSE view for low command latency;
+the private-copy mode keeps changes hidden from the host until commit.
 
 Think of it as Git for agent sessions: less ceremony, more control, and no
 anxiety about binary or large files.
@@ -30,15 +31,17 @@ The JSON-RPC protocol in action — sandboxed edits, diff, abort, redo, commit:
 
 ## Highlights
 
-- **Native isolation, not a container** — Linux uses Landlock, seccomp and
-  sandlock COW; macOS uses Seatbelt plus APFS-cloned shadows. Both enforce the
-  same durable review and policy model without root.
-- **Service-free durable sessions** — accepted and pending views live on disk,
-  so separate CLI processes can continue a session without a daemon. Optional
-  `serve` transport remains available for adapters that prefer JSON-RPC.
-- **Diff / commit / abort** — unified text diffs, binary and large-file
-  markers, and a checkpoint chain. Apply changes to the real project or
-  discard them in milliseconds.
+- **Native isolation, not a container** - Linux composes Sandlock/Landlock/
+  seccomp with DeltaFS FUSE; macOS uses Seatbelt plus APFS-cloned shadows.
+- **Service-free durable sessions** - Linux starts one session-scoped
+  filesystem helper automatically. Durable files remain authoritative across
+  independent CLI processes; no global daemon is required.
+- **Two filesystem contracts** - `cbcow-through` makes Linux changes visible
+  immediately and makes commit an O(1) acceptance operation. `copy-private`
+  keeps the host unchanged until commit and is the compatibility fallback.
+- **Diff / commit / abort** - unified text diffs, binary and large-file
+  markers, and a linear checkpoint chain. Abort restores the selected
+  checkpoint; commit accepts the current state.
 - **Review-scope savepoints** — task and tool adapters choose the correct abort
   target; normal commit and abort do not require a user-created checkpoint.
 - **Agent-agnostic** — a line-delimited JSON-RPC protocol over stdio. The Pi
@@ -52,20 +55,23 @@ The JSON-RPC protocol in action — sandboxed edits, diff, abort, redo, commit:
 
 ```mermaid
 flowchart LR
-    A[CLI or agent adapter] --> D[Durable session store]
-    D -->|short-lived exec| W[Native confinement<br/>Sandlock or Seatbelt]
-    W --> S[(Working shadow)]
-    S -->|diff / abort| B[(Accepted baseline)]
-    S -->|user commit| P[(Real project)]
-    O[Optional deltabox serve] -.-> D
+    A[CLI or agent adapter] --> C[Session coordinator]
+    C --> T[Linux cbcow-through]
+    T --> H[Session-scoped DeltaFS helper]
+    H --> P[(Host-visible LIVE tree)]
+    C --> R[copy-private fallback]
+    R --> S[(Private working tree)]
+    S -->|commit| P
+    O[Optional deltabox serve] -.-> C
 ```
 
-The on-disk session store owns accepted and working project views. Each normal
-CLI `exec` launches a short-lived confined COW transaction and materializes its
-result into the working shadow; the real project remains untouched until user
-commit. `deltabox serve` is an optional persistent transport process that uses
-the same per-command transactions; it is not the source of session truth. See
-[session semantics](docs/session-semantics.md).
+On Linux with FUSE available, `session start` launches a helper that mounts the
+host project through the commit-biased state engine. Writes update the host
+tree through DeltaFS after recording rollback data; commit accepts the current
+state and abort replays undo records. In `copy-private`, each command updates a
+durable private working tree and commit publishes it to the project.
+`deltabox serve` is only an optional JSON-RPC transport and is never the source
+of session truth. See [session semantics](docs/session-semantics.md).
 
 ## Quick start
 
@@ -84,6 +90,15 @@ deltabox session start /abs/path/my-project
 deltabox exec <id> --project /abs/path/my-project -- npm install
 deltabox diff <id> --project /abs/path/my-project
 deltabox commit <id> --project /abs/path/my-project
+```
+
+Linux requests `cbcow-through` by default and visibly falls back to
+`copy-private` if FUSE is unavailable. Select the contract explicitly when a
+workflow requires it:
+
+```bash
+deltabox session start /abs/path/my-project --fs-mode copy-private
+deltabox session start /abs/path/my-project --fs-mode cbcow-through --require-fs-mode
 ```
 
 No service needs to be started first. To use the optional JSON-RPC transport:
@@ -135,22 +150,18 @@ support.
 
 ## Performance
 
-Measured on x86-server (Linux 6.18, ext4, release build). Each row reports 25
-no-op commands over the same durable session; CLI mode starts a fresh sandbox
-process for every command.
+Measured on x86-server (Linux 6.18, ext4, release build). Each row reports 50
+no-op commands after five warmups. Deltabox uses independent CLI processes over
+one `cbcow-through` session.
 
-| Transport | Files | p50 | p95 |
+| Runner | 10 files p50 / p95 | 200 files p50 / p95 | 1000 files p50 / p95 |
 |---|---:|---:|---:|
-| service-free CLI (default) | 10 | 51 ms | 80 ms |
-| service-free CLI (default) | 200 | 41 ms | 78 ms |
-| service-free CLI (default) | 1000 | 69 ms | 90 ms |
-| optional `serve` | 10 | 59 ms | 73 ms |
-| optional `serve` | 200 | 54 ms | 84 ms |
-| optional `serve` | 1000 | 81 ms | 227 ms |
+| `cbcow-through` | 13.7 / 15.5 ms | 14.3 / 15.4 ms | 13.2 / 14.7 ms |
+| raw Sandlock | 8.1 / 9.4 ms | 8.2 / 9.0 ms | 8.1 / 8.9 ms |
+| plain shell | 1.3 / 1.7 ms | 1.2 / 1.6 ms | 1.2 / 1.5 ms |
 
-The 1000-file CLI run had one 211 ms outlier; the serve run had a 397 ms
-outlier. Persisted scan indexes and changed-path materialization keep median CLI
-latency from scaling with a full working-tree copy.
+The no-op path does not scan or copy the project per command. Empty DeltaFS
+checkpoint and commit operations remain below 1 ms in the scaling benchmark.
 
 Measured on an Apple-silicon MacBook Air (macOS 14.6, APFS, release build).
 Each row reports the p50 of 30 interleaved no-op commands after three warmups
@@ -158,7 +169,7 @@ over a pre-created project and session.
 
 | Runner | 10 files | 200 files | 1000 files |
 |---|---:|---:|---:|
-| service-free CLI (default) | 88 ms | 142 ms | 333 ms |
+| service-free CLI (`copy-private`) | 88 ms | 142 ms | 333 ms |
 | optional `serve` | 84 ms | 138 ms | 324 ms |
 | Anthropic sandbox-runtime 0.0.70 | 137 ms | 137 ms | 137 ms |
 | Carderne sandbox-runtime 0.0.69 | 132 ms | 133 ms | 129 ms |
@@ -176,6 +187,8 @@ creation and metadata validation still scale with the number of files.
 - `crates/deltabox-core` — sessions, checkpoints, diff/commit/abort, policy,
   journal, platform backends.
 - `crates/deltabox-cli` — the `deltabox` binary (CLI + stdio JSON-RPC server).
+- `deltafs-fuse` — the standalone commit-biased state engine, FUSE adapter,
+  helper, and local control protocol.
 - `examples/rpc-demo.mjs` — a runnable JSON-RPC demo.
 - `docs/protocol.md` — the stable JSON-RPC contract.
 - `docs/policy.md` — policy schema and enforcement boundaries.

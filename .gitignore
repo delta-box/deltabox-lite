@@ -3,6 +3,4 @@
 .deltabox/
 .env
 *.log
-Cargo.lock
-!deltafs-fuse/Cargo.lock
 .DS_Store

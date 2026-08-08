@@ -47,6 +47,8 @@ pub struct SessionMeta {
     pub policy_path: Option<PathBuf>,
     pub started_at_ms: u64,
     pub status: SessionStatus,
+    #[serde(default)]
+    pub filesystem: crate::protocol::FilesystemInfo,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -138,6 +140,7 @@ impl SessionManager {
             host_project: Some(self.project.clone()),
             store_dir: store_dir.clone(),
             policy: policy.clone(),
+            resolved_deny_paths: None,
         };
         self.backend.start_session(&session_id, &spec)?;
         let base_scan = match self.backend.scan(&session_id) {
@@ -165,6 +168,7 @@ impl SessionManager {
             policy_path: policy_path.map(|p| p.to_path_buf()),
             started_at_ms: now_ms(),
             status: SessionStatus::Running,
+            filesystem: crate::protocol::FilesystemInfo::default(),
         };
         self.registry.upsert(meta);
         self.registry.save(&self.root)?;
@@ -218,6 +222,7 @@ impl SessionManager {
             status: meta.status.clone(),
             checkpoint_count: manifest.list().len(),
             pending_changes,
+            filesystem: meta.filesystem.clone(),
         })
     }
 
@@ -537,6 +542,7 @@ impl SessionManager {
             status: meta.status.clone(),
             checkpoint_count: manifest.list().len(),
             pending_changes: 0,
+            filesystem: meta.filesystem.clone(),
         })
     }
 

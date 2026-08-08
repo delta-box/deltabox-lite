@@ -1,0 +1,294 @@
+use crate::durable::DurableSessionManager;
+use crate::error::{Error, Result};
+use crate::protocol::{
+    AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
+    CommitResult, DiffParams, DiffResult, ExecParams, ExecResult, FilesystemInfo, FilesystemMode,
+    FsReadResult, ReviewBeginParams, SessionInfo,
+};
+use crate::session::SessionMeta;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+pub struct SessionCoordinator {
+    project: PathBuf,
+    copy_private: DurableSessionManager,
+    #[cfg(target_os = "linux")]
+    cbcow_through: crate::cbcow::Manager,
+}
+
+impl SessionCoordinator {
+    pub fn new(project: &Path, worker_bin: Option<PathBuf>) -> Result<Self> {
+        let project = project.canonicalize()?;
+        let copy_private = DurableSessionManager::new(&project, worker_bin.clone())?;
+        #[cfg(target_os = "linux")]
+        let cbcow_through =
+            crate::cbcow::Manager::new(&project, worker_bin.unwrap_or(std::env::current_exe()?))?;
+        Ok(Self {
+            project,
+            copy_private,
+            #[cfg(target_os = "linux")]
+            cbcow_through,
+        })
+    }
+
+    pub fn start(
+        &self,
+        policy: Option<&Path>,
+        requested: Option<FilesystemMode>,
+        require_requested: bool,
+    ) -> Result<SessionInfo> {
+        let requested = requested.unwrap_or(default_mode());
+        match requested {
+            FilesystemMode::CopyPrivate => self
+                .copy_private
+                .start_with_filesystem(policy, FilesystemInfo::copy_private(requested, None)),
+            FilesystemMode::CbcowThrough => self.start_cbcow(policy, require_requested),
+        }
+    }
+
+    pub fn status(&self, session_id: &str) -> Result<SessionInfo> {
+        match self.route(session_id)? {
+            Route::CopyPrivate(manager) => manager.status(session_id),
+            #[cfg(target_os = "linux")]
+            Route::CbcowThrough(manager) => manager.status(session_id),
+        }
+    }
+
+    pub fn stop(&self, session_id: &str) -> Result<SessionInfo> {
+        match self.route(session_id)? {
+            Route::CopyPrivate(manager) => manager.stop(session_id),
+            #[cfg(target_os = "linux")]
+            Route::CbcowThrough(manager) => manager.stop(session_id),
+        }
+    }
+
+    pub fn exec(&self, params: ExecParams) -> Result<ExecResult> {
+        match self.route(&params.session_id)? {
+            Route::CopyPrivate(manager) => manager.exec(params),
+            #[cfg(target_os = "linux")]
+            Route::CbcowThrough(manager) => manager.exec(params),
+        }
+    }
+
+    pub fn read_file(&self, session_id: &str, path: &Path) -> Result<FsReadResult> {
+        match self.route(session_id)? {
+            Route::CopyPrivate(manager) => manager.read_file(session_id, path),
+            #[cfg(target_os = "linux")]
+            Route::CbcowThrough(manager) => manager.read_file(session_id, path),
+        }
+    }
+
+    pub fn write_file(&self, session_id: &str, path: &Path, content: Vec<u8>) -> Result<()> {
+        match self.route(session_id)? {
+            Route::CopyPrivate(manager) => manager.write_file(session_id, path, content),
+            #[cfg(target_os = "linux")]
+            Route::CbcowThrough(manager) => manager.write_file(session_id, path, content),
+        }
+    }
+
+    pub fn checkpoint(&self, params: CheckpointParams) -> Result<CheckpointInfo> {
+        match self.route(&params.session_id)? {
+            Route::CopyPrivate(manager) => manager.checkpoint(params),
+            #[cfg(target_os = "linux")]
+            Route::CbcowThrough(manager) => manager.checkpoint(params),
+        }
+    }
+
+    pub fn diff(&self, params: DiffParams) -> Result<DiffResult> {
+        match self.route(&params.session_id)? {
+            Route::CopyPrivate(manager) => manager.diff(params),
+            #[cfg(target_os = "linux")]
+            Route::CbcowThrough(manager) => manager.diff(params),
+        }
+    }
+
+    pub fn commit(&self, params: CommitParams) -> Result<CommitResult> {
+        match self.route(&params.session_id)? {
+            Route::CopyPrivate(manager) => manager.commit(params),
+            #[cfg(target_os = "linux")]
+            Route::CbcowThrough(manager) => manager.commit(params),
+        }
+    }
+
+    pub fn abort(&self, params: AbortParams) -> Result<AbortResult> {
+        match self.route(&params.session_id)? {
+            Route::CopyPrivate(manager) => manager.abort(params),
+            #[cfg(target_os = "linux")]
+            Route::CbcowThrough(manager) => manager.abort(params),
+        }
+    }
+
+    pub fn begin_review(&self, params: ReviewBeginParams) -> Result<ActiveReview> {
+        match self.route(&params.session_id)? {
+            Route::CopyPrivate(manager) => manager.begin_review(params),
+            #[cfg(target_os = "linux")]
+            Route::CbcowThrough(manager) => manager.begin_review(params),
+        }
+    }
+
+    pub fn review_status(&self, session_id: &str) -> Result<Option<ActiveReview>> {
+        match self.route(session_id)? {
+            Route::CopyPrivate(manager) => manager.review_status(session_id),
+            #[cfg(target_os = "linux")]
+            Route::CbcowThrough(manager) => manager.review_status(session_id),
+        }
+    }
+
+    pub fn review_diff(&self, session_id: &str) -> Result<DiffResult> {
+        match self.route(session_id)? {
+            Route::CopyPrivate(manager) => manager.review_diff(session_id),
+            #[cfg(target_os = "linux")]
+            Route::CbcowThrough(manager) => manager.review_diff(session_id),
+        }
+    }
+
+    pub fn review_commit(&self, session_id: &str) -> Result<CommitResult> {
+        match self.route(session_id)? {
+            Route::CopyPrivate(manager) => manager.review_commit(session_id),
+            #[cfg(target_os = "linux")]
+            Route::CbcowThrough(manager) => manager.review_commit(session_id),
+        }
+    }
+
+    pub fn review_abort(&self, session_id: &str) -> Result<AbortResult> {
+        match self.route(session_id)? {
+            Route::CopyPrivate(manager) => manager.review_abort(session_id),
+            #[cfg(target_os = "linux")]
+            Route::CbcowThrough(manager) => manager.review_abort(session_id),
+        }
+    }
+
+    pub fn review_skip(&self, session_id: &str) -> Result<ActiveReview> {
+        match self.route(session_id)? {
+            Route::CopyPrivate(manager) => manager.review_skip(session_id),
+            #[cfg(target_os = "linux")]
+            Route::CbcowThrough(manager) => manager.review_skip(session_id),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn start_cbcow(&self, policy: Option<&Path>, required: bool) -> Result<SessionInfo> {
+        let report = deltafs_fuse::doctor::inspect();
+        if report.mount_ready {
+            match self.cbcow_through.start(policy) {
+                Ok(info) => return Ok(info),
+                Err(Error::FilesystemUnavailable(reason)) if !required => {
+                    return self.start_fallback(policy, reason)
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let reason = report.notes.join("; ");
+        if required {
+            return Err(Error::Unsupported(reason));
+        }
+        self.start_fallback(policy, reason)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn start_cbcow(&self, policy: Option<&Path>, required: bool) -> Result<SessionInfo> {
+        let reason = "cbcow-through is unavailable on this platform".to_string();
+        if required {
+            return Err(Error::Unsupported(reason));
+        }
+        self.start_fallback(policy, reason)
+    }
+
+    fn start_fallback(&self, policy: Option<&Path>, reason: String) -> Result<SessionInfo> {
+        self.copy_private.start_with_filesystem(
+            policy,
+            FilesystemInfo::copy_private(FilesystemMode::CbcowThrough, Some(reason)),
+        )
+    }
+
+    fn route(&self, session_id: &str) -> Result<Route<'_>> {
+        let path = self
+            .project
+            .join(".deltabox")
+            .join(session_id)
+            .join("session.json");
+        let meta: SessionMeta = serde_json::from_slice(&fs::read(&path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Error::SessionNotFound(session_id.into())
+            } else {
+                Error::Io(error)
+            }
+        })?)?;
+        match meta.filesystem.resolved_fs_mode {
+            FilesystemMode::CopyPrivate => Ok(Route::CopyPrivate(&self.copy_private)),
+            #[cfg(target_os = "linux")]
+            FilesystemMode::CbcowThrough => Ok(Route::CbcowThrough(&self.cbcow_through)),
+            #[cfg(not(target_os = "linux"))]
+            FilesystemMode::CbcowThrough => Err(Error::Unsupported(
+                "this cbcow-through session requires Linux".into(),
+            )),
+        }
+    }
+}
+
+enum Route<'a> {
+    CopyPrivate(&'a DurableSessionManager),
+    #[cfg(target_os = "linux")]
+    CbcowThrough(&'a crate::cbcow::Manager),
+}
+
+fn default_mode() -> FilesystemMode {
+    FilesystemMode::CbcowThrough
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_private_session_routes_after_coordinator_reopen() {
+        let project = tempfile::tempdir().unwrap();
+        fs::write(project.path().join("tracked.txt"), "accepted").unwrap();
+        let first = SessionCoordinator::new(project.path(), None).unwrap();
+        let started = first
+            .start(None, Some(FilesystemMode::CopyPrivate), true)
+            .unwrap();
+        assert_eq!(
+            started.filesystem.resolved_fs_mode,
+            FilesystemMode::CopyPrivate
+        );
+        drop(first);
+
+        let reopened = SessionCoordinator::new(project.path(), None).unwrap();
+        let status = reopened.status(&started.session_id).unwrap();
+        assert_eq!(status.session_id, started.session_id);
+        assert_eq!(
+            status.filesystem.requested_fs_mode,
+            FilesystemMode::CopyPrivate
+        );
+        assert_eq!(status.filesystem.fallback_reason, None);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn required_cbcow_mode_does_not_fallback() {
+        let project = tempfile::tempdir().unwrap();
+        let coordinator = SessionCoordinator::new(project.path(), None).unwrap();
+        let error = coordinator
+            .start(None, Some(FilesystemMode::CbcowThrough), true)
+            .unwrap_err();
+        assert!(matches!(error, Error::Unsupported(_)));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn default_mode_records_cbcow_fallback() {
+        let project = tempfile::tempdir().unwrap();
+        let coordinator = SessionCoordinator::new(project.path(), None).unwrap();
+        let info = coordinator.start(None, None, false).unwrap();
+        assert_eq!(
+            info.filesystem.requested_fs_mode,
+            FilesystemMode::CbcowThrough
+        );
+        assert_eq!(
+            info.filesystem.resolved_fs_mode,
+            FilesystemMode::CopyPrivate
+        );
+        assert!(info.filesystem.fallback_reason.is_some());
+    }
+}

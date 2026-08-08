@@ -24,6 +24,8 @@ pub enum Error {
     ReviewNotActive(String),
     #[error("backend error: {0}")]
     Backend(String),
+    #[error("filesystem unavailable: {0}")]
+    FilesystemUnavailable(String),
     #[error("unsupported on this platform: {0}")]
     Unsupported(String),
     #[error("policy parse error: {0}")]
