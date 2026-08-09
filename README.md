@@ -90,7 +90,7 @@ cargo build --release
 export PATH="$PWD/target/release:$PATH"
 ```
 
-Start a durable session and use it from independent CLI processes:
+Start a persistent session and use it from independent CLI processes:
 
 ```bash
 deltabox session start /abs/path/my-project
@@ -108,7 +108,17 @@ workflow requires it:
 deltabox session start /abs/path/my-project --fs-mode copy-private
 deltabox session start /abs/path/my-project --fs-mode cbcow-private --require-fs-mode
 deltabox session start /abs/path/my-project --fs-mode cbcow-through --require-fs-mode
+deltabox session start /abs/path/my-project --fs-mode cbcow-through --durable
+deltabox session start /abs/path/my-project --fs-mode cbcow-through --durable --group-commit-ms 2
 ```
+
+Fast mode is the default and recovers helper/process failures. `--durable`
+adds ordered storage barriers; success from commit means changed files,
+affected directories, and the acceptance marker are synchronized.
+`--group-commit-ms` lets concurrent mutations share an `APPLIED` journal
+barrier while preserving that per-operation success boundary.
+Strict mode requires `cbcow-through` or `cbcow-private`; startup fails instead
+of falling back to `copy-private` when the requested CB-CoW mount is unavailable.
 
 No service needs to be started first. To use the optional JSON-RPC transport:
 

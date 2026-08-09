@@ -20,6 +20,14 @@ impl Session {
     }
 
     fn start_with_policy(project: &Path, policy: Option<&Path>) -> Self {
+        Self::start_with_options(project, policy, false)
+    }
+
+    fn start_durable(project: &Path) -> Self {
+        Self::start_with_options(project, None, true)
+    }
+
+    fn start_with_options(project: &Path, policy: Option<&Path>, durable: bool) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_deltabox"));
         command.args([
             "session",
@@ -29,6 +37,9 @@ impl Session {
             "cbcow-private",
             "--require-fs-mode",
         ]);
+        if durable {
+            command.arg("--durable");
+        }
         if let Some(policy) = policy {
             command.arg("--policy").arg(policy);
         }
@@ -387,41 +398,51 @@ fn publication_recovers_each_process_crash_boundary() {
     if !available() {
         return;
     }
-    for point in [
-        "private_publish_prepared",
-        "private_publish_path_applied",
-        "private_publish_host_applied",
-        "private_publish_engine_committed",
-        "private_publish_state_updated",
-    ] {
-        let project = tempfile::tempdir().unwrap();
-        std::fs::write(project.path().join("value.txt"), "old").unwrap();
-        let session = Session::start(project.path());
-        session.write("value.txt", "new");
-        let crashed =
-            session.command_with_env(["commit", &session.id], "DELTABOX_TEST_CRASH_AT", point);
-        assert!(
-            !crashed.status.success(),
-            "crash point {point} returned success"
-        );
-        let status = session.status();
-        if matches!(
-            point,
-            "private_publish_prepared" | "private_publish_path_applied"
-        ) {
-            assert_eq!(status["pending_changes"], 1);
+    for durable in [false, true] {
+        for point in [
+            "private_publish_prepared",
+            "private_publish_path_applied",
+            "private_publish_host_applied",
+            "private_publish_engine_committed",
+            "private_publish_state_updated",
+        ] {
+            let project = tempfile::tempdir().unwrap();
+            std::fs::write(project.path().join("value.txt"), "old").unwrap();
+            let session = if durable {
+                Session::start_durable(project.path())
+            } else {
+                Session::start(project.path())
+            };
+            session.write("value.txt", "new");
+            let crashed =
+                session.command_with_env(["commit", &session.id], "DELTABOX_TEST_CRASH_AT", point);
+            assert!(
+                !crashed.status.success(),
+                "crash point {point} returned success"
+            );
+            let status = session.status();
+            assert_eq!(
+                status["durability"],
+                if durable { "strict" } else { "process-crash" }
+            );
+            if matches!(
+                point,
+                "private_publish_prepared" | "private_publish_path_applied"
+            ) {
+                assert_eq!(status["pending_changes"], 1);
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("value.txt")).unwrap(),
+                    "old"
+                );
+                assert_ok(&session.commit());
+            } else {
+                assert_eq!(status["pending_changes"], 0);
+            }
             assert_eq!(
                 std::fs::read_to_string(project.path().join("value.txt")).unwrap(),
-                "old"
+                "new"
             );
-            assert_ok(&session.commit());
-        } else {
-            assert_eq!(status["pending_changes"], 0);
         }
-        assert_eq!(
-            std::fs::read_to_string(project.path().join("value.txt")).unwrap(),
-            "new"
-        );
     }
 }
 

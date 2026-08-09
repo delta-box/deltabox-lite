@@ -22,12 +22,15 @@ pub struct LoadedJournal {
     pub next_sequence: u64,
 }
 
-pub fn append(path: &Path, body: JournalBody) -> Result<()> {
+pub fn append(path: &Path, body: JournalBody, sync: bool) -> Result<()> {
     let envelope = envelope(body)?;
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     serde_json::to_writer(&mut file, &envelope)?;
     file.write_all(b"\n")?;
     file.flush()?;
+    if sync {
+        file.sync_data()?;
+    }
     Ok(())
 }
 
@@ -178,6 +181,7 @@ mod tests {
                 record_id: 7,
                 event: JournalEvent::Ready { record: ready() },
             },
+            false,
         )
         .unwrap();
         append(
@@ -190,6 +194,7 @@ mod tests {
                     outcome: ApplyOutcome::Applied,
                 },
             },
+            false,
         )
         .unwrap();
         let loaded = load(&path, 4).unwrap();

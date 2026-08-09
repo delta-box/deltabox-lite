@@ -1,4 +1,5 @@
 mod fault;
+mod group_commit;
 mod journal;
 mod model;
 mod quota;
@@ -7,6 +8,7 @@ mod snapshot;
 mod storage;
 
 pub use fault::{FaultInjector, FaultPoint};
+use group_commit::ReturnBarrier;
 pub use model::{CheckpointMeta as Checkpoint, Durability, VInodeId};
 pub use ranges::{ByteRange, RangeSet};
 
@@ -30,7 +32,7 @@ use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 const JOURNAL_RESERVATION: u64 = 4096;
@@ -45,6 +47,8 @@ pub enum EngineError {
     SessionMissing,
     #[error("state directory is not empty")]
     StateNotEmpty,
+    #[error("requested session options do not match persisted state")]
+    SessionOptionsMismatch,
     #[error("state and LIVE directories must not overlap")]
     OverlappingRoots,
     #[error("invalid relative path: {0}")]
@@ -84,12 +88,16 @@ pub type Result<T> = std::result::Result<T, EngineError>;
 #[derive(Debug, Clone, Copy)]
 pub struct EngineOptions {
     pub quota_bytes: u64,
+    pub durability: Durability,
+    pub group_commit_ms: Option<u64>,
 }
 
 impl Default for EngineOptions {
     fn default() -> Self {
         Self {
             quota_bytes: DEFAULT_QUOTA_BYTES,
+            durability: Durability::ProcessCrash,
+            group_commit_ms: None,
         }
     }
 }
@@ -128,6 +136,185 @@ pub struct EngineStatus {
     pub touched_paths: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiagnosticEpoch {
+    pub id: u64,
+    pub status: String,
+    pub records: usize,
+    pub unresolved_records: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiagnosticReport {
+    pub state_root: PathBuf,
+    pub healthy: bool,
+    pub durability: Option<Durability>,
+    pub active_epoch: Option<u64>,
+    pub accepted_checkpoint: Option<u64>,
+    pub latest_commit_sequence: Option<u64>,
+    pub recovery_action: Option<String>,
+    pub epochs: Vec<DiagnosticEpoch>,
+    pub issues: Vec<String>,
+    pub repair: Vec<String>,
+}
+
+pub fn diagnose(state: &Path) -> DiagnosticReport {
+    let mut report = DiagnosticReport {
+        state_root: state.to_path_buf(),
+        healthy: false,
+        durability: None,
+        active_epoch: None,
+        accepted_checkpoint: None,
+        latest_commit_sequence: None,
+        recovery_action: None,
+        epochs: Vec::new(),
+        issues: Vec::new(),
+        repair: Vec::new(),
+    };
+    let manifest: SessionManifest = match storage::read_state(&state.join("session.json")) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            report.issues.push(error.to_string());
+            report.repair.push(
+                "preserve the state directory and project before replacing corrupt state".into(),
+            );
+            return report;
+        }
+    };
+    report.durability = Some(manifest.durability);
+    report.active_epoch = Some(manifest.active_epoch);
+    report.accepted_checkpoint = Some(manifest.accepted_checkpoint);
+
+    match fs::read_dir(state.join("epochs")) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) if entry.file_type().is_ok_and(|kind| kind.is_dir()) => entry,
+                    Ok(_) => continue,
+                    Err(error) => {
+                        report.issues.push(error.to_string());
+                        continue;
+                    }
+                };
+                let meta: EpochMeta = match storage::read_state(&entry.path().join("epoch.json")) {
+                    Ok(meta) => meta,
+                    Err(error) => {
+                        report.issues.push(error.to_string());
+                        continue;
+                    }
+                };
+                match journal::load(&entry.path().join("journal.log"), meta.id) {
+                    Ok(journal) => {
+                        for record in &journal.records {
+                            for preimage in preimage_files(&record.ready) {
+                                let path = entry.path().join("preimages").join(preimage);
+                                if !path.is_file() {
+                                    report.issues.push(format!(
+                                        "missing pre-image for record {}: {}",
+                                        record.record_id,
+                                        path.display()
+                                    ));
+                                }
+                            }
+                        }
+                        report.epochs.push(DiagnosticEpoch {
+                            id: meta.id,
+                            status: match meta.status {
+                                EpochStatus::Open => "open",
+                                EpochStatus::Sealed => "sealed",
+                                EpochStatus::RollingBack => "rolling_back",
+                                EpochStatus::RolledBack => "rolled_back",
+                                EpochStatus::Retired => "retired",
+                            }
+                            .into(),
+                            records: journal.records.len(),
+                            unresolved_records: journal
+                                .records
+                                .iter()
+                                .filter(|record| record.outcome.is_none())
+                                .count(),
+                        });
+                    }
+                    Err(error) => report.issues.push(error.to_string()),
+                }
+            }
+        }
+        Err(error) => report.issues.push(error.to_string()),
+    }
+    report.epochs.sort_by_key(|epoch| epoch.id);
+    if !report
+        .epochs
+        .iter()
+        .any(|epoch| epoch.id == manifest.active_epoch)
+    {
+        report
+            .issues
+            .push(format!("active epoch {} is missing", manifest.active_epoch));
+    }
+
+    let mut latest_marker: Option<CommitMarker> = None;
+    if let Ok(entries) = fs::read_dir(state.join("commits")) {
+        for entry in entries.flatten() {
+            match storage::read_state::<CommitMarker>(&entry.path()) {
+                Ok(marker) => {
+                    if latest_marker
+                        .as_ref()
+                        .is_none_or(|current| marker.sequence > current.sequence)
+                    {
+                        latest_marker = Some(marker);
+                    }
+                }
+                Err(error) => report.issues.push(error.to_string()),
+            }
+        }
+    }
+    report.latest_commit_sequence = latest_marker.as_ref().map(|marker| marker.sequence);
+    let recovery_path = state.join("recovery/active.json");
+    if recovery_path.exists() {
+        match storage::read_state::<RecoveryState>(&recovery_path) {
+            Ok(recovery) => {
+                report.recovery_action = Some(match recovery.action {
+                    RecoveryAction::Rollback {
+                        target_checkpoint, ..
+                    } => {
+                        format!("rollback to checkpoint {target_checkpoint}")
+                    }
+                    RecoveryAction::Commit { marker_sequence } => {
+                        format!("commit marker {marker_sequence}")
+                    }
+                });
+            }
+            Err(error) => report.issues.push(error.to_string()),
+        }
+    }
+
+    let unresolved: usize = report
+        .epochs
+        .iter()
+        .map(|epoch| epoch.unresolved_records)
+        .sum();
+    if unresolved != 0 || report.recovery_action.is_some() {
+        report
+            .repair
+            .push("restart the session helper to complete journal recovery".into());
+    }
+    if latest_marker
+        .as_ref()
+        .is_some_and(|marker| marker.checkpoint.id != manifest.accepted_checkpoint)
+    {
+        report
+            .repair
+            .push("restart the session helper to finalize the synchronized commit marker".into());
+    }
+    if !report.issues.is_empty() {
+        report
+            .repair
+            .push("preserve the state directory and project before replacing corrupt state".into());
+    }
+    report.healthy = report.issues.is_empty();
+    report
+}
+
 #[derive(Debug)]
 struct EpochRuntime {
     meta: EpochMeta,
@@ -144,6 +331,8 @@ pub struct StateEngine {
     epochs: BTreeMap<u64, EpochRuntime>,
     fault: FaultInjector,
     poisoned: bool,
+    group_committer: Option<group_commit::GroupCommitter>,
+    deferred_barrier: Option<ReturnBarrier>,
 }
 
 impl StateEngine {
@@ -177,7 +366,8 @@ impl StateEngine {
             session_id: session_id(),
             live_root: path_string(&live)?,
             state_root: path_string(&state)?,
-            durability: Durability::ProcessCrash,
+            durability: options.durability,
+            group_commit_ms: options.group_commit_ms,
             quota_limit: options.quota_bytes,
             active_epoch: 1,
             accepted_checkpoint: 0,
@@ -195,10 +385,15 @@ impl StateEngine {
             status: EpochStatus::Open,
             quota: QuotaState::new(options.quota_bytes),
         };
-        create_epoch_files(&state, &meta)?;
-        storage::write_state(&state.join("session.json"), &manifest)?;
-        storage::write_state(&state.join("inodes.idx"), &InodeRegistry::default())?;
-        storage::write_state(&state.join("touched.idx"), &BTreeSet::<String>::new())?;
+        let strict = options.durability == Durability::Strict;
+        create_epoch_files(&state, &meta, strict)?;
+        write_initial_state(&state.join("session.json"), &manifest, strict)?;
+        write_initial_state(&state.join("inodes.idx"), &InodeRegistry::default(), strict)?;
+        write_initial_state(
+            &state.join("touched.idx"),
+            &BTreeSet::<String>::new(),
+            strict,
+        )?;
 
         let loaded = journal::load(&journal_path(&state, 1), 1)?;
         Ok(Self {
@@ -216,6 +411,8 @@ impl StateEngine {
             )]),
             fault: FaultInjector::default(),
             poisoned: false,
+            group_committer: group_committer(&options.durability, options.group_commit_ms),
+            deferred_barrier: None,
         })
     }
 
@@ -241,6 +438,7 @@ impl StateEngine {
         } else {
             InodeRegistry::default()
         };
+        let group_committer = group_committer(&manifest.durability, manifest.group_commit_ms);
         let mut engine = Self {
             live,
             state,
@@ -249,14 +447,39 @@ impl StateEngine {
             epochs: BTreeMap::new(),
             fault: FaultInjector::default(),
             poisoned: false,
+            group_committer,
+            deferred_barrier: None,
         };
         engine.load_epochs()?;
         engine.recover()?;
         Ok(engine)
     }
 
+    pub fn open_with_options(live: &Path, state: &Path, options: EngineOptions) -> Result<Self> {
+        let engine = Self::open(live, state)?;
+        if engine.manifest.quota_limit != options.quota_bytes
+            || engine.manifest.durability != options.durability
+            || engine.manifest.group_commit_ms != options.group_commit_ms
+        {
+            return Err(EngineError::SessionOptionsMismatch);
+        }
+        Ok(engine)
+    }
+
     pub fn set_fault_injector(&mut self, injector: FaultInjector) {
         self.fault = injector;
+    }
+
+    #[cfg(any(feature = "fuse", test))]
+    pub(crate) fn begin_grouped_return(&mut self) {
+        if self.group_committer.is_some() {
+            self.deferred_barrier = Some(ReturnBarrier::default());
+        }
+    }
+
+    #[cfg(any(feature = "fuse", test))]
+    pub(crate) fn finish_grouped_return(&mut self) -> Option<ReturnBarrier> {
+        self.deferred_barrier.take()
     }
 
     pub fn live_root(&self) -> &Path {
@@ -270,7 +493,7 @@ impl StateEngine {
     pub fn status(&self) -> EngineStatus {
         let active = self.active_epoch();
         EngineStatus {
-            durability: self.manifest.durability.clone(),
+            durability: self.manifest.durability,
             active_epoch: self.manifest.active_epoch,
             accepted_checkpoint: self.manifest.accepted_checkpoint,
             checkpoints: self.manifest.checkpoints.clone(),
@@ -350,7 +573,20 @@ impl StateEngine {
             .flat_map(|epoch| epoch.loaded.records.iter().map(|record| record.record_id))
             .max()
             .unwrap_or(0);
-        let max_vinode = self.inodes.entries.keys().map(|id| id.0).max().unwrap_or(0);
+        let max_vinode = self
+            .inodes
+            .entries
+            .keys()
+            .map(|id| id.0)
+            .chain(
+                self.epochs
+                    .values()
+                    .flat_map(|epoch| epoch.loaded.records.iter())
+                    .flat_map(|record| record.ready.actions.iter())
+                    .map(max_action_vinode),
+            )
+            .max()
+            .unwrap_or(0);
         self.manifest.next_epoch_id = self.manifest.next_epoch_id.max(max_epoch.saturating_add(1));
         self.manifest.next_checkpoint_id = self
             .manifest
@@ -441,11 +677,11 @@ impl StateEngine {
     }
 
     fn persist_manifest(&self) -> Result<()> {
-        storage::write_state(&self.state.join("session.json"), &self.manifest)
+        self.write_state(&self.state.join("session.json"), &self.manifest)
     }
 
     fn persist_inodes(&self) -> Result<()> {
-        storage::write_state(&self.state.join("inodes.idx"), &self.inodes)
+        self.write_state(&self.state.join("inodes.idx"), &self.inodes)
     }
 
     fn persist_epoch(&self, id: u64) -> Result<()> {
@@ -453,7 +689,28 @@ impl StateEngine {
             .epochs
             .get(&id)
             .ok_or_else(|| EngineError::Invariant(format!("epoch {id} is missing")))?;
-        storage::write_state(&epoch_meta_path(&self.state, id), &epoch.meta)
+        self.write_state(&epoch_meta_path(&self.state, id), &epoch.meta)
+    }
+
+    fn write_state<T: Serialize>(&self, path: &Path, value: &T) -> Result<()> {
+        if self.manifest.durability == Durability::Strict {
+            storage::write_state_durable(path, value)
+        } else {
+            storage::write_state(path, value)
+        }
+    }
+
+    fn remove_state(&self, path: &Path) -> Result<()> {
+        if self.manifest.durability == Durability::Strict {
+            storage::remove_file_durable(path)?;
+        } else {
+            storage::remove_if_exists(path)?;
+        }
+        Ok(())
+    }
+
+    fn strict(&self) -> bool {
+        self.manifest.durability == Durability::Strict
     }
 
     fn poison_on_error<T>(&mut self, result: Result<T>) -> Result<T> {
@@ -585,6 +842,7 @@ impl StateEngine {
                     record: record.clone(),
                 },
             },
+            self.strict(),
         )?;
         let epoch = self.active_epoch_mut();
         epoch.loaded.records.push(journal::LoadedRecord {
@@ -600,14 +858,17 @@ impl StateEngine {
     fn append_applied(&mut self, record_id: u64, outcome: ApplyOutcome) -> Result<()> {
         let epoch_id = self.manifest.active_epoch;
         let sequence = self.active_epoch().loaded.next_sequence;
+        let path = journal_path(&self.state, epoch_id);
+        let immediate = self.strict() && self.group_committer.is_none();
         journal::append(
-            &journal_path(&self.state, epoch_id),
+            &path,
             JournalBody {
                 epoch: epoch_id,
                 sequence,
                 record_id,
                 event: JournalEvent::Applied { outcome },
             },
+            immediate,
         )?;
         let epoch = self.active_epoch_mut();
         let record = epoch
@@ -619,6 +880,15 @@ impl StateEngine {
         record.outcome = Some(outcome);
         epoch.loaded.next_sequence += 1;
         epoch.index = rebuild_index(&epoch.loaded);
+        if let Some(committer) = self.group_committer.clone() {
+            if let Some(barrier) = self.deferred_barrier.as_mut() {
+                group_commit::submit(&committer, barrier, path)?;
+            } else {
+                let mut barrier = ReturnBarrier::default();
+                group_commit::submit(&committer, &mut barrier, path)?;
+                barrier.wait()?;
+            }
+        }
         Ok(())
     }
 
@@ -637,6 +907,7 @@ impl StateEngine {
             )));
         }
         let result = (|| {
+            self.sync_preimages(&record)?;
             self.inject(FaultPoint::AfterPreimage)?;
             self.append_ready(record_id, record.clone())?;
             self.inject(FaultPoint::AfterReady)?;
@@ -653,14 +924,6 @@ impl StateEngine {
                 .meta
                 .quota
                 .commit(reservation, actual)?;
-            let epoch_id = self.manifest.active_epoch;
-            self.persist_epoch(epoch_id)?;
-            self.persist_inodes()?;
-            self.persist_manifest()?;
-            storage::write_state(
-                &self.state.join("touched.idx"),
-                &self.touched_since(self.manifest.accepted_checkpoint),
-            )?;
             self.inject(FaultPoint::AfterApplied)?;
             Ok(value)
         })();
@@ -668,6 +931,75 @@ impl StateEngine {
             self.poisoned = true;
         }
         result
+    }
+
+    fn sync_preimages(&self, record: &ReadyRecord) -> Result<()> {
+        if !self.strict() {
+            return Ok(());
+        }
+        let directory = preimage_dir(&self.state, self.manifest.active_epoch);
+        let files = preimage_files(record);
+        for file in &files {
+            storage::sync_data(&directory.join(file))?;
+        }
+        if !files.is_empty() {
+            storage::sync_dir(&directory)?;
+        }
+        Ok(())
+    }
+
+    fn sync_pending_applied(&self) -> Result<()> {
+        if let Some(committer) = &self.group_committer {
+            let mut barrier = ReturnBarrier::default();
+            group_commit::submit(
+                committer,
+                &mut barrier,
+                journal_path(&self.state, self.manifest.active_epoch),
+            )?;
+            barrier.wait()?;
+        }
+        Ok(())
+    }
+
+    fn sync_live_paths(&self, touched: &BTreeSet<String>) -> Result<()> {
+        if !self.strict() {
+            return Ok(());
+        }
+        let mut directories = BTreeSet::from([self.live.clone()]);
+        for relative in touched {
+            let path = checked_path(&self.live, relative)?;
+            if let Ok(metadata) = fs::symlink_metadata(&path) {
+                if metadata.file_type().is_file() {
+                    storage::sync_file(&path)?;
+                } else if metadata.file_type().is_dir() {
+                    directories.insert(path.clone());
+                }
+            }
+            let mut parent = path.parent();
+            while let Some(path) = parent {
+                if !path.starts_with(&self.live) {
+                    break;
+                }
+                match fs::symlink_metadata(path) {
+                    Ok(metadata) if metadata.file_type().is_dir() => {
+                        directories.insert(path.to_path_buf());
+                    }
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+                if path == self.live {
+                    break;
+                }
+                parent = path.parent();
+            }
+        }
+        let mut directories: Vec<PathBuf> = directories.into_iter().collect();
+        directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+        for directory in directories {
+            storage::sync_dir(&directory)?;
+        }
+        Ok(())
     }
 
     fn plan_object_for_record(
@@ -793,11 +1125,7 @@ impl StateEngine {
         let value = self.run_record(record_id, reservation, record, |partial| {
             mutation(&destination, partial)
         })?;
-        let result = (|| {
-            self.resolve_inode(&relative)?;
-            self.persist_inodes()?;
-            self.persist_manifest()
-        })();
+        let result = self.resolve_inode(&relative);
         self.poison_on_error(result)?;
         Ok(value)
     }
@@ -823,11 +1151,7 @@ impl StateEngine {
             fs::set_permissions(&destination, fs::Permissions::from_mode(mode))?;
             Ok(())
         })?;
-        let result = (|| {
-            self.resolve_inode(&relative)?;
-            self.persist_inodes()?;
-            self.persist_manifest()
-        })();
+        let result = self.resolve_inode(&relative).map(|_| ());
         self.poison_on_error(result)
     }
 
@@ -851,11 +1175,7 @@ impl StateEngine {
             std::os::unix::fs::symlink(target, destination)?;
             Ok(())
         })?;
-        let result = (|| {
-            self.resolve_inode(&relative)?;
-            self.persist_inodes()?;
-            self.persist_manifest()
-        })();
+        let result = self.resolve_inode(&relative).map(|_| ());
         self.poison_on_error(result)
     }
 
@@ -1279,8 +1599,7 @@ impl StateEngine {
             Ok(())
         })?;
         self.remove_binding(inode, &relative);
-        let result = self.persist_inodes();
-        self.poison_on_error(result)
+        Ok(())
     }
 
     pub fn rename(&mut self, old: &Path, new: &Path) -> Result<()> {
@@ -1370,8 +1689,7 @@ impl StateEngine {
         if let Some(inode) = replaced_inode {
             self.remove_binding(inode, &new_relative);
         }
-        let result = self.persist_inodes();
-        self.poison_on_error(result)
+        Ok(())
     }
 
     pub fn rename_exchange(&mut self, first: &Path, second: &Path) -> Result<()> {
@@ -1406,8 +1724,7 @@ impl StateEngine {
             apply_exchange(&first_path, &second_path)
         })?;
         self.exchange_bindings_prefix(&first_relative, &second_relative);
-        let result = self.persist_inodes();
-        self.poison_on_error(result)
+        Ok(())
     }
 
     pub fn hard_link(&mut self, source: &Path, target: &Path) -> Result<()> {
@@ -1438,7 +1755,7 @@ impl StateEngine {
             if let Some(entry) = self.inodes.entries.get_mut(&source_inode) {
                 entry.bindings.insert(target_relative);
             }
-            self.persist_inodes()
+            Ok(())
         })();
         self.poison_on_error(result)
     }
@@ -1594,6 +1911,7 @@ impl StateEngine {
     pub fn checkpoint(&mut self, label: Option<String>) -> Result<Checkpoint> {
         self.ensure_usable()?;
         let result = (|| {
+            self.sync_pending_applied()?;
             self.inject(FaultPoint::DuringCheckpointSeal)?;
             let checkpoint = Checkpoint {
                 id: self.manifest.next_checkpoint_id,
@@ -1622,11 +1940,14 @@ impl StateEngine {
         let target = target.unwrap_or(self.manifest.accepted_checkpoint);
         self.require_checkpoint(target)?;
         let result = (|| {
-            storage::write_state(
+            self.sync_pending_applied()?;
+            self.write_state(
                 &self.state.join("recovery/active.json"),
                 &RecoveryState {
                     action: RecoveryAction::Rollback {
                         target_checkpoint: target,
+                        current_epoch: None,
+                        next_record_id: None,
                     },
                 },
             )?;
@@ -1665,7 +1986,8 @@ impl StateEngine {
             retired_epochs,
         };
         let result = (|| {
-            storage::write_state(
+            self.sync_pending_applied()?;
+            self.write_state(
                 &self.state.join("recovery/active.json"),
                 &RecoveryState {
                     action: RecoveryAction::Commit {
@@ -1673,8 +1995,14 @@ impl StateEngine {
                     },
                 },
             )?;
-            self.inject(FaultPoint::BeforeCommitMarker)?;
-            storage::write_state(&commit_marker_path(&self.state, sequence), &marker)?;
+            if self.strict() {
+                self.sync_live_paths(&self.touched_since(self.manifest.accepted_checkpoint))?;
+                self.inject(FaultPoint::BeforeCommitMarker)?;
+                storage::write_state_durable(&commit_marker_path(&self.state, sequence), &marker)?;
+            } else {
+                self.inject(FaultPoint::BeforeCommitMarker)?;
+                storage::write_state(&commit_marker_path(&self.state, sequence), &marker)?;
+            }
             self.inject(FaultPoint::AfterCommitMarker)?;
             self.finalize_commit(marker)?;
             Ok(checkpoint)
@@ -1835,7 +2163,7 @@ impl StateEngine {
             status: EpochStatus::Open,
             quota: QuotaState::new(self.manifest.quota_limit),
         };
-        create_epoch_files(&self.state, &meta)?;
+        create_epoch_files(&self.state, &meta, self.strict())?;
         let loaded = journal::load(&journal_path(&self.state, id), id)?;
         self.epochs.insert(
             id,
@@ -1899,7 +2227,9 @@ impl StateEngine {
         if recovery_path.exists() {
             let recovery: RecoveryState = storage::read_state(&recovery_path)?;
             match recovery.action {
-                RecoveryAction::Rollback { target_checkpoint } => {
+                RecoveryAction::Rollback {
+                    target_checkpoint, ..
+                } => {
                     self.resume_rollback(target_checkpoint)?;
                 }
                 RecoveryAction::Commit { marker_sequence } => {
@@ -1907,7 +2237,7 @@ impl StateEngine {
                     if marker_path.exists() {
                         self.finalize_commit(storage::read_state(&marker_path)?)?;
                     } else {
-                        storage::remove_if_exists(&recovery_path)?;
+                        self.remove_state(&recovery_path)?;
                     }
                 }
             }
@@ -1916,7 +2246,7 @@ impl StateEngine {
         self.rebuild_bindings()?;
         self.persist_manifest()?;
         self.persist_inodes()?;
-        storage::write_state(
+        self.write_state(
             &self.state.join("touched.idx"),
             &self.touched_since(self.manifest.accepted_checkpoint),
         )?;
@@ -1973,6 +2303,7 @@ impl StateEngine {
                 for action in record.ready.actions.iter().rev() {
                     apply_undo(&self.live, &preimage_dir(&self.state, epoch_id), action)?;
                 }
+                self.sync_live_paths(&record.ready.touched)?;
                 self.append_applied_to_epoch(epoch_id, record.record_id, ApplyOutcome::Recovered)?;
             }
             self.rebuild_epoch_quota(epoch_id)?;
@@ -2000,6 +2331,7 @@ impl StateEngine {
                 record_id,
                 event: JournalEvent::Applied { outcome },
             },
+            self.strict(),
         )?;
         let epoch = self
             .epochs
@@ -2031,9 +2363,23 @@ impl StateEngine {
                     || epoch.meta.base_checkpoint < target
             })
         {
-            storage::remove_if_exists(&self.state.join("recovery/active.json"))?;
+            self.remove_state(&self.state.join("recovery/active.json"))?;
             return Ok(());
         }
+        let recovery_path = self.state.join("recovery/active.json");
+        let recovery: RecoveryState = storage::read_state(&recovery_path)?;
+        let (mut current_epoch, mut next_record_id) = match recovery.action {
+            RecoveryAction::Rollback {
+                target_checkpoint,
+                current_epoch,
+                next_record_id,
+            } if target_checkpoint == target => (current_epoch, next_record_id),
+            _ => {
+                return Err(EngineError::Recovery(
+                    "rollback recovery state does not match its target".into(),
+                ))
+            }
+        };
         let mut epoch_ids = self.active_history_epoch_ids(target);
         epoch_ids.sort_unstable_by(|left, right| right.cmp(left));
         for epoch_id in epoch_ids {
@@ -2046,28 +2392,47 @@ impl StateEngine {
             if status == EpochStatus::RolledBack {
                 continue;
             }
-            self.epochs
-                .get_mut(&epoch_id)
-                .expect("history epoch must exist")
-                .meta
-                .status = EpochStatus::RollingBack;
-            self.persist_epoch(epoch_id)?;
-
-            let records = self
+            let records: Vec<_> = self
                 .epochs
                 .get(&epoch_id)
                 .expect("history epoch must exist")
                 .loaded
                 .records
-                .clone();
-            for record in records.iter().rev() {
-                if record.outcome != Some(ApplyOutcome::Applied) {
-                    continue;
-                }
+                .iter()
+                .rev()
+                .filter(|record| record.outcome == Some(ApplyOutcome::Applied))
+                .cloned()
+                .collect();
+            if status != EpochStatus::RollingBack || current_epoch != Some(epoch_id) {
+                self.epochs
+                    .get_mut(&epoch_id)
+                    .expect("history epoch must exist")
+                    .meta
+                    .status = EpochStatus::RollingBack;
+                self.persist_epoch(epoch_id)?;
+                current_epoch = Some(epoch_id);
+                next_record_id = records.first().map(|record| record.record_id);
+                self.persist_rollback_progress(target, current_epoch, next_record_id)?;
+            }
+            let start = match next_record_id {
+                Some(record_id) => records
+                    .iter()
+                    .position(|record| record.record_id == record_id)
+                    .ok_or_else(|| {
+                        EngineError::CorruptState(format!(
+                            "rollback record {record_id} is missing from epoch {epoch_id}"
+                        ))
+                    })?,
+                None => records.len(),
+            };
+            for (index, record) in records.iter().enumerate().skip(start) {
                 for action in record.ready.actions.iter().rev() {
                     apply_undo(&self.live, &preimage_dir(&self.state, epoch_id), action)?;
                     self.inject(FaultPoint::DuringRollback)?;
                 }
+                self.sync_live_paths(&record.ready.touched)?;
+                next_record_id = records.get(index + 1).map(|record| record.record_id);
+                self.persist_rollback_progress(target, current_epoch, next_record_id)?;
             }
             self.epochs
                 .get_mut(&epoch_id)
@@ -2075,6 +2440,9 @@ impl StateEngine {
                 .meta
                 .status = EpochStatus::RolledBack;
             self.persist_epoch(epoch_id)?;
+            current_epoch = None;
+            next_record_id = None;
+            self.persist_rollback_progress(target, current_epoch, next_record_id)?;
         }
 
         let target_position = self
@@ -2087,14 +2455,32 @@ impl StateEngine {
         let new_epoch = self.open_new_epoch(target)?;
         self.manifest.active_epoch = new_epoch;
         self.persist_manifest()?;
-        storage::remove_if_exists(&self.state.join("recovery/active.json"))?;
+        self.remove_state(&self.state.join("recovery/active.json"))?;
         self.rebuild_bindings()?;
         self.persist_inodes()?;
-        storage::write_state(
+        self.write_state(
             &self.state.join("touched.idx"),
             &self.touched_since(self.manifest.accepted_checkpoint),
         )?;
         Ok(())
+    }
+
+    fn persist_rollback_progress(
+        &self,
+        target_checkpoint: u64,
+        current_epoch: Option<u64>,
+        next_record_id: Option<u64>,
+    ) -> Result<()> {
+        self.write_state(
+            &self.state.join("recovery/active.json"),
+            &RecoveryState {
+                action: RecoveryAction::Rollback {
+                    target_checkpoint,
+                    current_epoch,
+                    next_record_id,
+                },
+            },
+        )
     }
 
     fn finalize_commit(&mut self, marker: CommitMarker) -> Result<()> {
@@ -2102,7 +2488,7 @@ impl StateEngine {
             && self.active_epoch().meta.status == EpochStatus::Open
             && self.active_epoch().meta.base_checkpoint == marker.checkpoint.id
         {
-            storage::remove_if_exists(&self.state.join("recovery/active.json"))?;
+            self.remove_state(&self.state.join("recovery/active.json"))?;
             return Ok(());
         }
         for epoch_id in &marker.retired_epochs {
@@ -2126,8 +2512,8 @@ impl StateEngine {
         let new_epoch = self.open_new_epoch(marker.checkpoint.id)?;
         self.manifest.active_epoch = new_epoch;
         self.persist_manifest()?;
-        storage::write_state(&self.state.join("touched.idx"), &BTreeSet::<String>::new())?;
-        storage::remove_if_exists(&self.state.join("recovery/active.json"))?;
+        self.write_state(&self.state.join("touched.idx"), &BTreeSet::<String>::new())?;
+        self.remove_state(&self.state.join("recovery/active.json"))?;
         Ok(())
     }
 
@@ -2298,6 +2684,58 @@ fn mutation_length(data: &[u8], partial: bool) -> usize {
     }
 }
 
+fn preimage_files(record: &ReadyRecord) -> BTreeSet<String> {
+    let mut files = BTreeSet::new();
+    for action in &record.actions {
+        match action {
+            UndoAction::RestoreRanges { segments, .. } => {
+                files.extend(segments.iter().map(|segment| segment.file.clone()));
+            }
+            UndoAction::RestoreObject {
+                snapshot:
+                    ObjectSnapshot {
+                        kind: model::ObjectSnapshotKind::Regular { data, .. },
+                        ..
+                    },
+                ..
+            }
+            | UndoAction::UndoRename {
+                replaced:
+                    Some(ObjectSnapshot {
+                        kind: model::ObjectSnapshotKind::Regular { data, .. },
+                        ..
+                    }),
+                ..
+            } => {
+                files.insert(data.clone());
+            }
+            _ => {}
+        }
+    }
+    files
+}
+
+fn max_action_vinode(action: &UndoAction) -> u64 {
+    match action {
+        UndoAction::RemoveCreated { .. } | UndoAction::UndoExchange { .. } => 0,
+        UndoAction::RestoreObject { snapshot, .. } => snapshot.inode.0,
+        UndoAction::RestoreRanges { inode, .. }
+        | UndoAction::RestoreMode { inode, .. }
+        | UndoAction::RestoreOwner { inode, .. }
+        | UndoAction::RestoreTimes { inode, .. }
+        | UndoAction::RestoreXattr { inode, .. } => inode.0,
+        UndoAction::UndoRename {
+            source_inode,
+            replaced,
+            ..
+        } => replaced
+            .as_ref()
+            .map(|snapshot| snapshot.inode.0)
+            .unwrap_or(0)
+            .max(source_inode.0),
+    }
+}
+
 fn copy_file_bytes(
     input: &File,
     mut input_offset: u64,
@@ -2337,12 +2775,38 @@ fn preimage_dir(state: &Path, id: u64) -> PathBuf {
     epoch_dir(state, id).join("preimages")
 }
 
-fn create_epoch_files(state: &Path, meta: &EpochMeta) -> Result<()> {
+fn create_epoch_files(state: &Path, meta: &EpochMeta, durable: bool) -> Result<()> {
     let directory = epoch_dir(state, meta.id);
     fs::create_dir_all(directory.join("preimages"))?;
-    File::create(directory.join("journal.log"))?;
-    storage::write_state(&directory.join("epoch.json"), meta)?;
+    let journal = File::create(directory.join("journal.log"))?;
+    if durable {
+        journal.sync_all()?;
+        storage::write_state_durable(&directory.join("epoch.json"), meta)?;
+        storage::sync_dir(&state.join("epochs"))?;
+    } else {
+        storage::write_state(&directory.join("epoch.json"), meta)?;
+    }
     Ok(())
+}
+
+fn write_initial_state<T: Serialize>(path: &Path, value: &T, durable: bool) -> Result<()> {
+    if durable {
+        storage::write_state_durable(path, value)
+    } else {
+        storage::write_state(path, value)
+    }
+}
+
+fn group_committer(
+    durability: &Durability,
+    group_commit_ms: Option<u64>,
+) -> Option<group_commit::GroupCommitter> {
+    match (durability, group_commit_ms) {
+        (Durability::Strict, Some(milliseconds)) => Some(group_commit::GroupCommitter::new(
+            Duration::from_millis(milliseconds),
+        )),
+        _ => None,
+    }
 }
 
 fn rebuild_index(loaded: &journal::LoadedJournal) -> EpochIndex {
@@ -2643,6 +3107,8 @@ fn rename_noreplace_path(old: &Path, new: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier, Mutex};
+    use std::thread;
     use tempfile::tempdir;
 
     #[test]
@@ -2668,5 +3134,82 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(engine.inodes.entries[&second].backing, backing);
         assert_eq!(engine.inodes.entries[&second].generation, 2);
+    }
+
+    #[test]
+    fn grouped_return_reports_journal_sync_failure() {
+        let root = tempdir().unwrap();
+        let live = root.path().join("live");
+        let state = root.path().join("state");
+        fs::create_dir(&live).unwrap();
+        fs::write(live.join("a"), b"old").unwrap();
+        let mut engine = StateEngine::create(
+            &live,
+            &state,
+            EngineOptions {
+                durability: Durability::Strict,
+                group_commit_ms: Some(200),
+                ..EngineOptions::default()
+            },
+        )
+        .unwrap();
+
+        engine.begin_grouped_return();
+        engine.write(Path::new("a"), 0, b"new").unwrap();
+        let barrier = engine.finish_grouped_return().unwrap();
+        let journal = journal_path(&state, 1);
+        fs::remove_file(&journal).unwrap();
+        std::os::unix::fs::symlink("missing-journal", &journal).unwrap();
+
+        assert!(matches!(barrier.wait(), Err(EngineError::Io(_))));
+    }
+
+    #[test]
+    fn concurrent_grouped_returns_reopen_with_every_record() {
+        let root = tempdir().unwrap();
+        let live = root.path().join("live");
+        let state = root.path().join("state");
+        fs::create_dir(&live).unwrap();
+        let engine = Arc::new(Mutex::new(
+            StateEngine::create(
+                &live,
+                &state,
+                EngineOptions {
+                    durability: Durability::Strict,
+                    group_commit_ms: Some(100),
+                    ..EngineOptions::default()
+                },
+            )
+            .unwrap(),
+        ));
+        let start = Arc::new(Barrier::new(9));
+        let threads: Vec<_> = (0..8)
+            .map(|index| {
+                let engine = Arc::clone(&engine);
+                let start = Arc::clone(&start);
+                thread::spawn(move || {
+                    start.wait();
+                    let return_barrier = {
+                        let mut engine = engine.lock().unwrap();
+                        engine.begin_grouped_return();
+                        engine
+                            .create_file(Path::new(&format!("file-{index}")), b"contents", 0o644)
+                            .unwrap();
+                        engine.finish_grouped_return().unwrap()
+                    };
+                    return_barrier.wait().unwrap();
+                })
+            })
+            .collect();
+        start.wait();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        let engine = Arc::try_unwrap(engine).unwrap().into_inner().unwrap();
+        assert_eq!(engine.status().touched_paths, 8);
+        drop(engine);
+        let engine = StateEngine::open(&live, &state).unwrap();
+        assert_eq!(engine.status().touched_paths, 8);
     }
 }

@@ -21,6 +21,19 @@ impl Session {
     }
 
     fn start_with_policy(project: &Path, policy: Option<&Path>) -> Self {
+        Self::start_with_options(project, policy, false, None)
+    }
+
+    fn start_durable(project: &Path, group_commit_ms: Option<u64>) -> Self {
+        Self::start_with_options(project, None, true, group_commit_ms)
+    }
+
+    fn start_with_options(
+        project: &Path,
+        policy: Option<&Path>,
+        durable: bool,
+        group_commit_ms: Option<u64>,
+    ) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_deltabox"));
         command.args([
             "session",
@@ -30,6 +43,14 @@ impl Session {
             "cbcow-through",
             "--require-fs-mode",
         ]);
+        if durable {
+            command.arg("--durable");
+            if let Some(milliseconds) = group_commit_ms {
+                command
+                    .arg("--group-commit-ms")
+                    .arg(milliseconds.to_string());
+            }
+        }
         if let Some(policy) = policy {
             command.arg("--policy").arg(policy);
         }
@@ -159,6 +180,37 @@ fn changes_and_history_cross_cli_processes() {
         "base\n"
     );
     assert!(project.path().join("created.txt").exists());
+}
+
+#[test]
+fn strict_mode_survives_helper_restart_before_and_after_commit() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("state.txt"), "old").unwrap();
+    let session = Session::start_durable(project.path(), Some(2));
+    let status = session.status();
+    assert_eq!(status["durability"], "strict");
+    assert_eq!(status["group_commit_ms"], 2);
+
+    session.write("state.txt", "pending");
+    kill_helper(&session.status());
+    assert_eq!(session.status()["pending_changes"], 1);
+    session.abort(None);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("state.txt")).unwrap(),
+        "old"
+    );
+
+    session.write("state.txt", "accepted");
+    session.commit();
+    kill_helper(&session.status());
+    assert_eq!(session.status()["pending_changes"], 0);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("state.txt")).unwrap(),
+        "accepted"
+    );
 }
 
 #[test]

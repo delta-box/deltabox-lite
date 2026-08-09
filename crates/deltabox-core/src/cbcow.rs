@@ -8,13 +8,13 @@ use crate::journal::{Journal, JournalEntry, JournalKind};
 use crate::pathmap::PathMapper;
 use crate::policy::Policy;
 use crate::private_publish::{
-    materialize, retire_orphans, AcceptedIndex, Publication, PublicationPhase, ACCEPTED_INDEX,
-    LIVE_DIR, PUBLISH_DIR, RETIRED_DIR,
+    materialize_with_durability, retire_orphans, AcceptedIndex, Publication, PublicationPhase,
+    ACCEPTED_INDEX, LIVE_DIR, PUBLISH_DIR, RETIRED_DIR,
 };
 use crate::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
-    CommitResult, DiffParams, DiffResult, ExecParams, ExecRequest, ExecResult, FilesystemInfo,
-    FsReadResult, ReviewBeginParams, SessionInfo, SessionSpec, SessionStatus,
+    CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecRequest, ExecResult,
+    FilesystemInfo, FsReadResult, ReviewBeginParams, SessionInfo, SessionSpec, SessionStatus,
 };
 use crate::session::{now_ms, SessionMeta, SessionRegistry};
 use base64::Engine;
@@ -57,6 +57,10 @@ struct MountRecord {
     restarts: u64,
     quota_bytes: u64,
     #[serde(default)]
+    durability: DurabilityMode,
+    #[serde(default)]
+    group_commit_ms: Option<u64>,
+    #[serde(default)]
     reclaim_dir: PathBuf,
 }
 
@@ -82,6 +86,8 @@ impl Manager {
         &self,
         policy_path: Option<&Path>,
         mode: crate::protocol::FilesystemMode,
+        durability: DurabilityMode,
+        group_commit_ms: Option<u64>,
     ) -> Result<SessionInfo> {
         let _project_lock = Lock::acquire(&self.root.join("cbcow.lock"))?;
         self.require_available_project()?;
@@ -100,8 +106,13 @@ impl Manager {
             crate::protocol::FilesystemMode::CbcowThrough => self.project.clone(),
             crate::protocol::FilesystemMode::CbcowPrivate => {
                 let live = store.join(LIVE_DIR);
-                let accepted = materialize(&self.project, &live)?;
-                AcceptedIndex::create(&store.join(ACCEPTED_INDEX), accepted)?;
+                let strict = durability == DurabilityMode::Strict;
+                let accepted = materialize_with_durability(&self.project, &live, strict)?;
+                AcceptedIndex::create_with_durability(
+                    &store.join(ACCEPTED_INDEX),
+                    accepted,
+                    strict,
+                )?;
                 live
             }
             crate::protocol::FilesystemMode::CopyPrivate => {
@@ -121,6 +132,7 @@ impl Manager {
         write_private(
             &token_file,
             format!("{}{}\n", Uuid::new_v4(), Uuid::new_v4()).as_bytes(),
+            durability == DurabilityMode::Strict,
         )?;
 
         let mut record = MountRecord {
@@ -136,9 +148,15 @@ impl Manager {
             helper_start_ticks: 0,
             restarts: 0,
             quota_bytes,
+            durability,
+            group_commit_ms,
             reclaim_dir: store.join(PUBLISH_DIR).join(RETIRED_DIR),
         };
-        save_json(&store.join(MOUNT_RECORD), &record)?;
+        save_json_with(
+            &store.join(MOUNT_RECORD),
+            &record,
+            durability == DurabilityMode::Strict,
+        )?;
         if let Err(error) = self.spawn_helper(&mut record) {
             return match self.cleanup_start(&session_id, &record) {
                 Ok(()) => Err(Error::FilesystemUnavailable(error.to_string())),
@@ -158,9 +176,17 @@ impl Manager {
             filesystem: filesystem.clone(),
         };
         let result = (|| {
-            save_json(&store.join(MOUNT_RECORD), &record)?;
+            save_json_with(
+                &store.join(MOUNT_RECORD),
+                &record,
+                durability == DurabilityMode::Strict,
+            )?;
             self.save_meta(&meta)?;
-            fs::write(self.root.join(PROJECT_LEASE), format!("{session_id}\n"))?;
+            write_file_with(
+                &self.root.join(PROJECT_LEASE),
+                format!("{session_id}\n").as_bytes(),
+                durability == DurabilityMode::Strict,
+            )?;
             self.append(&session_id, JournalKind::SessionStart, None)?;
             Ok(SessionInfo {
                 session_id: session_id.clone(),
@@ -206,7 +232,11 @@ impl Manager {
                 ))
             }
         };
-        save_json(&self.store(session_id).join(MOUNT_RECORD), &record)?;
+        save_json_with(
+            &self.store(session_id).join(MOUNT_RECORD),
+            &record,
+            record.durability == DurabilityMode::Strict,
+        )?;
         Ok(SessionInfo {
             session_id: meta.session_id,
             project: meta.project,
@@ -494,7 +524,9 @@ impl Manager {
                 applied: 0,
             });
         }
-        let mut accepted = AcceptedIndex::open(&store.join(ACCEPTED_INDEX))?;
+        let strict = record.durability == DurabilityMode::Strict;
+        let mut accepted =
+            AcceptedIndex::open_with_durability(&store.join(ACCEPTED_INDEX), strict)?;
         let status = self.engine_status(record)?;
         let mut publication = Publication::prepare(
             &store,
@@ -503,6 +535,7 @@ impl Manager {
             &accepted,
             &changes,
             status.accepted_checkpoint,
+            strict,
         )?;
         maybe_crash("private_publish_prepared");
         publication.apply(&store, &self.project)?;
@@ -665,6 +698,14 @@ impl Manager {
             .arg(&record.ready_file)
             .arg("--quota-bytes")
             .arg(record.quota_bytes.to_string());
+        if record.durability == DurabilityMode::Strict {
+            command.arg("--durable");
+        }
+        if let Some(milliseconds) = record.group_commit_ms {
+            command
+                .arg("--group-commit-ms")
+                .arg(milliseconds.to_string());
+        }
         if !record.reclaim_dir.as_os_str().is_empty() {
             command.arg("--reclaim-dir").arg(&record.reclaim_dir);
         }
@@ -750,6 +791,7 @@ impl Manager {
             return Ok(());
         }
         let store = self.store(session_id);
+        let strict = record.durability == DurabilityMode::Strict;
         let Some(mut publication) = Publication::load(&store)? else {
             if retire_orphans(&store)? {
                 match self.request(record, ControlCommand::Reclaim)? {
@@ -762,7 +804,8 @@ impl Manager {
         match publication.phase {
             PublicationPhase::Prepared => {
                 publication.restore(&store, &self.project)?;
-                let mut accepted = AcceptedIndex::open(&store.join(ACCEPTED_INDEX))?;
+                let mut accepted =
+                    AcceptedIndex::open_with_durability(&store.join(ACCEPTED_INDEX), strict)?;
                 accepted.refresh(&self.project, &publication.changes)?;
             }
             PublicationPhase::HostApplied => {
@@ -775,11 +818,13 @@ impl Manager {
                 }
                 publication.phase = PublicationPhase::EngineCommitted;
                 publication.save(&store)?;
-                let mut accepted = AcceptedIndex::open(&store.join(ACCEPTED_INDEX))?;
+                let mut accepted =
+                    AcceptedIndex::open_with_durability(&store.join(ACCEPTED_INDEX), strict)?;
                 accepted.refresh(&self.project, &publication.changes)?;
             }
             PublicationPhase::EngineCommitted => {
-                let mut accepted = AcceptedIndex::open(&store.join(ACCEPTED_INDEX))?;
+                let mut accepted =
+                    AcceptedIndex::open_with_durability(&store.join(ACCEPTED_INDEX), strict)?;
                 accepted.refresh(&self.project, &publication.changes)?;
             }
         }
@@ -881,7 +926,11 @@ impl Manager {
 
     fn save_meta(&self, meta: &SessionMeta) -> Result<()> {
         let store = self.store(&meta.session_id);
-        save_json(&store.join(SESSION_META), meta)?;
+        save_json_with(
+            &store.join(SESSION_META),
+            meta,
+            meta.filesystem.durability == "strict",
+        )?;
         let mut registry = SessionRegistry::load(&self.root)?;
         registry.upsert(meta.clone());
         registry.save(&self.root)
@@ -1002,16 +1051,37 @@ fn runtime_base() -> PathBuf {
 }
 
 fn save_json(path: &Path, value: &impl Serialize) -> Result<()> {
+    save_json_with(path, value, false)
+}
+
+fn save_json_with(path: &Path, value: &impl Serialize, durable: bool) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let temporary = path.with_extension("tmp");
-    fs::write(&temporary, serde_json::to_vec_pretty(value)?)?;
+    let mut file = File::create(&temporary)?;
+    file.write_all(&serde_json::to_vec_pretty(value)?)?;
+    if durable {
+        file.sync_all()?;
+    }
     fs::rename(temporary, path)?;
+    if durable {
+        File::open(path.parent().expect("saved path has a parent"))?.sync_all()?;
+    }
     Ok(())
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+fn write_file_with(path: &Path, bytes: &[u8], durable: bool) -> Result<()> {
+    let mut file = File::create(path)?;
+    file.write_all(bytes)?;
+    if durable {
+        file.sync_all()?;
+        File::open(path.parent().expect("written path has a parent"))?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn write_private(path: &Path, bytes: &[u8], durable: bool) -> Result<()> {
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -1020,6 +1090,10 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
         .open(path)?;
     file.write_all(bytes)?;
     file.flush()?;
+    if durable {
+        file.sync_all()?;
+        File::open(path.parent().expect("private path has a parent"))?.sync_all()?;
+    }
     Ok(())
 }
 
@@ -1038,7 +1112,7 @@ fn default_record_mode() -> crate::protocol::FilesystemMode {
 }
 
 fn filesystem_info(record: &MountRecord) -> FilesystemInfo {
-    match record.mode {
+    let info = match record.mode {
         crate::protocol::FilesystemMode::CbcowThrough => FilesystemInfo::cbcow_through(
             record.mountpoint.clone(),
             record.helper_pid,
@@ -1050,7 +1124,8 @@ fn filesystem_info(record: &MountRecord) -> FilesystemInfo {
             record.restarts,
         ),
         crate::protocol::FilesystemMode::CopyPrivate => unreachable!("CB-CoW mount record mode"),
-    }
+    };
+    info.with_durability(record.durability, record.group_commit_ms)
 }
 
 fn relative_path(project: &Path, path: &Path) -> Result<PathBuf> {

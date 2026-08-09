@@ -56,6 +56,10 @@ pub struct SessionStartParams {
     pub fs_mode: Option<FilesystemMode>,
     #[serde(default)]
     pub require_fs_mode: bool,
+    #[serde(default)]
+    pub durability: DurabilityMode,
+    #[serde(default)]
+    pub group_commit_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,12 +216,22 @@ pub enum FilesystemMode {
     CopyPrivate,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DurabilityMode {
+    #[default]
+    Fast,
+    Strict,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FilesystemInfo {
     pub requested_fs_mode: FilesystemMode,
     pub resolved_fs_mode: FilesystemMode,
     pub host_visibility: String,
     pub durability: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_commit_ms: Option<u64>,
     pub isolation: String,
     pub fuse_provider: Option<String>,
     pub fallback_reason: Option<String>,
@@ -240,12 +254,27 @@ impl Default for FilesystemInfo {
 }
 
 impl FilesystemInfo {
+    pub fn with_durability(
+        mut self,
+        durability: DurabilityMode,
+        group_commit_ms: Option<u64>,
+    ) -> Self {
+        self.durability = match durability {
+            DurabilityMode::Fast => "process-crash",
+            DurabilityMode::Strict => "strict",
+        }
+        .into();
+        self.group_commit_ms = group_commit_ms;
+        self
+    }
+
     pub fn copy_private(requested: FilesystemMode, fallback_reason: Option<String>) -> Self {
         Self {
             requested_fs_mode: requested,
             resolved_fs_mode: FilesystemMode::CopyPrivate,
             host_visibility: "on-commit".into(),
             durability: "process-crash".into(),
+            group_commit_ms: None,
             isolation: platform_isolation().into(),
             fuse_provider: None,
             fallback_reason,
@@ -264,6 +293,7 @@ impl FilesystemInfo {
             resolved_fs_mode: FilesystemMode::CbcowThrough,
             host_visibility: "immediate".into(),
             durability: "process-crash".into(),
+            group_commit_ms: None,
             isolation: platform_isolation().into(),
             fuse_provider: Some("linux-fuse3".into()),
             fallback_reason: None,
@@ -282,6 +312,7 @@ impl FilesystemInfo {
             resolved_fs_mode: FilesystemMode::CbcowPrivate,
             host_visibility: "on-commit".into(),
             durability: "process-crash".into(),
+            group_commit_ms: None,
             isolation: platform_isolation().into(),
             fuse_provider: Some("linux-fuse3".into()),
             fallback_reason: None,
@@ -373,6 +404,8 @@ mod tests {
                 policy: None,
                 fs_mode: None,
                 require_fs_mode: false,
+                durability: DurabilityMode::Fast,
+                group_commit_ms: None,
             }),
         };
         let json = serde_json::to_string(&request).unwrap();
@@ -383,6 +416,25 @@ mod tests {
             Method::SessionStart(p) => assert_eq!(p.project, PathBuf::from("/tmp/proj")),
             other => panic!("unexpected method: {other:?}"),
         }
+    }
+
+    #[test]
+    fn durability_defaults_and_strict_status_are_stable() {
+        let request: Request = serde_json::from_str(
+            r#"{"id":1,"method":"session.start","params":{"project":"/tmp/proj"}}"#,
+        )
+        .unwrap();
+        let Method::SessionStart(params) = request.method else {
+            panic!("unexpected method");
+        };
+        assert_eq!(params.durability, DurabilityMode::Fast);
+        assert_eq!(params.group_commit_ms, None);
+
+        let info = FilesystemInfo::cbcow_through(PathBuf::from("/tmp/mount"), 7, 0)
+            .with_durability(DurabilityMode::Strict, Some(2));
+        let value = serde_json::to_value(info).unwrap();
+        assert_eq!(value["durability"], "strict");
+        assert_eq!(value["group_commit_ms"], 2);
     }
 
     #[test]
@@ -401,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn filesystem_contract_uses_stable_mode_names() {
+    fn filesystem_protocol_uses_stable_mode_names() {
         let info = FilesystemInfo::cbcow_through("/run/deltafs".into(), 42, 3);
         let value = serde_json::to_value(info).unwrap();
         assert_eq!(value["requested_fs_mode"], "cbcow-through");

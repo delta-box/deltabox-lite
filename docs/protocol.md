@@ -7,7 +7,7 @@ each response is one JSON object per line.
 ## Request
 
 ```json
-{"id": 1, "method": "session.start", "params": {"project": "/abs/path", "policy": null, "fs_mode": "cbcow-through", "require_fs_mode": false}}
+{"id": 1, "method": "session.start", "params": {"project": "/abs/path", "policy": null, "fs_mode": "cbcow-through", "require_fs_mode": false, "durability": "strict", "group_commit_ms": 2}}
 ```
 
 ## Response
@@ -21,7 +21,7 @@ each response is one JSON object per line.
 
 | Method | Params | Result |
 |---|---|---|
-| `session.start` | `{project, policy?, fs_mode?, require_fs_mode?}` | `SessionInfo` |
+| `session.start` | `{project, policy?, fs_mode?, require_fs_mode?, durability?, group_commit_ms?}` | `SessionInfo` |
 | `session.stop` | `{session_id}` | `SessionInfo` |
 | `session.status` | `{session_id}` | `SessionInfo` |
 | `session.exec` | `{session_id, argv, cwd?, env?, label?}` | `ExecResult` |
@@ -40,9 +40,16 @@ each response is one JSON object per line.
 omitting it requests `cbcow-through`; a clean CB-CoW startup failure may resolve
 to `copy-private`. Set `require_fs_mode: true` to reject fallback.
 
+`durability` accepts `fast` (the default) or `strict`. Strict operations wait
+for ordered storage barriers. `group_commit_ms` is optional in strict mode and
+batches concurrent `APPLIED` journal barriers without allowing an operation to
+return before its own group is synchronized. Strict mode requires
+`cbcow-through` or `cbcow-private`; it rejects `copy-private` and does not use
+automatic filesystem fallback.
+
 `SessionInfo` = `{session_id, project, started_at_ms, status, checkpoint_count,
 pending_changes, requested_fs_mode, resolved_fs_mode, host_visibility,
-durability, isolation, fuse_provider, fallback_reason, rollback_guarantee,
+durability, group_commit_ms?, isolation, fuse_provider, fallback_reason, rollback_guarantee,
 tainted, mountpoint?, helper_pid?, helper_restarts, mount_namespace}`.
 
 For `cbcow-through`, `host_visibility` is `immediate`: commit accepts the

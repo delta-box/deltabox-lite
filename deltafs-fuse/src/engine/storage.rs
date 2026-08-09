@@ -17,6 +17,14 @@ struct Stored<T> {
 }
 
 pub fn write_state<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    write_state_with(path, value, false)
+}
+
+pub fn write_state_durable<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    write_state_with(path, value, true)
+}
+
+fn write_state_with<T: Serialize>(path: &Path, value: &T, durable: bool) -> Result<()> {
     let payload = serde_json::to_vec(value)?;
     let stored = Stored {
         format_version: FORMAT_VERSION,
@@ -38,7 +46,34 @@ pub fn write_state<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     file.write_all(&bytes)?;
     file.write_all(b"\n")?;
     file.flush()?;
+    if durable {
+        file.sync_all()?;
+    }
     fs::rename(&temporary, path)?;
+    if durable {
+        sync_dir(parent)?;
+    }
+    Ok(())
+}
+
+pub fn sync_file(path: &Path) -> io::Result<()> {
+    OpenOptions::new().read(true).open(path)?.sync_all()
+}
+
+pub fn sync_data(path: &Path) -> io::Result<()> {
+    OpenOptions::new().read(true).open(path)?.sync_data()
+}
+
+pub fn sync_dir(path: &Path) -> io::Result<()> {
+    OpenOptions::new().read(true).open(path)?.sync_all()
+}
+
+pub fn remove_file_durable(path: &Path) -> io::Result<()> {
+    let parent = path.parent();
+    remove_if_exists(path)?;
+    if let Some(parent) = parent {
+        sync_dir(parent)?;
+    }
     Ok(())
 }
 

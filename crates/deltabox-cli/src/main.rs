@@ -3,11 +3,12 @@ use clap::{Parser, Subcommand};
 use deltabox_core::backend::DefaultBackend;
 use deltabox_core::coordinator::SessionCoordinator;
 use deltabox_core::protocol::{
-    AbortParams, CheckpointParams, CommitParams, DiffParams, ExecParams, FilesystemMode, Request,
-    ReviewBeginParams, ReviewKind,
+    AbortParams, CheckpointParams, CommitParams, DiffParams, DurabilityMode, ExecParams,
+    FilesystemMode, Request, ReviewBeginParams, ReviewKind,
 };
 use deltabox_core::server::Server;
 use std::io::{BufRead, Write};
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -120,9 +121,12 @@ struct StartArgs {
     fs_mode: Option<FilesystemMode>,
     #[arg(long)]
     require_fs_mode: bool,
-    /// Deprecated: service-free sessions are durable by default.
-    #[arg(long, hide = true)]
+    /// Require CB-CoW and wait for ordered storage barriers before operations return.
+    #[arg(long)]
     durable: bool,
+    /// Batch concurrent strict journal barriers for up to this many milliseconds.
+    #[arg(long, requires = "durable")]
+    group_commit_ms: Option<NonZeroU64>,
 }
 
 #[derive(clap::Args)]
@@ -243,6 +247,10 @@ struct FsHelperArgs {
     #[arg(long)]
     quota_bytes: u64,
     #[arg(long)]
+    durable: bool,
+    #[arg(long)]
+    group_commit_ms: Option<NonZeroU64>,
+    #[arg(long)]
     reclaim_dir: Option<PathBuf>,
 }
 
@@ -251,10 +259,18 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Session { cmd } => match cmd {
             SessionCmd::Start(args) => {
-                let _ = args.durable;
                 let manager = SessionCoordinator::new(&args.project, None)?;
-                let info =
-                    manager.start(args.policy.as_deref(), args.fs_mode, args.require_fs_mode)?;
+                let info = manager.start_with_durability(
+                    args.policy.as_deref(),
+                    args.fs_mode,
+                    args.require_fs_mode,
+                    if args.durable {
+                        DurabilityMode::Strict
+                    } else {
+                        DurabilityMode::Fast
+                    },
+                    args.group_commit_ms.map(NonZeroU64::get),
+                )?;
                 println!("{}", info.session_id);
                 if info.filesystem.resolved_fs_mode == FilesystemMode::CbcowThrough {
                     eprintln!(
@@ -427,6 +443,12 @@ fn main() -> anyhow::Result<()> {
                 token_file: args.token_file,
                 ready_file: args.ready_file,
                 quota_bytes: args.quota_bytes,
+                durability: if args.durable {
+                    deltafs_fuse::engine::Durability::Strict
+                } else {
+                    deltafs_fuse::engine::Durability::ProcessCrash
+                },
+                group_commit_ms: args.group_commit_ms.map(NonZeroU64::get),
                 reclaim_dir: args.reclaim_dir,
             })?;
         }

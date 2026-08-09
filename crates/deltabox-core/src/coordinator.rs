@@ -2,8 +2,8 @@ use crate::durable::DurableSessionManager;
 use crate::error::{Error, Result};
 use crate::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
-    CommitResult, DiffParams, DiffResult, ExecParams, ExecResult, FilesystemInfo, FilesystemMode,
-    FsReadResult, ReviewBeginParams, SessionInfo,
+    CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecResult, FilesystemInfo,
+    FilesystemMode, FsReadResult, ReviewBeginParams, SessionInfo,
 };
 use crate::session::SessionMeta;
 use std::fs;
@@ -37,14 +37,51 @@ impl SessionCoordinator {
         requested: Option<FilesystemMode>,
         require_requested: bool,
     ) -> Result<SessionInfo> {
+        self.start_with_durability(
+            policy,
+            requested,
+            require_requested,
+            DurabilityMode::Fast,
+            None,
+        )
+    }
+
+    pub fn start_with_durability(
+        &self,
+        policy: Option<&Path>,
+        requested: Option<FilesystemMode>,
+        require_requested: bool,
+        durability: DurabilityMode,
+        group_commit_ms: Option<u64>,
+    ) -> Result<SessionInfo> {
+        if group_commit_ms.is_some() && durability != DurabilityMode::Strict {
+            return Err(Error::InvalidDurability(
+                "group_commit_ms requires strict durability".into(),
+            ));
+        }
+        if group_commit_ms == Some(0) {
+            return Err(Error::InvalidDurability(
+                "group_commit_ms must be greater than zero".into(),
+            ));
+        }
         let requested = requested.unwrap_or(default_mode());
         match requested {
-            FilesystemMode::CopyPrivate => self
-                .copy_private
-                .start_with_filesystem(policy, FilesystemInfo::copy_private(requested, None)),
-            FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate => {
-                self.start_cbcow(policy, requested, require_requested)
+            FilesystemMode::CopyPrivate => {
+                if durability == DurabilityMode::Strict {
+                    return Err(Error::InvalidDurability(
+                        "strict durability requires a CB-CoW filesystem mode".into(),
+                    ));
+                }
+                self.copy_private
+                    .start_with_filesystem(policy, FilesystemInfo::copy_private(requested, None))
             }
+            FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate => self.start_cbcow(
+                policy,
+                requested,
+                require_requested,
+                durability,
+                group_commit_ms,
+            ),
         }
     }
 
@@ -174,19 +211,26 @@ impl SessionCoordinator {
         policy: Option<&Path>,
         requested: FilesystemMode,
         required: bool,
+        durability: DurabilityMode,
+        group_commit_ms: Option<u64>,
     ) -> Result<SessionInfo> {
         let report = deltafs_fuse::doctor::inspect();
         if report.mount_ready {
-            match self.cbcow.start(policy, requested) {
+            match self
+                .cbcow
+                .start(policy, requested, durability, group_commit_ms)
+            {
                 Ok(info) => return Ok(info),
-                Err(Error::FilesystemUnavailable(reason)) if !required => {
+                Err(Error::FilesystemUnavailable(reason))
+                    if !required && durability == DurabilityMode::Fast =>
+                {
                     return self.start_fallback(policy, requested, reason)
                 }
                 Err(error) => return Err(error),
             }
         }
         let reason = report.notes.join("; ");
-        if required {
+        if required || durability == DurabilityMode::Strict {
             return Err(Error::Unsupported(reason));
         }
         self.start_fallback(policy, requested, reason)
@@ -198,9 +242,11 @@ impl SessionCoordinator {
         policy: Option<&Path>,
         requested: FilesystemMode,
         required: bool,
+        durability: DurabilityMode,
+        _group_commit_ms: Option<u64>,
     ) -> Result<SessionInfo> {
         let reason = format!("{requested:?} is unavailable on this platform");
-        if required {
+        if required || durability == DurabilityMode::Strict {
             return Err(Error::Unsupported(reason));
         }
         self.start_fallback(policy, requested, reason)
@@ -283,6 +329,22 @@ mod tests {
         assert_eq!(status.filesystem.fallback_reason, None);
     }
 
+    #[test]
+    fn strict_durability_rejects_copy_private() {
+        let project = tempfile::tempdir().unwrap();
+        let coordinator = SessionCoordinator::new(project.path(), None).unwrap();
+        let error = coordinator
+            .start_with_durability(
+                None,
+                Some(FilesystemMode::CopyPrivate),
+                true,
+                DurabilityMode::Strict,
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(error, Error::InvalidDurability(_)));
+    }
+
     #[cfg(not(target_os = "linux"))]
     #[test]
     fn required_cbcow_mode_does_not_fallback() {
@@ -290,6 +352,23 @@ mod tests {
         let coordinator = SessionCoordinator::new(project.path(), None).unwrap();
         let error = coordinator
             .start(None, Some(FilesystemMode::CbcowThrough), true)
+            .unwrap_err();
+        assert!(matches!(error, Error::Unsupported(_)));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn strict_cbcow_mode_does_not_fallback() {
+        let project = tempfile::tempdir().unwrap();
+        let coordinator = SessionCoordinator::new(project.path(), None).unwrap();
+        let error = coordinator
+            .start_with_durability(
+                None,
+                Some(FilesystemMode::CbcowThrough),
+                false,
+                DurabilityMode::Strict,
+                None,
+            )
             .unwrap_err();
         assert!(matches!(error, Error::Unsupported(_)));
     }

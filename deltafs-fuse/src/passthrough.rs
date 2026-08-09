@@ -330,7 +330,16 @@ impl DeltaFs {
         &self,
         operation: impl FnOnce(&mut StateEngine) -> crate::engine::Result<T>,
     ) -> io::Result<T> {
-        operation(&mut self.engine.lock().expect("engine lock")).map_err(engine_io)
+        let (result, barrier) = {
+            let mut engine = self.engine.lock().expect("engine lock");
+            engine.begin_grouped_return();
+            let result = operation(&mut engine);
+            (result, engine.finish_grouped_return())
+        };
+        if let Some(barrier) = barrier {
+            barrier.wait().map_err(engine_io)?;
+        }
+        result.map_err(engine_io)
     }
 
     fn open_handle(&self, ino: INodeNo, flags: OpenFlags) -> io::Result<FileHandle> {
@@ -1218,12 +1227,17 @@ impl Filesystem for DeltaFs {
     }
 }
 
-pub fn mount(source: &Path, mountpoint: &Path, state_dir: &Path) -> Result<()> {
+pub fn mount(
+    source: &Path,
+    mountpoint: &Path,
+    state_dir: &Path,
+    options: EngineOptions,
+) -> Result<()> {
     let source = source.canonicalize()?;
     let engine = if state_dir.join("session.json").exists() {
-        StateEngine::open(&source, state_dir)?
+        StateEngine::open_with_options(&source, state_dir, options)?
     } else {
-        StateEngine::create(&source, state_dir, EngineOptions::default())?
+        StateEngine::create(&source, state_dir, options)?
     };
     spawn_engine(&source, mountpoint, Arc::new(Mutex::new(engine)))?.wait()?;
     Ok(())

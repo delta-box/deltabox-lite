@@ -8,6 +8,8 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("invalid policy: {0}")]
     InvalidPolicy(String),
+    #[error("invalid durability setting: {0}")]
+    InvalidDurability(String),
     #[error("session not found: {0}")]
     SessionNotFound(String),
     #[error("session already exists: {0}")]

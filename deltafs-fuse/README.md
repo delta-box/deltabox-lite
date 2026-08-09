@@ -13,8 +13,8 @@ contains:
 The mounted view reads and writes the ordinary source tree. Before a routed
 mutation destroys state, the engine records the minimum undo data required for
 rollback. Commit accepts the current source tree and retires old undo epochs.
-The journal design targets process crashes; power-loss durability is not
-provided.
+Fast mode targets process crashes. Strict mode adds ordered storage barriers
+for undo data, journal records, accepted `LIVE` data, and commit markers.
 
 ## Build
 
@@ -51,6 +51,16 @@ cargo run --release --features fuse -- \
   --state-dir /tmp/deltafs-state
 ```
 
+Add `--durable` for strict persistence. `--group-commit-ms N` allows
+concurrent mutation replies to share the `APPLIED` journal barrier: each reply
+still waits until the group containing its record is synchronized. Commit
+returns only after changed source files, affected directories, the commit
+marker, and the marker directory have been synchronized.
+
+Durability, grouping, and quota settings are persisted with the state. Reusing
+a state directory requires the same settings; a mismatch is rejected before
+mounting.
+
 Unmount with the platform's normal FUSE tool, for example:
 
 ```sh
@@ -61,6 +71,19 @@ The state directory contains a checksummed session manifest and append-only
 epoch journals with `READY` and `APPLIED` records. Pre-images are stored per
 epoch. Reusing the state directory reopens and recovers the same linear
 history.
+
+Inspect recovery state without mounting or modifying it:
+
+```sh
+cargo run -- diagnose --state-dir /tmp/deltafs-state
+cargo run -- diagnose --state-dir /tmp/deltafs-state --json
+```
+
+An unresolved `READY` record or active recovery action is recoverable by
+restarting the helper. A checksum, sequence, or torn-record error stops
+automatic recovery. Preserve both the state directory and source tree before
+replacing damaged state; `diagnose` reports the affected file and does not
+delete evidence.
 
 For programmatic lifecycle control, run `serve` with external socket, token,
 and ready-file paths, then use `control`. The token file must contain a random
@@ -95,7 +118,8 @@ cargo bench --bench empty_control
 - Global mutation serialization, chosen to make ordering unambiguous.
 - Kernel writeback cache remains disabled; the adapter uses synchronous FUSE
   write callbacks. Shared writable `mmap` uses the normal page cache.
-- Process-crash evidence only; no `fsync`/power-loss guarantee.
+- Fast mode does not protect against sudden power loss. Strict mode depends on
+  the persistence behavior of the host filesystem and storage stack.
 - The source tree must have one coordinated writer through the adapter or
   engine during validation.
 - Pre-existing hardlinks inside `LIVE` are discovered on demand. If a regular

@@ -5,6 +5,9 @@ use anyhow::Context;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use deltafs_fuse::control::{self, Command as ControlCommand};
+#[cfg(feature = "fuse")]
+use deltafs_fuse::engine::{Durability, EngineOptions};
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -26,6 +29,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Inspect on-disk recovery state without mounting or changing it.
+    Diagnose {
+        #[arg(long)]
+        state_dir: PathBuf,
+        /// Emit structured JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Mount a source directory through DeltaFS.
     Mount {
         #[arg(long)]
@@ -34,6 +45,12 @@ enum Command {
         mountpoint: PathBuf,
         #[arg(long, visible_alias = "undo-dir")]
         state_dir: PathBuf,
+        /// Wait for ordered storage barriers before strict operations return.
+        #[arg(long)]
+        durable: bool,
+        /// Batch concurrent strict journal barriers for up to this many milliseconds.
+        #[arg(long, requires = "durable")]
+        group_commit_ms: Option<NonZeroU64>,
     },
     /// Run a mounted filesystem and its local control endpoint.
     Serve(ServeArgs),
@@ -57,6 +74,12 @@ struct ServeArgs {
     ready_file: PathBuf,
     #[arg(long, default_value_t = deltafs_fuse::engine::DEFAULT_QUOTA_BYTES)]
     quota_bytes: u64,
+    /// Wait for ordered storage barriers before strict operations return.
+    #[arg(long)]
+    durable: bool,
+    /// Batch concurrent strict journal barriers for up to this many milliseconds.
+    #[arg(long, requires = "durable")]
+    group_commit_ms: Option<NonZeroU64>,
     #[arg(long)]
     reclaim_dir: Option<PathBuf>,
 }
@@ -126,11 +149,36 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Diagnose { state_dir, json } => {
+            let report = deltafs_fuse::engine::diagnose(&state_dir);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("healthy: {}", report.healthy);
+                println!("state: {}", report.state_root.display());
+                if let Some(durability) = report.durability {
+                    println!("durability: {durability:?}");
+                }
+                for issue in &report.issues {
+                    println!("issue: {issue}");
+                }
+                for step in &report.repair {
+                    println!("repair: {step}");
+                }
+            }
+            if report.healthy {
+                Ok(())
+            } else {
+                anyhow::bail!("recovery state is not healthy")
+            }
+        }
         Command::Mount {
             source,
             mountpoint,
             state_dir,
-        } => mount(source, mountpoint, state_dir),
+            durable,
+            group_commit_ms,
+        } => mount(source, mountpoint, state_dir, durable, group_commit_ms),
         Command::Serve(args) => serve(args),
         Command::Control(args) => {
             let token = std::fs::read_to_string(args.token_file)?;
@@ -142,9 +190,28 @@ fn main() -> Result<()> {
 }
 
 #[cfg(feature = "fuse")]
-fn mount(source: PathBuf, mountpoint: PathBuf, state_dir: PathBuf) -> Result<()> {
-    deltafs_fuse::passthrough::mount(&source, &mountpoint, &state_dir)
-        .context("deltafs-fuse mount failed")
+fn mount(
+    source: PathBuf,
+    mountpoint: PathBuf,
+    state_dir: PathBuf,
+    durable: bool,
+    group_commit_ms: Option<NonZeroU64>,
+) -> Result<()> {
+    deltafs_fuse::passthrough::mount(
+        &source,
+        &mountpoint,
+        &state_dir,
+        EngineOptions {
+            durability: if durable {
+                Durability::Strict
+            } else {
+                Durability::ProcessCrash
+            },
+            group_commit_ms: group_commit_ms.map(NonZeroU64::get),
+            ..EngineOptions::default()
+        },
+    )
+    .context("deltafs-fuse mount failed")
 }
 
 #[cfg(feature = "fuse")]
@@ -157,12 +224,24 @@ fn serve(args: ServeArgs) -> Result<()> {
         token_file: args.token_file,
         ready_file: args.ready_file,
         quota_bytes: args.quota_bytes,
+        durability: if args.durable {
+            Durability::Strict
+        } else {
+            Durability::ProcessCrash
+        },
+        group_commit_ms: args.group_commit_ms.map(NonZeroU64::get),
         reclaim_dir: args.reclaim_dir,
     })
 }
 
 #[cfg(not(feature = "fuse"))]
-fn mount(_source: PathBuf, _mountpoint: PathBuf, _state_dir: PathBuf) -> Result<()> {
+fn mount(
+    _source: PathBuf,
+    _mountpoint: PathBuf,
+    _state_dir: PathBuf,
+    _durable: bool,
+    _group_commit_ms: Option<NonZeroU64>,
+) -> Result<()> {
     bail!("this binary was built without FUSE support; rebuild with --features fuse")
 }
 

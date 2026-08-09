@@ -165,7 +165,7 @@ fn diff(project: &Path, sid: &str, from: Option<&str>) -> Value {
 }
 
 #[test]
-fn separate_processes_preserve_pending_state_and_default_abort_contract() {
+fn separate_processes_preserve_pending_state_and_default_abort_behavior() {
     let project = tempfile::tempdir().unwrap();
     std::fs::write(project.path().join("README.md"), "accepted\n").unwrap();
     let sid = start(project.path());

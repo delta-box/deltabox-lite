@@ -35,6 +35,7 @@ struct AcceptedManifest {
 pub struct AcceptedIndex {
     directory: PathBuf,
     manifest: AcceptedManifest,
+    durable: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -104,6 +105,8 @@ pub struct Publication {
     pub phase: PublicationPhase,
     pub engine_accepted_checkpoint: u64,
     pub changes: Vec<PublishChange>,
+    #[serde(default)]
+    durable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,7 +134,16 @@ impl AcceptedState {
 }
 
 impl AcceptedIndex {
+    #[cfg(test)]
     pub fn create(directory: &Path, state: AcceptedState) -> Result<Self> {
+        Self::create_with_durability(directory, state, false)
+    }
+
+    pub fn create_with_durability(
+        directory: &Path,
+        state: AcceptedState,
+        durable: bool,
+    ) -> Result<Self> {
         remove_path(directory)?;
         fs::create_dir_all(directory.join("entries"))?;
         let mut hardlinks: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -174,6 +186,7 @@ impl AcceptedIndex {
                 &parent_generation,
                 generation,
                 &fingerprint,
+                durable,
             )?;
         }
         hardlinks.retain(|_, paths| paths.len() > 1);
@@ -185,15 +198,24 @@ impl AcceptedIndex {
                 directories,
                 hardlinks,
             },
+            durable,
         };
         index.save_manifest()?;
+        if durable {
+            sync_dir(&directory.join("entries"))?;
+            sync_dir(directory)?;
+            if let Some(parent) = directory.parent() {
+                sync_dir(parent)?;
+            }
+        }
         Ok(index)
     }
 
-    pub fn open(directory: &Path) -> Result<Self> {
+    pub fn open_with_durability(directory: &Path, durable: bool) -> Result<Self> {
         Ok(Self {
             directory: directory.to_path_buf(),
             manifest: serde_json::from_slice(&fs::read(directory.join("manifest.json"))?)?,
+            durable,
         })
     }
 
@@ -412,6 +434,7 @@ impl AcceptedIndex {
             &parent_generation,
             generation,
             &fingerprint,
+            self.durable,
         )
     }
 
@@ -427,13 +450,20 @@ impl AcceptedIndex {
                 }
             }
             fs::remove_file(entry_path(&self.directory, path))?;
+            if self.durable {
+                sync_dir(&self.directory.join("entries"))?;
+            }
         }
         self.manifest.directories.remove(path);
         Ok(())
     }
 
     fn save_manifest(&self) -> Result<()> {
-        save_json(&self.directory.join("manifest.json"), &self.manifest)
+        save_json(
+            &self.directory.join("manifest.json"),
+            &self.manifest,
+            self.durable,
+        )
     }
 }
 
@@ -445,6 +475,7 @@ impl Publication {
         accepted: &AcceptedIndex,
         changes: &[Change],
         engine_accepted_checkpoint: u64,
+        durable: bool,
     ) -> Result<Self> {
         let changes = collapse_changes(changes, accepted, live)?;
         accepted.validate(project, changes.iter().map(|change| change.path.clone()))?;
@@ -485,7 +516,14 @@ impl Publication {
             phase: PublicationPhase::Prepared,
             engine_accepted_checkpoint,
             changes: plan,
+            durable,
         };
+        if durable {
+            sync_tree(&backup)?;
+            sync_tree(&staged)?;
+            sync_dir(&transaction)?;
+            sync_dir(&store.join(PUBLISH_DIR))?;
+        }
         publication.save(store)?;
         Ok(publication)
     }
@@ -500,7 +538,7 @@ impl Publication {
     }
 
     pub fn save(&self, store: &Path) -> Result<()> {
-        save_json(&store.join(PUBLICATION_STATE), self)
+        save_json(&store.join(PUBLICATION_STATE), self, self.durable)
     }
 
     pub fn apply(&self, store: &Path, project: &Path) -> Result<()> {
@@ -530,6 +568,9 @@ impl Publication {
             fs::rename(staged.join(&change.path), target)?;
             maybe_crash("private_publish_path_applied");
         }
+        if self.durable {
+            sync_changes(project, &self.changes)?;
+        }
         Ok(())
     }
 
@@ -550,6 +591,9 @@ impl Publication {
                 )?;
             }
         }
+        if self.durable {
+            sync_changes(project, &self.changes)?;
+        }
         Ok(())
     }
 
@@ -563,6 +607,10 @@ impl Publication {
             fs::rename(source, &destination)?;
         }
         fs::remove_file(store.join(PUBLICATION_STATE))?;
+        if self.durable {
+            sync_dir(&publish)?;
+            sync_dir(store)?;
+        }
         Ok(destination)
     }
 }
@@ -585,7 +633,16 @@ pub fn retire_orphans(store: &Path) -> Result<bool> {
     Ok(found)
 }
 
+#[cfg(test)]
 pub fn materialize(project: &Path, live: &Path) -> Result<AcceptedState> {
+    materialize_with_durability(project, live, false)
+}
+
+pub fn materialize_with_durability(
+    project: &Path,
+    live: &Path,
+    durable: bool,
+) -> Result<AcceptedState> {
     remove_path(live)?;
     fs::create_dir_all(live)?;
     let mut links = HashMap::new();
@@ -596,6 +653,12 @@ pub fn materialize(project: &Path, live: &Path) -> Result<AcceptedState> {
         }
     }
     copy_metadata(project, live)?;
+    if durable {
+        sync_tree(live)?;
+        if let Some(parent) = live.parent() {
+            sync_dir(parent)?;
+        }
+    }
     AcceptedState::capture(project)
 }
 
@@ -919,13 +982,20 @@ fn remove_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn save_json(path: &Path, value: &impl Serialize) -> Result<()> {
+fn save_json(path: &Path, value: &impl Serialize, durable: bool) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let temporary = path.with_extension("tmp");
-    fs::write(&temporary, serde_json::to_vec_pretty(value)?)?;
+    let mut file = File::create(&temporary)?;
+    std::io::Write::write_all(&mut file, &serde_json::to_vec_pretty(value)?)?;
+    if durable {
+        file.sync_all()?;
+    }
     fs::rename(temporary, path)?;
+    if durable {
+        sync_dir(path.parent().expect("saved path has a parent"))?;
+    }
     Ok(())
 }
 
@@ -935,6 +1005,7 @@ fn save_entry(
     parent_generation: &str,
     generation: Option<String>,
     fingerprint: &Fingerprint,
+    durable: bool,
 ) -> Result<()> {
     save_json(
         &entry_path(directory, path),
@@ -944,7 +1015,69 @@ fn save_entry(
             generation,
             fingerprint: fingerprint.clone(),
         },
+        durable,
     )
+}
+
+fn sync_tree(root: &Path) -> Result<()> {
+    let mut directories = Vec::new();
+    for entry in walkdir::WalkDir::new(root).follow_links(false) {
+        let entry = entry.map_err(|error| Error::Io(std::io::Error::other(error)))?;
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.file_type().is_file() {
+            File::open(entry.path())?.sync_all()?;
+        } else if metadata.file_type().is_dir() {
+            directories.push(entry.path().to_path_buf());
+        }
+    }
+    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for directory in directories {
+        sync_dir(&directory)?;
+    }
+    Ok(())
+}
+
+fn sync_changes(project: &Path, changes: &[PublishChange]) -> Result<()> {
+    let mut directories = BTreeSet::from([project.to_path_buf()]);
+    for change in changes {
+        let path = project.join(&change.path);
+        if let Ok(metadata) = fs::symlink_metadata(&path) {
+            if metadata.file_type().is_file() {
+                File::open(&path)?.sync_all()?;
+            } else if metadata.file_type().is_dir() {
+                directories.insert(path.clone());
+            }
+        }
+        let mut parent = path.parent();
+        while let Some(path) = parent {
+            if !path.starts_with(project) {
+                break;
+            }
+            match fs::symlink_metadata(path) {
+                Ok(metadata) if metadata.file_type().is_dir() => {
+                    directories.insert(path.to_path_buf());
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            if path == project {
+                break;
+            }
+            parent = path.parent();
+        }
+    }
+    let mut directories: Vec<PathBuf> = directories.into_iter().collect();
+    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for directory in directories {
+        sync_dir(&directory)?;
+    }
+    Ok(())
+}
+
+fn sync_dir(path: &Path) -> Result<()> {
+    File::open(path)?.sync_all()?;
+    Ok(())
 }
 
 fn entry_path(directory: &Path, path: &str) -> PathBuf {
@@ -1092,7 +1225,7 @@ mod tests {
             change("gone", ChangeKind::Deleted),
         ];
         let publication =
-            Publication::prepare(&store, &project, &live, &accepted, &changes, 0).unwrap();
+            Publication::prepare(&store, &project, &live, &accepted, &changes, 0, false).unwrap();
         publication.apply(&store, &project).unwrap();
         assert_eq!(fs::read_to_string(project.join("a")).unwrap(), "new");
         assert!(project.join("added").exists());

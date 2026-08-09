@@ -28,10 +28,11 @@ pub struct InodeRegistry {
     pub entries: BTreeMap<VInodeId, InodeEntry>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Durability {
     ProcessCrash,
+    Strict,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -47,6 +48,8 @@ pub struct SessionManifest {
     pub live_root: String,
     pub state_root: String,
     pub durability: Durability,
+    #[serde(default)]
+    pub group_commit_ms: Option<u64>,
     pub quota_limit: u64,
     pub active_epoch: u64,
     pub accepted_checkpoint: u64,
@@ -263,8 +266,16 @@ pub struct EpochIndex {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum RecoveryAction {
-    Rollback { target_checkpoint: u64 },
-    Commit { marker_sequence: u64 },
+    Rollback {
+        target_checkpoint: u64,
+        #[serde(default)]
+        current_epoch: Option<u64>,
+        #[serde(default)]
+        next_record_id: Option<u64>,
+    },
+    Commit {
+        marker_sequence: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

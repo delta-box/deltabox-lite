@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 
 #[derive(Serialize, Deserialize)]
@@ -18,6 +18,8 @@ struct ManifestForTest {
     live_root: String,
     state_root: String,
     durability: Durability,
+    #[serde(default)]
+    group_commit_ms: Option<u64>,
     quota_limit: u64,
     active_epoch: u64,
     accepted_checkpoint: u64,
@@ -68,7 +70,28 @@ impl Fixture {
     }
 
     fn engine_with_quota(&self, quota_bytes: u64) -> StateEngine {
-        StateEngine::create(&self.live, &self.state, EngineOptions { quota_bytes }).unwrap()
+        StateEngine::create(
+            &self.live,
+            &self.state,
+            EngineOptions {
+                quota_bytes,
+                ..EngineOptions::default()
+            },
+        )
+        .unwrap()
+    }
+
+    fn strict_engine(&self, group_commit_ms: Option<u64>) -> StateEngine {
+        StateEngine::create(
+            &self.live,
+            &self.state,
+            EngineOptions {
+                durability: Durability::Strict,
+                group_commit_ms,
+                ..EngineOptions::default()
+            },
+        )
+        .unwrap()
     }
 
     fn reopen(&self) -> StateEngine {
@@ -892,6 +915,15 @@ fn mutation_fault_expected(point: FaultPoint) -> &'static [u8] {
 
 #[test]
 fn every_mutation_fault_recovers_to_its_allowed_state() {
+    mutation_fault_matrix(false);
+}
+
+#[test]
+fn strict_mutation_faults_recover_at_every_record_boundary() {
+    mutation_fault_matrix(true);
+}
+
+fn mutation_fault_matrix(strict: bool) {
     for point in [
         FaultPoint::AfterPreimage,
         FaultPoint::AfterReady,
@@ -901,7 +933,11 @@ fn every_mutation_fault_recovers_to_its_allowed_state() {
     ] {
         let fixture = Fixture::new();
         fs::write(fixture.live.join("a"), b"old-value").unwrap();
-        let mut engine = fixture.engine();
+        let mut engine = if strict {
+            fixture.strict_engine(None)
+        } else {
+            fixture.engine()
+        };
         engine.set_fault_injector(FaultInjector::once(point));
         assert!(matches!(
             engine.write(Path::new("a"), 0, b"new-value"),
@@ -1272,4 +1308,225 @@ fn set_times_round_trip_uses_stable_precision() {
         fs::metadata(fixture.live.join("a")).unwrap().mtime(),
         before
     );
+}
+
+#[test]
+fn strict_mode_and_group_window_survive_reopen() {
+    let fixture = Fixture::new();
+    fs::write(fixture.live.join("a"), b"old").unwrap();
+    let mut engine = fixture.strict_engine(Some(20));
+    let started = Instant::now();
+    engine.write(Path::new("a"), 0, b"new").unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(15));
+    assert_eq!(engine.status().durability, Durability::Strict);
+    drop(engine);
+
+    let engine = fixture.reopen();
+    assert_eq!(engine.status().durability, Durability::Strict);
+    assert_eq!(read(fixture.live.join("a")), b"new");
+}
+
+#[test]
+fn reopen_rejects_session_option_mismatch() {
+    let fixture = Fixture::new();
+    drop(fixture.strict_engine(Some(20)));
+
+    let error = StateEngine::open_with_options(
+        &fixture.live,
+        &fixture.state,
+        EngineOptions {
+            durability: Durability::ProcessCrash,
+            group_commit_ms: None,
+            ..EngineOptions::default()
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(error, EngineError::SessionOptionsMismatch));
+
+    StateEngine::open_with_options(
+        &fixture.live,
+        &fixture.state,
+        EngineOptions {
+            durability: Durability::Strict,
+            group_commit_ms: Some(20),
+            ..EngineOptions::default()
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn strict_rollback_syncs_surviving_parents_of_removed_tree() {
+    let fixture = Fixture::new();
+    let mut engine = fixture.strict_engine(None);
+    engine.create_dir(Path::new("build"), 0o755).unwrap();
+    engine
+        .create_dir(Path::new("build/objects"), 0o755)
+        .unwrap();
+    engine
+        .create_file(Path::new("build/objects/output"), b"data", 0o644)
+        .unwrap();
+
+    engine.rollback(None).unwrap();
+
+    assert!(!fixture.live.join("build").exists());
+    assert!(engine.diff(None).unwrap().is_empty());
+}
+
+#[test]
+fn strict_rollback_resumes_after_removing_a_created_file() {
+    let fixture = Fixture::new();
+    let mut engine = fixture.strict_engine(None);
+    engine
+        .create_file(Path::new("new"), b"data", 0o644)
+        .unwrap();
+    engine
+        .set_times(
+            Path::new("new"),
+            UNIX_EPOCH + Duration::from_secs(1_600_000_000),
+            UNIX_EPOCH + Duration::from_secs(1_600_000_001),
+        )
+        .unwrap();
+    engine.set_fault_injector(FaultInjector::on_nth(FaultPoint::DuringRollback, 2));
+    assert!(matches!(
+        engine.rollback(None),
+        Err(EngineError::InjectedFault(FaultPoint::DuringRollback))
+    ));
+    drop(engine);
+
+    let engine = fixture.reopen();
+    assert!(!fixture.live.join("new").exists());
+    assert!(engine.diff(None).unwrap().is_empty());
+}
+
+#[test]
+fn strict_reopen_rebuilds_metadata_that_lags_the_journal() {
+    let fixture = Fixture::new();
+    fs::write(fixture.live.join("a"), b"old-a").unwrap();
+    fs::write(fixture.live.join("z"), b"old-z").unwrap();
+    let mut engine = fixture.strict_engine(None);
+    let stale = [
+        "session.json",
+        "inodes.idx",
+        "touched.idx",
+        "epochs/00000001/epoch.json",
+    ]
+    .map(|path| (path, fs::read(fixture.state.join(path)).unwrap()));
+
+    engine.write(Path::new("z"), 0, b"new-z").unwrap();
+    engine.write(Path::new("a"), 0, b"new-a").unwrap();
+    drop(engine);
+    for (path, bytes) in stale {
+        fs::write(fixture.state.join(path), bytes).unwrap();
+    }
+
+    let mut engine = fixture.reopen();
+    assert_eq!(engine.status().touched_paths, 2);
+    assert!(engine.status().quota_used > 0);
+    engine.write(Path::new("z"), 0, b"last-z").unwrap();
+    engine.rollback(None).unwrap();
+    assert_eq!(read(fixture.live.join("a")), b"old-a");
+    assert_eq!(read(fixture.live.join("z")), b"old-z");
+}
+
+#[test]
+fn strict_reopen_rebuilds_namespace_metadata_from_the_journal() {
+    let fixture = Fixture::new();
+    fs::write(fixture.live.join("base"), b"old").unwrap();
+    let mut engine = fixture.strict_engine(None);
+    let stale_manifest = fs::read(fixture.state.join("session.json")).unwrap();
+    let stale_inodes = fs::read(fixture.state.join("inodes.idx")).unwrap();
+
+    engine.create_dir(Path::new("tree"), 0o755).unwrap();
+    engine
+        .create_file(Path::new("tree/file"), b"contents", 0o644)
+        .unwrap();
+    engine
+        .hard_link(Path::new("tree/file"), Path::new("tree/alias"))
+        .unwrap();
+    engine
+        .rename(Path::new("tree/file"), Path::new("tree/renamed"))
+        .unwrap();
+    engine.unlink(Path::new("tree/alias")).unwrap();
+    engine
+        .rename(Path::new("base"), Path::new("moved"))
+        .unwrap();
+    drop(engine);
+
+    assert_eq!(
+        fs::read(fixture.state.join("session.json")).unwrap(),
+        stale_manifest
+    );
+    assert_eq!(
+        fs::read(fixture.state.join("inodes.idx")).unwrap(),
+        stale_inodes
+    );
+
+    let mut engine = fixture.reopen();
+    assert_eq!(read(fixture.live.join("tree/renamed")), b"contents");
+    assert_eq!(read(fixture.live.join("moved")), b"old");
+    engine.rollback(None).unwrap();
+    assert_eq!(read(fixture.live.join("base")), b"old");
+    assert!(!fixture.live.join("moved").exists());
+    assert!(!fixture.live.join("tree").exists());
+    assert!(engine.diff(None).unwrap().is_empty());
+}
+
+#[test]
+fn strict_commit_marker_selects_pending_or_accepted_state() {
+    for point in [
+        FaultPoint::BeforeCommitMarker,
+        FaultPoint::AfterCommitMarker,
+    ] {
+        let fixture = Fixture::new();
+        fs::write(fixture.live.join("a"), b"old").unwrap();
+        let mut engine = fixture.strict_engine(None);
+        engine.write(Path::new("a"), 0, b"new").unwrap();
+        engine.set_fault_injector(FaultInjector::once(point));
+        assert!(
+            matches!(engine.commit(None), Err(EngineError::InjectedFault(found)) if found == point)
+        );
+        drop(engine);
+
+        let engine = fixture.reopen();
+        assert_eq!(read(fixture.live.join("a")), b"new");
+        if point == FaultPoint::BeforeCommitMarker {
+            assert_eq!(engine.status().accepted_checkpoint, 0);
+            assert_eq!(engine.diff(None).unwrap().len(), 1);
+        } else {
+            assert_ne!(engine.status().accepted_checkpoint, 0);
+            assert!(engine.diff(None).unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
+fn diagnostics_report_recoverable_and_corrupt_state() {
+    let fixture = Fixture::new();
+    fs::write(fixture.live.join("a"), b"old").unwrap();
+    let mut engine = fixture.strict_engine(None);
+    engine.set_fault_injector(FaultInjector::once(FaultPoint::AfterReady));
+    assert!(engine.write(Path::new("a"), 0, b"new").is_err());
+    drop(engine);
+
+    let report = deltafs_fuse::engine::diagnose(&fixture.state);
+    assert!(report.healthy);
+    assert_eq!(report.durability, Some(Durability::Strict));
+    assert_eq!(
+        report
+            .epochs
+            .iter()
+            .map(|epoch| epoch.unresolved_records)
+            .sum::<usize>(),
+        1
+    );
+    assert!(!report.repair.is_empty());
+
+    fs::write(fixture.state.join("epochs/00000001/journal.log"), b"torn").unwrap();
+    let report = deltafs_fuse::engine::diagnose(&fixture.state);
+    assert!(!report.healthy);
+    assert!(report
+        .issues
+        .iter()
+        .any(|issue| issue.contains("torn final record")));
 }

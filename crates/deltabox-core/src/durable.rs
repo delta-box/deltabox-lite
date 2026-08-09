@@ -1644,7 +1644,7 @@ mod tests {
     }
 
     #[test]
-    fn default_abort_contract_restores_accepted_tree() {
+    fn default_abort_behavior_restores_accepted_tree() {
         let accepted = tempfile::tempdir().unwrap();
         let working = tempfile::tempdir().unwrap();
         std::fs::write(accepted.path().join("README.md"), "base").unwrap();

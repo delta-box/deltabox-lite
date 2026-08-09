@@ -1,5 +1,5 @@
 use crate::control::{Command, Request, Response, ResultValue};
-use crate::engine::{EngineOptions, StateEngine};
+use crate::engine::{Durability, EngineOptions, StateEngine};
 use crate::passthrough;
 use anyhow::{Context, Result};
 use std::fs;
@@ -19,6 +19,8 @@ pub struct Config {
     pub token_file: PathBuf,
     pub ready_file: PathBuf,
     pub quota_bytes: u64,
+    pub durability: Durability,
+    pub group_commit_ms: Option<u64>,
     pub reclaim_dir: Option<PathBuf>,
 }
 
@@ -26,16 +28,15 @@ pub fn run(config: Config) -> Result<()> {
     let token = fs::read_to_string(&config.token_file)
         .with_context(|| format!("read token file {}", config.token_file.display()))?;
     let token = token.trim().to_owned();
+    let options = EngineOptions {
+        quota_bytes: config.quota_bytes,
+        durability: config.durability,
+        group_commit_ms: config.group_commit_ms,
+    };
     let mut engine = if config.state_dir.join("session.json").exists() {
-        StateEngine::open(&config.source, &config.state_dir)?
+        StateEngine::open_with_options(&config.source, &config.state_dir, options)?
     } else {
-        StateEngine::create(
-            &config.source,
-            &config.state_dir,
-            EngineOptions {
-                quota_bytes: config.quota_bytes,
-            },
-        )?
+        StateEngine::create(&config.source, &config.state_dir, options)?
     };
     remove_async(engine.prepare_gc()?);
     if let Some(directory) = &config.reclaim_dir {

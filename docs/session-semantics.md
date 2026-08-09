@@ -91,6 +91,24 @@ marker and schedules retired undo epochs for reclamation; abort replays records
 newest first. The default durability protects process crashes, not sudden
 power loss.
 
+Start a strict session with `session start --durable`. In strict mode, a routed
+mutation returns only after its pre-image, `READY`, and `APPLIED` journal state
+have crossed the required storage barriers. Commit first synchronizes every
+changed `LIVE` file and affected directory, then synchronizes the acceptance
+marker and its parent directory before returning. A marker present after
+recovery means the new state is accepted; without that marker, the changes
+remain pending against the previous accepted checkpoint.
+
+`--group-commit-ms N` may be combined with `--durable`. Concurrent mutations
+may share the `APPLIED` journal synchronization performed within that window,
+but no mutation reports success until the group containing its record is
+stable. Checkpoint, abort, and commit drain any pending group before publishing
+their result. Session status reports `durability: "strict"` and the configured
+`group_commit_ms`; fast sessions report `durability: "process-crash"`.
+Strict startup requires `cbcow-through` or `cbcow-private` and fails if the
+requested mount is unavailable. It never reports strict durability for a
+`copy-private` fallback.
+
 `cbcow-private` uses the same undo engine against private `LIVE`. Commit stages
 only effective touched paths with `FICLONE` when supported, a sparse-aware copy
 fallback otherwise, and preserves hardlink groups and extended metadata. A
@@ -98,6 +116,12 @@ publication marker and per-path backups make process-crash recovery converge
 to the old host state before publication or the new accepted state after host
 publication. Completed backups are handed to the session helper for
 asynchronous reclamation.
+
+In strict private mode, staged new objects and host backups are synchronized
+before the prepared publication marker. Applied host paths and their namespace
+directories are synchronized before the host-applied phase is recorded. The
+accepted fingerprint index is synchronized before success, while publication
+backups are reclaimed later.
 
 In `copy-private`, working-view updates record changed paths, back up their
 previous values, and incrementally materialize the command-local COW layer.
