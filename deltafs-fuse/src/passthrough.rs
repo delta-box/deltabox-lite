@@ -1,101 +1,221 @@
 use crate::engine::{EngineError, EngineOptions, StateEngine};
 use anyhow::{bail, Context, Result};
 use fuser::{
-    AccessFlags, BackgroundSession, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags,
-    Generation, INodeNo, LockOwner, MountOption, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr,
-    ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs,
-    ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
+    AccessFlags, BackgroundSession, CopyFileRangeFlags, Errno, FileAttr, FileHandle, FileType,
+    Filesystem, FopenFlags, Generation, INodeNo, LockOwner, MountOption, OpenAccMode, OpenFlags,
+    RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty,
+    ReplyEntry, ReplyLseek, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr, Request, TimeOrNow,
+    WriteFlags,
 };
-use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use fuser::{InitFlags, KernelConfig};
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::{CString, OsStr, OsString};
-use std::fs::{self, File, Metadata, OpenOptions};
+use std::fs::{self, File, FileTimes, Metadata, OpenOptions};
 use std::io;
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const TTL: Duration = Duration::ZERO;
+const TTL: Duration = Duration::from_secs(60);
 const INTERNAL_DIR: &str = ".deltabox";
+
+#[derive(Debug)]
+struct InodeEntry {
+    backing: (u64, u64),
+    paths: BTreeSet<PathBuf>,
+}
 
 #[derive(Debug)]
 struct InodeTable {
     next: u64,
-    by_inode: HashMap<u64, PathBuf>,
+    by_inode: HashMap<u64, InodeEntry>,
+    by_backing: HashMap<(u64, u64), u64>,
     by_path: HashMap<PathBuf, u64>,
 }
 
 impl InodeTable {
-    fn new(source: PathBuf) -> Self {
+    fn new(source: PathBuf) -> io::Result<Self> {
+        let metadata = fs::symlink_metadata(&source)?;
+        let backing = backing_identity(&metadata);
         let mut by_inode = HashMap::new();
+        let mut by_backing = HashMap::new();
         let mut by_path = HashMap::new();
-        by_inode.insert(INodeNo::ROOT.0, source.clone());
+        by_inode.insert(
+            INodeNo::ROOT.0,
+            InodeEntry {
+                backing,
+                paths: BTreeSet::from([source.clone()]),
+            },
+        );
+        by_backing.insert(backing, INodeNo::ROOT.0);
         by_path.insert(source, INodeNo::ROOT.0);
-        Self {
+        Ok(Self {
             next: INodeNo::ROOT.0 + 1,
             by_inode,
+            by_backing,
             by_path,
-        }
+        })
     }
 
     fn path(&self, ino: INodeNo) -> io::Result<PathBuf> {
         self.by_inode
             .get(&ino.0)
-            .cloned()
+            .and_then(|entry| entry.paths.first().cloned())
             .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
     }
 
-    fn intern(&mut self, path: PathBuf) -> INodeNo {
-        if let Some(ino) = self.by_path.get(&path) {
-            return INodeNo(*ino);
+    fn intern(&mut self, path: PathBuf, metadata: &Metadata) -> INodeNo {
+        let backing = backing_identity(metadata);
+        if let Some(ino) = self.by_path.get(&path).copied() {
+            if self
+                .by_inode
+                .get(&ino)
+                .is_some_and(|entry| entry.backing == backing)
+            {
+                return INodeNo(ino);
+            }
+            self.detach_path(&path);
+        }
+        if let Some(ino) = self.by_backing.get(&backing).copied() {
+            self.bind_path(ino, path);
+            return INodeNo(ino);
         }
         let ino = self.next;
         self.next += 1;
-        self.by_path.insert(path.clone(), ino);
-        self.by_inode.insert(ino, path);
+        self.by_inode.insert(
+            ino,
+            InodeEntry {
+                backing,
+                paths: BTreeSet::new(),
+            },
+        );
+        self.by_backing.insert(backing, ino);
+        self.bind_path(ino, path);
         INodeNo(ino)
     }
 
     fn rename_prefix(&mut self, old: &Path, new: &Path) {
         let replacements: Vec<(u64, PathBuf, PathBuf)> = self
-            .by_inode
+            .by_path
             .iter()
-            .filter_map(|(ino, path)| {
+            .filter_map(|(path, ino)| {
                 path.strip_prefix(old)
                     .ok()
                     .map(|suffix| (*ino, path.clone(), renamed_path(new, suffix)))
             })
             .collect();
-        for (ino, old_path, new_path) in replacements {
-            self.by_path.remove(&old_path);
-            self.by_path.insert(new_path.clone(), ino);
-            self.by_inode.insert(ino, new_path);
+        let replaced: Vec<PathBuf> = self
+            .by_path
+            .keys()
+            .filter(|path| path.starts_with(new) && !path.starts_with(old))
+            .cloned()
+            .collect();
+        for path in replaced {
+            self.detach_path(&path);
         }
+        for (ino, old_path, new_path) in replacements {
+            self.detach_path(&old_path);
+            self.bind_path(ino, new_path);
+        }
+    }
+
+    fn exchange_prefix(&mut self, first: &Path, second: &Path) {
+        let replacements: Vec<(u64, PathBuf, PathBuf)> = self
+            .by_path
+            .iter()
+            .filter_map(|(path, ino)| {
+                if let Ok(suffix) = path.strip_prefix(first) {
+                    Some((*ino, path.clone(), renamed_path(second, suffix)))
+                } else {
+                    path.strip_prefix(second)
+                        .ok()
+                        .map(|suffix| (*ino, path.clone(), renamed_path(first, suffix)))
+                }
+            })
+            .collect();
+        for (_, path, _) in &replacements {
+            self.detach_path(path);
+        }
+        for (ino, _, path) in replacements {
+            self.bind_path(ino, path);
+        }
+    }
+
+    fn unlink(&mut self, path: &Path) -> Option<(INodeNo, Option<PathBuf>)> {
+        let ino = self.by_path.get(path).copied()?;
+        self.detach_path(path);
+        let alternate = self
+            .by_inode
+            .get(&ino)
+            .and_then(|entry| entry.paths.first().cloned());
+        Some((INodeNo(ino), alternate))
     }
 
     fn entries(&self) -> Vec<(INodeNo, PathBuf)> {
         self.by_inode
             .iter()
-            .map(|(inode, path)| (INodeNo(*inode), path.clone()))
+            .flat_map(|(inode, entry)| {
+                entry
+                    .paths
+                    .iter()
+                    .cloned()
+                    .map(|path| (INodeNo(*inode), path))
+            })
             .collect()
     }
 
     fn inode(&self, path: &Path) -> Option<INodeNo> {
         self.by_path.get(path).copied().map(INodeNo)
     }
+
+    fn bind_path(&mut self, ino: u64, path: PathBuf) {
+        let entry = self.by_inode.get_mut(&ino).expect("inode entry missing");
+        self.by_backing.insert(entry.backing, ino);
+        entry.paths.insert(path.clone());
+        self.by_path.insert(path, ino);
+    }
+
+    fn detach_path(&mut self, path: &Path) {
+        let Some(ino) = self.by_path.remove(path) else {
+            return;
+        };
+        let entry = self.by_inode.get_mut(&ino).expect("inode entry missing");
+        entry.paths.remove(path);
+        if entry.paths.is_empty() {
+            self.by_backing.remove(&entry.backing);
+        }
+    }
 }
 
 #[derive(Debug)]
 struct OpenFile {
     file: File,
-    mutation_path: PathBuf,
+    ino: INodeNo,
+    mutation_path: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct DirectoryEntry {
+    attr: FileAttr,
+    kind: FileType,
+    name: OsString,
+}
+
+#[derive(Debug)]
+struct OpenDirectory {
+    file: File,
+    entries: Vec<DirectoryEntry>,
 }
 
 #[derive(Debug)]
 struct HandleTable {
     next: u64,
     files: HashMap<u64, OpenFile>,
+    directories: HashMap<u64, OpenDirectory>,
 }
 
 impl HandleTable {
@@ -103,17 +223,19 @@ impl HandleTable {
         Self {
             next: 1,
             files: HashMap::new(),
+            directories: HashMap::new(),
         }
     }
 
-    fn insert(&mut self, file: File, mutation_path: PathBuf) -> FileHandle {
+    fn insert(&mut self, file: File, ino: INodeNo, mutation_path: PathBuf) -> FileHandle {
         let handle = self.next;
         self.next += 1;
         self.files.insert(
             handle,
             OpenFile {
                 file,
-                mutation_path,
+                ino,
+                mutation_path: Some(mutation_path),
             },
         );
         FileHandle(handle)
@@ -121,10 +243,41 @@ impl HandleTable {
 
     fn rename_prefix(&mut self, old: &Path, new: &Path) {
         for open in self.files.values_mut() {
-            if let Ok(suffix) = open.mutation_path.strip_prefix(old) {
-                open.mutation_path = renamed_path(new, suffix);
+            if let Some(path) = &open.mutation_path {
+                if let Ok(suffix) = path.strip_prefix(old) {
+                    open.mutation_path = Some(renamed_path(new, suffix));
+                }
             }
         }
+    }
+
+    fn exchange_prefix(&mut self, first: &Path, second: &Path) {
+        for open in self.files.values_mut() {
+            let Some(path) = &open.mutation_path else {
+                continue;
+            };
+            if let Ok(suffix) = path.strip_prefix(first) {
+                open.mutation_path = Some(renamed_path(second, suffix));
+            } else if let Ok(suffix) = path.strip_prefix(second) {
+                open.mutation_path = Some(renamed_path(first, suffix));
+            }
+        }
+    }
+
+    fn unlink(&mut self, path: &Path, alternate: Option<&Path>) {
+        for open in self.files.values_mut() {
+            if open.mutation_path.as_deref() == Some(path) {
+                open.mutation_path = alternate.map(Path::to_path_buf);
+            }
+        }
+    }
+
+    fn insert_directory(&mut self, file: File, entries: Vec<DirectoryEntry>) -> FileHandle {
+        let handle = self.next;
+        self.next += 1;
+        self.directories
+            .insert(handle, OpenDirectory { file, entries });
+        FileHandle(handle)
     }
 }
 
@@ -137,13 +290,13 @@ pub struct DeltaFs {
 }
 
 impl DeltaFs {
-    fn new(source: PathBuf, engine: Arc<Mutex<StateEngine>>) -> Self {
-        Self {
-            inodes: Arc::new(Mutex::new(InodeTable::new(source.clone()))),
+    fn new(source: PathBuf, engine: Arc<Mutex<StateEngine>>) -> io::Result<Self> {
+        Ok(Self {
+            inodes: Arc::new(Mutex::new(InodeTable::new(source.clone())?)),
             source,
             engine,
             handles: Mutex::new(HandleTable::new()),
-        }
+        })
     }
 
     fn path(&self, ino: INodeNo) -> io::Result<PathBuf> {
@@ -163,7 +316,7 @@ impl DeltaFs {
             .inodes
             .lock()
             .expect("inode table poisoned")
-            .intern(path);
+            .intern(path, &metadata);
         file_attr(ino, &metadata)
     }
 
@@ -193,7 +346,42 @@ impl DeltaFs {
             .handles
             .lock()
             .expect("handle table poisoned")
-            .insert(file, path))
+            .insert(file, ino, path))
+    }
+
+    fn directory_entries(&self, ino: INodeNo) -> io::Result<Vec<DirectoryEntry>> {
+        let path = self.path(ino)?;
+        let parent = if ino == INodeNo::ROOT {
+            path.clone()
+        } else {
+            path.parent().unwrap_or(&path).to_path_buf()
+        };
+        let mut entries = vec![
+            DirectoryEntry {
+                attr: self.intern_attr(path.clone())?,
+                kind: FileType::Directory,
+                name: ".".into(),
+            },
+            DirectoryEntry {
+                attr: self.intern_attr(parent)?,
+                kind: FileType::Directory,
+                name: "..".into(),
+            },
+        ];
+        for entry in fs::read_dir(&path)? {
+            let entry = entry?;
+            if path == self.source && entry.file_name() == OsStr::new(INTERNAL_DIR) {
+                continue;
+            }
+            let kind = FileType::from_std(entry.file_type()?)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::Unsupported))?;
+            entries.push(DirectoryEntry {
+                attr: self.intern_attr(entry.path())?,
+                kind,
+                name: entry.file_name(),
+            });
+        }
+        Ok(entries)
     }
 }
 
@@ -228,6 +416,13 @@ impl MountedEngine {
 }
 
 impl Filesystem for DeltaFs {
+    #[cfg(target_os = "linux")]
+    fn init(&mut self, _request: &Request, config: &mut KernelConfig) -> io::Result<()> {
+        let readdirplus = InitFlags::FUSE_DO_READDIRPLUS | InitFlags::FUSE_READDIRPLUS_AUTO;
+        let _ = config.add_capabilities(readdirplus);
+        Ok(())
+    }
+
     fn lookup(&self, _request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         if parent == INodeNo::ROOT && name == OsStr::new(INTERNAL_DIR) {
             reply.error(Errno::ENOENT);
@@ -242,11 +437,34 @@ impl Filesystem for DeltaFs {
         }
     }
 
-    fn getattr(&self, _request: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
-        let result = self
-            .path(ino)
-            .and_then(fs::symlink_metadata)
-            .and_then(|metadata| file_attr(ino, &metadata));
+    fn getattr(&self, _request: &Request, ino: INodeNo, fh: Option<FileHandle>, reply: ReplyAttr) {
+        let result = if let Some(fh) = fh {
+            let handles = self.handles.lock().expect("handle table poisoned");
+            handles
+                .files
+                .get(&fh.0)
+                .map(|open| open.file.metadata())
+                .or_else(|| {
+                    handles
+                        .directories
+                        .get(&fh.0)
+                        .map(|open| open.file.metadata())
+                })
+                .unwrap_or_else(|| Err(io::Error::from(io::ErrorKind::NotFound)))
+                .and_then(|metadata| file_attr(ino, &metadata))
+        } else if let Ok(path) = self.path(ino) {
+            fs::symlink_metadata(path).and_then(|metadata| file_attr(ino, &metadata))
+        } else {
+            self.handles
+                .lock()
+                .expect("handle table poisoned")
+                .files
+                .values()
+                .find(|open| open.ino == ino && open.mutation_path.is_none())
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+                .and_then(|open| open.file.metadata())
+                .and_then(|metadata| file_attr(ino, &metadata))
+        };
         match result {
             Ok(attr) => reply.attr(&TTL, &attr),
             Err(error) => reply.error(error.into()),
@@ -265,7 +483,7 @@ impl Filesystem for DeltaFs {
         atime: Option<TimeOrNow>,
         mtime: Option<TimeOrNow>,
         _ctime: Option<SystemTime>,
-        _fh: Option<FileHandle>,
+        fh: Option<FileHandle>,
         _crtime: Option<SystemTime>,
         _chgtime: Option<SystemTime>,
         _bkuptime: Option<SystemTime>,
@@ -273,6 +491,21 @@ impl Filesystem for DeltaFs {
         reply: ReplyAttr,
     ) {
         let result = (|| {
+            {
+                let handles = self.handles.lock().expect("handle table poisoned");
+                let open = fh
+                    .and_then(|fh| handles.files.get(&fh.0))
+                    .filter(|open| open.mutation_path.is_none())
+                    .or_else(|| {
+                        handles
+                            .files
+                            .values()
+                            .find(|open| open.ino == ino && open.mutation_path.is_none())
+                    });
+                if let Some(open) = open {
+                    return setattr_detached(ino, &open.file, mode, uid, gid, size, atime, mtime);
+                }
+            }
             let path = self.path(ino)?;
             let relative = self.relative(&path)?;
             let metadata = fs::symlink_metadata(&path)?;
@@ -344,7 +577,18 @@ impl Filesystem for DeltaFs {
     fn unlink(&self, _request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         let result = self.child_path(parent, name).and_then(|path| {
             let relative = self.relative(&path)?;
-            self.mutate(|engine| engine.unlink(&relative))
+            self.mutate(|engine| engine.unlink(&relative))?;
+            let alternate = self
+                .inodes
+                .lock()
+                .expect("inode table poisoned")
+                .unlink(&path)
+                .and_then(|(_, alternate)| alternate);
+            self.handles
+                .lock()
+                .expect("handle table poisoned")
+                .unlink(&path, alternate.as_deref());
+            Ok(())
         });
         finish_empty(result, reply);
     }
@@ -352,7 +596,12 @@ impl Filesystem for DeltaFs {
     fn rmdir(&self, _request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         let result = self.child_path(parent, name).and_then(|path| {
             let relative = self.relative(&path)?;
-            self.mutate(|engine| engine.unlink(&relative))
+            self.mutate(|engine| engine.unlink(&relative))?;
+            self.inodes
+                .lock()
+                .expect("inode table poisoned")
+                .unlink(&path);
+            Ok(())
         });
         finish_empty(result, reply);
     }
@@ -387,24 +636,46 @@ impl Filesystem for DeltaFs {
         flags: RenameFlags,
         reply: ReplyEmpty,
     ) {
-        if !flags.is_empty() {
-            reply.error(Errno::ENOSYS);
+        let supported = flags.is_empty() || rename_noreplace(flags) || rename_exchange(flags);
+        if !supported {
+            reply.error(Errno::EOPNOTSUPP);
             return;
         }
         let result: io::Result<()> = (|| {
             let old = self.child_path(parent, name)?;
             let new = self.child_path(newparent, newname)?;
+            if same_backing(&old, &new)? {
+                return Ok(());
+            }
             let old_relative = self.relative(&old)?;
             let new_relative = self.relative(&new)?;
-            self.mutate(|engine| engine.rename(&old_relative, &new_relative))?;
-            self.inodes
-                .lock()
-                .expect("inode table poisoned")
-                .rename_prefix(&old, &new);
-            self.handles
-                .lock()
-                .expect("handle table poisoned")
-                .rename_prefix(&old, &new);
+            self.mutate(|engine| {
+                if rename_noreplace(flags) {
+                    engine.rename_noreplace(&old_relative, &new_relative)
+                } else if rename_exchange(flags) {
+                    engine.rename_exchange(&old_relative, &new_relative)
+                } else {
+                    engine.rename(&old_relative, &new_relative)
+                }
+            })?;
+            if rename_exchange(flags) {
+                self.inodes
+                    .lock()
+                    .expect("inode table poisoned")
+                    .exchange_prefix(&old, &new);
+                self.handles
+                    .lock()
+                    .expect("handle table poisoned")
+                    .exchange_prefix(&old, &new);
+                return Ok(());
+            }
+            let mut inodes = self.inodes.lock().expect("inode table poisoned");
+            let target_alternate = inodes.unlink(&new).and_then(|(_, alternate)| alternate);
+            inodes.rename_prefix(&old, &new);
+            drop(inodes);
+            let mut handles = self.handles.lock().expect("handle table poisoned");
+            handles.unlink(&new, target_alternate.as_deref());
+            handles.rename_prefix(&old, &new);
             Ok(())
         })();
         finish_empty(result, reply);
@@ -435,7 +706,7 @@ impl Filesystem for DeltaFs {
     fn open(&self, _request: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let result = self.open_handle(ino, flags);
         match result {
-            Ok(handle) => reply.opened(handle, FopenFlags::empty()),
+            Ok(handle) => reply.opened(handle, FopenFlags::FOPEN_KEEP_CACHE),
             Err(error) => reply.error(error.into()),
         }
     }
@@ -487,8 +758,12 @@ impl Filesystem for DeltaFs {
                 .files
                 .get(&fh.0)
                 .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
-            let relative = self.relative(&open.mutation_path)?;
-            self.mutate(|engine| engine.write_file(&relative, &open.file, offset, data))?;
+            if let Some(path) = &open.mutation_path {
+                let relative = self.relative(path)?;
+                self.mutate(|engine| engine.write_file(&relative, &open.file, offset, data))?;
+            } else {
+                open.file.write_at(data, offset)?;
+            }
             Ok(data.len())
         })();
         match result {
@@ -551,51 +826,231 @@ impl Filesystem for DeltaFs {
         finish_empty(result, reply);
     }
 
+    #[cfg(target_os = "linux")]
+    fn fallocate(
+        &self,
+        _request: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        offset: u64,
+        length: u64,
+        mode: i32,
+        reply: ReplyEmpty,
+    ) {
+        if !supported_fallocate(mode) {
+            reply.error(Errno::EOPNOTSUPP);
+            return;
+        }
+        let result = (|| {
+            let handles = self.handles.lock().expect("handle table poisoned");
+            let open = handles
+                .files
+                .get(&fh.0)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+            if let Some(path) = &open.mutation_path {
+                let relative = self.relative(path)?;
+                self.mutate(|engine| {
+                    engine.fallocate_file(&relative, &open.file, offset, length, mode)
+                })
+            } else {
+                let result = unsafe {
+                    libc::fallocate(
+                        open.file.as_raw_fd(),
+                        mode,
+                        offset as libc::off_t,
+                        length as libc::off_t,
+                    )
+                };
+                if result == 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            }
+        })();
+        finish_empty(result, reply);
+    }
+
+    fn lseek(
+        &self,
+        _request: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        offset: i64,
+        whence: i32,
+        reply: ReplyLseek,
+    ) {
+        let result = self
+            .handles
+            .lock()
+            .expect("handle table poisoned")
+            .files
+            .get(&fh.0)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+            .and_then(|open| {
+                let offset = unsafe { libc::lseek(open.file.as_raw_fd(), offset, whence) };
+                if offset >= 0 {
+                    Ok(offset)
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            });
+        match result {
+            Ok(offset) => reply.offset(offset),
+            Err(error) => reply.error(error.into()),
+        }
+    }
+
+    fn copy_file_range(
+        &self,
+        _request: &Request,
+        _ino_in: INodeNo,
+        fh_in: FileHandle,
+        offset_in: u64,
+        _ino_out: INodeNo,
+        fh_out: FileHandle,
+        offset_out: u64,
+        len: u64,
+        flags: CopyFileRangeFlags,
+        reply: ReplyWrite,
+    ) {
+        if !flags.is_empty() {
+            reply.error(Errno::EINVAL);
+            return;
+        }
+        let result = (|| {
+            let handles = self.handles.lock().expect("handle table poisoned");
+            let input = handles
+                .files
+                .get(&fh_in.0)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+            let output = handles
+                .files
+                .get(&fh_out.0)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+            if same_file(&input.file, &output.file)? && ranges_overlap(offset_in, offset_out, len) {
+                return Err(io::Error::from(io::ErrorKind::InvalidInput));
+            }
+            if let Some(path) = &output.mutation_path {
+                let relative = self.relative(path)?;
+                self.mutate(|engine| {
+                    engine.copy_file_range_file(
+                        &relative,
+                        &output.file,
+                        offset_out,
+                        &input.file,
+                        offset_in,
+                        len,
+                    )
+                })
+            } else {
+                copy_file_bytes(&input.file, offset_in, &output.file, offset_out, len)
+            }
+        })();
+        match result {
+            Ok(written) => reply.written(written as u32),
+            Err(error) => reply.error(error.into()),
+        }
+    }
+
+    fn opendir(&self, _request: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
+        let result = self.path(ino).and_then(|path| {
+            let directory = File::open(path)?;
+            let entries = self.directory_entries(ino)?;
+            Ok(self
+                .handles
+                .lock()
+                .expect("handle table poisoned")
+                .insert_directory(directory, entries))
+        });
+        match result {
+            Ok(handle) => reply.opened(handle, FopenFlags::FOPEN_CACHE_DIR),
+            Err(error) => reply.error(error.into()),
+        }
+    }
+
     fn readdir(
         &self,
         _request: &Request,
-        ino: INodeNo,
+        _ino: INodeNo,
         _fh: FileHandle,
         offset: u64,
         mut reply: ReplyDirectory,
     ) {
-        let result: io::Result<Vec<(PathBuf, FileType, OsString)>> = (|| {
-            let path = self.path(ino)?;
-            let parent = path.parent().unwrap_or(&path).to_path_buf();
-            let mut entries = vec![
-                (path.clone(), FileType::Directory, ".".into()),
-                (parent, FileType::Directory, "..".into()),
-            ];
-            for entry in fs::read_dir(&path)? {
-                let entry = entry?;
-                if path == self.source && entry.file_name() == OsStr::new(INTERNAL_DIR) {
-                    continue;
-                }
-                let kind = FileType::from_std(entry.file_type()?)
-                    .ok_or_else(|| io::Error::from(io::ErrorKind::Unsupported))?;
-                entries.push((entry.path(), kind, entry.file_name()));
-            }
-            Ok(entries)
-        })();
-
-        let entries = match result {
-            Ok(entries) => entries,
-            Err(error) => {
-                reply.error(error.into());
-                return;
-            }
+        let handles = self.handles.lock().expect("handle table poisoned");
+        let Some(directory) = handles.directories.get(&_fh.0) else {
+            reply.error(Errno::ENOENT);
+            return;
         };
-        for (index, (path, kind, name)) in entries.into_iter().enumerate().skip(offset as usize) {
-            let entry_ino = self
-                .inodes
-                .lock()
-                .expect("inode table poisoned")
-                .intern(path);
-            if reply.add(entry_ino, (index + 1) as u64, kind, name) {
+        for (index, entry) in directory.entries.iter().enumerate().skip(offset as usize) {
+            if reply.add(entry.attr.ino, (index + 1) as u64, entry.kind, &entry.name) {
                 break;
             }
         }
         reply.ok();
+    }
+
+    fn readdirplus(
+        &self,
+        _request: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        offset: u64,
+        mut reply: ReplyDirectoryPlus,
+    ) {
+        let handles = self.handles.lock().expect("handle table poisoned");
+        let Some(directory) = handles.directories.get(&fh.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+        for (index, entry) in directory.entries.iter().enumerate().skip(offset as usize) {
+            if reply.add(
+                entry.attr.ino,
+                (index + 1) as u64,
+                &entry.name,
+                &TTL,
+                &entry.attr,
+                Generation(0),
+            ) {
+                break;
+            }
+        }
+        reply.ok();
+    }
+
+    fn releasedir(
+        &self,
+        _request: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        _flags: OpenFlags,
+        reply: ReplyEmpty,
+    ) {
+        self.handles
+            .lock()
+            .expect("handle table poisoned")
+            .directories
+            .remove(&fh.0);
+        reply.ok();
+    }
+
+    fn fsyncdir(
+        &self,
+        _request: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        _datasync: bool,
+        reply: ReplyEmpty,
+    ) {
+        let result = self
+            .handles
+            .lock()
+            .expect("handle table poisoned")
+            .directories
+            .get(&fh.0)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+            .and_then(|directory| directory.file.sync_all());
+        finish_empty(result, reply);
     }
 
     fn statfs(&self, _request: &Request, _ino: INodeNo, reply: ReplyStatfs) {
@@ -751,7 +1206,7 @@ impl Filesystem for DeltaFs {
                 .handles
                 .lock()
                 .expect("handle table poisoned")
-                .insert(file, path);
+                .insert(file, attr.ino, path);
             Ok((attr, handle))
         })();
         match result {
@@ -794,7 +1249,7 @@ pub fn spawn_engine(
     if fs::read_dir(&mountpoint)?.next().is_some() {
         bail!("mountpoint must be empty");
     }
-    let filesystem = DeltaFs::new(source, engine);
+    let filesystem = DeltaFs::new(source, engine)?;
     let inodes = filesystem.inodes.clone();
     let mut config = fuser::Config::default();
     config.mount_options.extend([
@@ -821,6 +1276,81 @@ fn renamed_path(new: &Path, suffix: &Path) -> PathBuf {
     } else {
         new.join(suffix)
     }
+}
+
+fn backing_identity(metadata: &Metadata) -> (u64, u64) {
+    (metadata.dev(), metadata.ino())
+}
+
+fn same_backing(first: &Path, second: &Path) -> io::Result<bool> {
+    let first = fs::symlink_metadata(first)?;
+    match fs::symlink_metadata(second) {
+        Ok(second) => Ok(backing_identity(&first) == backing_identity(&second)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn rename_noreplace(flags: RenameFlags) -> bool {
+    flags == RenameFlags::RENAME_NOREPLACE
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rename_noreplace(_flags: RenameFlags) -> bool {
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn rename_exchange(flags: RenameFlags) -> bool {
+    flags == RenameFlags::RENAME_EXCHANGE
+}
+
+#[cfg(target_os = "linux")]
+fn supported_fallocate(mode: i32) -> bool {
+    mode == 0
+        || mode == libc::FALLOC_FL_KEEP_SIZE
+        || mode == (libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE)
+        || mode == libc::FALLOC_FL_ZERO_RANGE
+        || mode == (libc::FALLOC_FL_ZERO_RANGE | libc::FALLOC_FL_KEEP_SIZE)
+}
+
+fn same_file(first: &File, second: &File) -> io::Result<bool> {
+    let first = first.metadata()?;
+    let second = second.metadata()?;
+    Ok(first.dev() == second.dev() && first.ino() == second.ino())
+}
+
+fn ranges_overlap(first: u64, second: u64, length: u64) -> bool {
+    length != 0 && first < second.saturating_add(length) && second < first.saturating_add(length)
+}
+
+fn copy_file_bytes(
+    input: &File,
+    mut input_offset: u64,
+    output: &File,
+    mut output_offset: u64,
+    mut length: u64,
+) -> io::Result<u64> {
+    let total = length;
+    let mut buffer = [0_u8; 64 * 1024];
+    while length != 0 {
+        let chunk = usize::try_from(length.min(buffer.len() as u64)).expect("buffer-sized chunk");
+        let read = input.read_at(&mut buffer[..chunk], input_offset)?;
+        if read == 0 {
+            break;
+        }
+        output.write_all_at(&buffer[..read], output_offset)?;
+        input_offset += read as u64;
+        output_offset += read as u64;
+        length -= read as u64;
+    }
+    Ok(total - length)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rename_exchange(_flags: RenameFlags) -> bool {
+    false
 }
 
 fn engine_io(error: EngineError) -> io::Error {
@@ -894,6 +1424,53 @@ fn resolve_time(value: TimeOrNow, now: SystemTime) -> SystemTime {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn setattr_detached(
+    ino: INodeNo,
+    file: &File,
+    mode: Option<u32>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+    size: Option<u64>,
+    atime: Option<TimeOrNow>,
+    mtime: Option<TimeOrNow>,
+) -> io::Result<FileAttr> {
+    let metadata = file.metadata()?;
+    if let Some(mode) = mode {
+        file.set_permissions(fs::Permissions::from_mode(mode))?;
+    }
+    if uid.is_some() || gid.is_some() {
+        let result = unsafe {
+            libc::fchown(
+                file.as_raw_fd(),
+                uid.unwrap_or(metadata.uid()),
+                gid.unwrap_or(metadata.gid()),
+            )
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    if let Some(size) = size {
+        file.set_len(size)?;
+    }
+    if atime.is_some() || mtime.is_some() {
+        let now = SystemTime::now();
+        file.set_times(
+            FileTimes::new()
+                .set_accessed(atime.map_or(
+                    system_time(metadata.atime(), metadata.atime_nsec()),
+                    |value| resolve_time(value, now),
+                ))
+                .set_modified(mtime.map_or(
+                    system_time(metadata.mtime(), metadata.mtime_nsec()),
+                    |value| resolve_time(value, now),
+                )),
+        )?;
+    }
+    file_attr(ino, &file.metadata()?)
+}
+
 fn c_path(path: &Path) -> io::Result<CString> {
     CString::new(path.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))
@@ -925,7 +1502,7 @@ mod tests {
         fs::write(&target, b"before truncate").unwrap();
 
         let engine = StateEngine::create(&source, &state, EngineOptions::default()).unwrap();
-        let filesystem = DeltaFs::new(source.clone(), Arc::new(Mutex::new(engine)));
+        let filesystem = DeltaFs::new(source.clone(), Arc::new(Mutex::new(engine))).unwrap();
         let ino = filesystem.intern_attr(target.clone()).unwrap().ino;
         filesystem
             .open_handle(ino, OpenFlags(libc::O_WRONLY | libc::O_TRUNC))

@@ -47,6 +47,7 @@ struct MountRecord {
     helper_pid: u32,
     helper_start_ticks: u64,
     restarts: u64,
+    quota_bytes: u64,
 }
 
 pub struct Manager {
@@ -76,6 +77,7 @@ impl Manager {
             None => Policy::default_agent(),
         };
         let deny_paths = resolve_deny_paths(&policy, &self.project)?;
+        let quota_bytes = policy.limits.max_storage_bytes.unwrap_or(u64::MAX);
 
         let session_id = Uuid::new_v4().to_string();
         let store = self.store(&session_id);
@@ -105,6 +107,7 @@ impl Manager {
             helper_pid: 0,
             helper_start_ticks: 0,
             restarts: 0,
+            quota_bytes,
         };
         save_json(&store.join(MOUNT_RECORD), &record)?;
         if let Err(error) = self.spawn_helper(&mut record) {
@@ -571,6 +574,8 @@ impl Manager {
             .arg(&record.token_file)
             .arg("--ready-file")
             .arg(&record.ready_file)
+            .arg("--quota-bytes")
+            .arg(record.quota_bytes.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(log))

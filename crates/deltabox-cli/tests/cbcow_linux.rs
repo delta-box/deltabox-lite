@@ -1,8 +1,10 @@
 #![cfg(target_os = "linux")]
 
 use serde_json::Value;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::{Duration, Instant};
 
 fn available() -> bool {
     deltafs_fuse::doctor::inspect().mount_ready
@@ -63,6 +65,11 @@ impl Session {
             .as_str()
             .unwrap()
             .into()
+    }
+
+    fn commit(&self) {
+        let output = self.command(["commit", &self.id]);
+        assert_ok(&output);
     }
 
     fn abort(&self, checkpoint: Option<&str>) {
@@ -155,6 +162,40 @@ fn changes_and_history_cross_cli_processes() {
 }
 
 #[test]
+fn abort_invalidates_cached_content_and_namespace() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("content.txt"), "accepted\n").unwrap();
+    std::fs::write(project.path().join("original.txt"), "original\n").unwrap();
+    let session = Session::start(project.path());
+
+    let warm = session
+        .exec_shell("test \"$(cat content.txt)\" = accepted; test -f original.txt; ls >/dev/null");
+    assert_ok(&warm);
+    let result: Value = serde_json::from_slice(&warm.stdout).unwrap();
+    assert_eq!(result["exit_code"], 0, "cache warm result: {result}");
+    let mutate = session.exec_shell(
+        "printf 'pending\\n' > content.txt; printf 'created\\n' > created.txt; mv original.txt renamed.txt; cat content.txt renamed.txt >/dev/null; ls >/dev/null",
+    );
+    assert_ok(&mutate);
+    let result: Value = serde_json::from_slice(&mutate.stdout).unwrap();
+    assert_eq!(result["exit_code"], 0, "cache mutation result: {result}");
+
+    session.abort(None);
+    let restored = session.exec_shell(
+        "test \"$(cat content.txt)\" = accepted; test -f original.txt; test ! -e renamed.txt; test ! -e created.txt; ls >/dev/null",
+    );
+    assert_ok(&restored);
+    let result: Value = serde_json::from_slice(&restored.stdout).unwrap();
+    assert_eq!(
+        result["exit_code"], 0,
+        "cache invalidation result: {result}"
+    );
+}
+
+#[test]
 fn helper_restart_preserves_pending_undo() {
     if !available() {
         return;
@@ -172,6 +213,66 @@ fn helper_restart_preserves_pending_undo() {
     assert_eq!(after["pending_changes"], 1);
     session.abort(None);
     assert!(!project.path().join("pending.txt").exists());
+}
+
+#[test]
+fn helper_restarts_preserve_control_boundaries_and_reclaim_history() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("state.txt"), "accepted").unwrap();
+    let session = Session::start(project.path());
+
+    session.write("state.txt", "checkpointed");
+    kill_helper(&session.status());
+    let checkpoint = session.checkpoint();
+    assert_eq!(session.status()["helper_restarts"], 1);
+
+    session.write("state.txt", "committed");
+    kill_helper(&session.status());
+    session.commit();
+    assert_eq!(session.status()["helper_restarts"], 2);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("state.txt")).unwrap(),
+        "committed"
+    );
+
+    session.write("state.txt", "pending");
+    kill_helper(&session.status());
+    session.abort(None);
+    assert_eq!(session.status()["helper_restarts"], 3);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("state.txt")).unwrap(),
+        "committed"
+    );
+    assert_ne!(checkpoint, "0");
+
+    let record: Value = serde_json::from_slice(
+        &std::fs::read(
+            project
+                .path()
+                .join(".deltabox")
+                .join(&session.id)
+                .join("mount.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let state = PathBuf::from(record["state_dir"].as_str().unwrap());
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline
+        && std::fs::read_dir(state.join("gc"))
+            .unwrap()
+            .next()
+            .is_some()
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(std::fs::read_dir(state.join("gc"))
+        .unwrap()
+        .next()
+        .is_none());
 }
 
 #[test]
@@ -369,6 +470,317 @@ fn git_commit_can_be_aborted_with_repository_state() {
 }
 
 #[test]
+fn inode_handles_and_atomic_rename_flags_round_trip() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("open.txt"), "original").unwrap();
+    std::fs::write(project.path().join("source.txt"), "source").unwrap();
+    std::fs::write(project.path().join("target.txt"), "target").unwrap();
+    std::fs::write(project.path().join("first.txt"), "first").unwrap();
+    std::fs::write(project.path().join("second.txt"), "second").unwrap();
+    let session = Session::start(project.path());
+
+    let output = session.exec_shell(concat!(
+        "python3 -c 'import ctypes, errno, os\n",
+        "fd = os.open(\"open.txt\", os.O_RDWR)\n",
+        "os.unlink(\"open.txt\")\n",
+        "os.pwrite(fd, b\"detached\", 0)\n",
+        "assert os.pread(fd, 8, 0) == b\"detached\"\n",
+        "os.ftruncate(fd, 4)\n",
+        "os.fchmod(fd, 0o600)\n",
+        "assert os.fstat(fd).st_size == 4\n",
+        "assert os.fstat(fd).st_mode & 0o777 == 0o600\n",
+        "open(\"open.txt\", \"wb\").write(b\"recreated\")\n",
+        "assert os.pread(fd, 4, 0) == b\"deta\"\n",
+        "os.close(fd)\n",
+        "os.link(\"source.txt\", \"linked.txt\")\n",
+        "assert os.stat(\"source.txt\").st_ino == os.stat(\"linked.txt\").st_ino\n",
+        "target_fd = os.open(\"target.txt\", os.O_RDWR)\n",
+        "os.rename(\"source.txt\", \"target.txt\")\n",
+        "os.pwrite(target_fd, b\"old\", 0)\n",
+        "assert os.pread(target_fd, 6, 0).startswith(b\"old\")\n",
+        "assert open(\"target.txt\", \"rb\").read() == b\"source\"\n",
+        "os.close(target_fd)\n",
+        "libc = ctypes.CDLL(None, use_errno=True)\n",
+        "result = libc.renameat2(-100, b\"first.txt\", -100, b\"second.txt\", 1)\n",
+        "assert result == -1 and ctypes.get_errno() == errno.EEXIST\n",
+        "assert libc.renameat2(-100, b\"first.txt\", -100, b\"second.txt\", 2) == 0\n",
+        "assert open(\"first.txt\").read() == \"second\"\n",
+        "assert open(\"second.txt\").read() == \"first\"'"
+    ));
+    assert_ok(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["exit_code"], 0, "filesystem result: {result}");
+
+    session.abort(None);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("open.txt")).unwrap(),
+        "original"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("source.txt")).unwrap(),
+        "source"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("target.txt")).unwrap(),
+        "target"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("first.txt")).unwrap(),
+        "first"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("second.txt")).unwrap(),
+        "second"
+    );
+    assert!(!project.path().join("linked.txt").exists());
+}
+
+#[test]
+fn mmap_metadata_sparse_and_sync_round_trip() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    let sparse = project.path().join("sparse.bin");
+    let file = std::fs::File::create(&sparse).unwrap();
+    file.set_len(8 * 1024 * 1024).unwrap();
+    std::os::unix::fs::FileExt::write_all_at(&file, b"start", 0).unwrap();
+    std::os::unix::fs::FileExt::write_all_at(&file, b"end", 8 * 1024 * 1024 - 3).unwrap();
+    let accepted_blocks = std::os::unix::fs::MetadataExt::blocks(&file.metadata().unwrap());
+    std::fs::write(project.path().join("mapped.bin"), b"before").unwrap();
+    let session = Session::start(project.path());
+
+    let output = session.exec_shell(concat!(
+        "python3 -c 'import mmap, os\n",
+        "fd = os.open(\"mapped.bin\", os.O_RDWR)\n",
+        "view = mmap.mmap(fd, 6, access=mmap.ACCESS_WRITE)\n",
+        "view[:] = b\"mapped\"\n",
+        "view.flush(); view.close(); os.fsync(fd); os.close(fd)\n",
+        "os.chmod(\"mapped.bin\", 0o640)\n",
+        "os.setxattr(\"mapped.bin\", b\"user.deltafs\", b\"value\")\n",
+        "directory = os.open(\".\", os.O_RDONLY | os.O_DIRECTORY)\n",
+        "os.fsync(directory); os.close(directory)\n",
+        "data = os.open(\"sparse.bin\", os.O_RDONLY)\n",
+        "assert os.lseek(data, 0, os.SEEK_DATA) == 0\n",
+        "assert os.lseek(data, 4096, os.SEEK_HOLE) <= 8192\n",
+        "os.close(data)\n",
+        "os.unlink(\"sparse.bin\")'"
+    ));
+    assert_ok(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["exit_code"], 0, "filesystem result: {result}");
+    assert_eq!(
+        std::fs::read(project.path().join("mapped.bin")).unwrap(),
+        b"mapped"
+    );
+
+    session.abort(None);
+    assert_eq!(
+        std::fs::read(project.path().join("mapped.bin")).unwrap(),
+        b"before"
+    );
+    let restored = std::fs::metadata(&sparse).unwrap();
+    assert_eq!(restored.len(), 8 * 1024 * 1024);
+    assert_eq!(
+        std::os::unix::fs::MetadataExt::blocks(&restored),
+        accepted_blocks
+    );
+    let mounted = session.exec_shell(
+        "test \"$(cat mapped.bin)\" = before; test -f sparse.bin; test \"$(stat -c %s sparse.bin)\" = 8388608",
+    );
+    assert_ok(&mounted);
+    let result: Value = serde_json::from_slice(&mounted.stdout).unwrap();
+    assert_eq!(result["exit_code"], 0, "restored mount result: {result}");
+}
+
+#[test]
+fn access_control_lists_round_trip() {
+    if !available()
+        || !Command::new("sh")
+            .args([
+                "-c",
+                "command -v setfacl >/dev/null && command -v getfacl >/dev/null",
+            ])
+            .status()
+            .unwrap()
+            .success()
+    {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path().join("acl.txt");
+    std::fs::write(&path, "content").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let accepted_mode = std::os::unix::fs::MetadataExt::mode(&std::fs::metadata(&path).unwrap());
+    let session = Session::start(project.path());
+
+    let output = session.exec_shell(
+        "setfacl -m u:65534:r-- acl.txt; getfacl -cpn acl.txt | grep -qx 'user:65534:r--'",
+    );
+    assert_ok(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["exit_code"], 0, "ACL result: {result}");
+
+    session.abort(None);
+    let acl = Command::new("getfacl")
+        .args(["-cpn", path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_ok(&acl);
+    assert!(!String::from_utf8_lossy(&acl.stdout).contains("user:65534:r--"));
+    assert_eq!(
+        std::os::unix::fs::MetadataExt::mode(&std::fs::metadata(&path).unwrap()),
+        accepted_mode
+    );
+}
+
+#[test]
+fn sparse_range_and_fallocate_operations_round_trip() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    let sparse = project.path().join("sparse.bin");
+    let sparse_file = std::fs::File::create(&sparse).unwrap();
+    sparse_file.set_len(8 * 1024 * 1024).unwrap();
+    std::os::unix::fs::FileExt::write_all_at(&sparse_file, b"start", 0).unwrap();
+    std::os::unix::fs::FileExt::write_all_at(&sparse_file, b"end", 8 * 1024 * 1024 - 3).unwrap();
+    std::fs::write(project.path().join("punch.bin"), vec![b'P'; 1024 * 1024]).unwrap();
+    std::fs::write(project.path().join("zero.bin"), vec![b'Z'; 1024 * 1024]).unwrap();
+    std::fs::write(
+        project.path().join("copy-source.bin"),
+        vec![b'S'; 1024 * 1024],
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("copy-target.bin"),
+        vec![b'T'; 1024 * 1024],
+    )
+    .unwrap();
+    let accepted: Vec<(PathBuf, Vec<u8>, u64)> = [
+        "sparse.bin",
+        "punch.bin",
+        "zero.bin",
+        "copy-source.bin",
+        "copy-target.bin",
+    ]
+    .into_iter()
+    .map(|name| {
+        let path = project.path().join(name);
+        let metadata = std::fs::metadata(&path).unwrap();
+        (
+            path.clone(),
+            std::fs::read(path).unwrap(),
+            std::os::unix::fs::MetadataExt::blocks(&metadata),
+        )
+    })
+    .collect();
+    let session = Session::start(project.path());
+
+    let output = session.exec_shell(concat!(
+        "python3 -c 'import ctypes, errno, os\n",
+        "libc = ctypes.CDLL(None, use_errno=True)\n",
+        "sparse = os.open(\"sparse.bin\", os.O_RDWR)\n",
+        "os.pwrite(sparse, b\"X\" * 4096, 1024 * 1024)\n",
+        "os.posix_fallocate(sparse, 2 * 1024 * 1024, 64 * 1024)\n",
+        "os.ftruncate(sparse, 4 * 1024 * 1024)\n",
+        "os.close(sparse)\n",
+        "punch = os.open(\"punch.bin\", os.O_RDWR)\n",
+        "assert libc.fallocate(punch, 3, 256 * 1024, 128 * 1024) == 0\n",
+        "assert os.pread(punch, 128 * 1024, 256 * 1024) == bytes(128 * 1024)\n",
+        "os.close(punch)\n",
+        "zero = os.open(\"zero.bin\", os.O_RDWR)\n",
+        "assert libc.fallocate(zero, 17, 256 * 1024, 128 * 1024) == 0\n",
+        "assert os.pread(zero, 128 * 1024, 256 * 1024) == bytes(128 * 1024)\n",
+        "assert libc.fallocate(zero, 8, 0, 4096) == -1\n",
+        "assert ctypes.get_errno() == errno.EOPNOTSUPP\n",
+        "os.close(zero)\n",
+        "source = os.open(\"copy-source.bin\", os.O_RDONLY)\n",
+        "target = os.open(\"copy-target.bin\", os.O_RDWR)\n",
+        "assert os.copy_file_range(source, target, 256 * 1024, 64 * 1024, 128 * 1024) == 256 * 1024\n",
+        "assert os.pread(target, 256 * 1024, 128 * 1024) == b\"S\" * (256 * 1024)\n",
+        "os.close(source); os.close(target)'"
+    ));
+    assert_ok(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["exit_code"], 0, "fallocate result: {result}");
+
+    session.abort(None);
+    for (path, bytes, blocks) in accepted {
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "{}", path.display());
+        assert_eq!(
+            std::os::unix::fs::MetadataExt::blocks(&metadata),
+            blocks,
+            "{}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn sqlite_wal_and_advisory_lock_are_rollback_safe() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    let session = Session::start(project.path());
+    let output = session.exec_shell(concat!(
+        "python3 -c 'import fcntl, os, sqlite3\n",
+        "lock = open(\"lockfile\", \"w\")\n",
+        "fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)\n",
+        "db = sqlite3.connect(\"state.db\")\n",
+        "db.execute(\"pragma journal_mode=wal\")\n",
+        "db.execute(\"create table items(value text)\")\n",
+        "db.execute(\"insert into items values (\\\"ready\\\")\")\n",
+        "db.commit()\n",
+        "assert db.execute(\"select value from items\").fetchone()[0] == \"ready\"\n",
+        "db.close(); fcntl.flock(lock, fcntl.LOCK_UN); lock.close()'"
+    ));
+    assert_ok(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["exit_code"], 0, "sqlite result: {result}");
+    session.abort(None);
+    assert!(!project.path().join("state.db").exists());
+    assert!(!project.path().join("lockfile").exists());
+}
+
+#[test]
+fn configured_storage_quota_rejects_before_mutation() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("large.bin"), vec![b'A'; 32 * 1024]).unwrap();
+    let policy = project.path().join("policy.toml");
+    std::fs::write(
+        &policy,
+        concat!(
+            "[filesystem]\nread = [\"/\"]\nwrite = [\".\"]\ndeny = []\n\n",
+            "[limits]\nmax_write_bytes = 1048576\nmax_storage_bytes = 8192\n"
+        ),
+    )
+    .unwrap();
+    let session = Session::start_with_policy(project.path(), Some(&policy));
+
+    let output =
+        session.exec_shell("python3 -c 'open(\"large.bin\", \"r+b\").write(b\"B\" * 16384)'");
+    assert_ok(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_ne!(result["exit_code"], 0);
+    assert_eq!(
+        std::fs::read(project.path().join("large.bin")).unwrap(),
+        vec![b'A'; 32 * 1024]
+    );
+    session.write("small.txt", "within quota");
+    session.abort(None);
+    assert!(!project.path().join("small.txt").exists());
+}
+
+#[test]
 fn supervisor_writes_reject_symlink_escape() {
     if !available() {
         return;
@@ -513,4 +925,9 @@ fn assert_ok(output: &Output) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn kill_helper(status: &Value) {
+    let pid = status["helper_pid"].as_u64().unwrap() as i32;
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
 }

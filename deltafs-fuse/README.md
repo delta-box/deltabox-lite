@@ -73,12 +73,15 @@ The Rust API is exposed from `deltafs_fuse::engine`. `StateEngine::create` and
 All mutations must pass through that instance.
 
 The engine supports file and directory creation, symlinks, writes through
-paths or existing descriptors, append, truncate, unlink, rename replacement,
-hardlinks, mode/owner/time/xattr changes, linear checkpoints, rollback, commit,
-and touched-index diff. Checksummed state files and monotonic `READY`/`APPLIED`
-journal records are authoritative across process restart. A failed operation
-after `READY` poisons the instance; reopen it to run conservative recovery
-before continuing.
+paths or existing descriptors, append, truncate, unlink and open-unlink,
+rename replacement/exclusive/exchange, hardlinks, mode/owner/time/xattr and
+POSIX ACL changes, sparse files, supported `fallocate` modes, and
+`copy_file_range`. The mounted adapter supports file and directory sync,
+advisory locks, and shared writable mappings with the normal FUSE page cache.
+Linear checkpoints, rollback, commit, and touched-index diff use checksummed
+state files and monotonic `READY`/`APPLIED` journal records that remain
+authoritative across process restart. A failed operation after `READY` poisons
+the instance; reopen it to run conservative recovery before continuing.
 
 Run the state-engine validation and empty-operation scaling benchmark with:
 
@@ -91,7 +94,7 @@ cargo bench --bench empty_control
 
 - Global mutation serialization, chosen to make ordering unambiguous.
 - Kernel writeback cache remains disabled; the adapter uses synchronous FUSE
-  write callbacks. Shared writable `mmap` behavior is not a supported contract.
+  write callbacks. Shared writable `mmap` uses the normal page cache.
 - Process-crash evidence only; no `fsync`/power-loss guarantee.
 - The source tree must have one coordinated writer through the adapter or
   engine during validation.
@@ -100,3 +103,7 @@ cargo bench --bench empty_control
   `UnresolvedHardlink` before changing the file. External aliases are not
   supported.
 - Non-UTF-8 relative paths are not supported by the state format.
+- Device-node creation and file-flag `ioctl` operations are not supported.
+- `fallocate` supports allocation, `KEEP_SIZE`, hole punching, and zero ranges.
+  Collapse-range, insert-range, and other layout-changing modes return
+  `EOPNOTSUPP`.

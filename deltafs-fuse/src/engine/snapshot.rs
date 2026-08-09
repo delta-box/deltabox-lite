@@ -3,14 +3,18 @@ use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::fs::{self, File, FileTimes, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{FileExt, MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::model::{
-    MetadataSnapshot, ObjectSnapshot, ObjectSnapshotKind, SegmentRef, UndoAction, VInodeId,
+    DataExtent, MetadataSnapshot, ObjectSnapshot, ObjectSnapshotKind, SegmentRef, SparseLayout,
+    UndoAction, VInodeId,
 };
+use super::ranges::ByteRange;
 use super::{EngineError, Result};
 
 const PREIMAGE_METADATA_ALLOWANCE: u64 = 1024;
@@ -18,6 +22,13 @@ const PREIMAGE_METADATA_ALLOWANCE: u64 = 1024;
 #[derive(Debug, Clone)]
 pub struct ObjectCapturePlan {
     pub snapshot: ObjectSnapshot,
+    pub preimage_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct RangeCapturePlan {
+    pub segments: Vec<SegmentRef>,
+    pub holes: Vec<DataExtent>,
     pub preimage_bytes: u64,
 }
 
@@ -72,9 +83,20 @@ pub fn checked_path(root: &Path, relative: &str) -> Result<PathBuf> {
     }
     normalize_relative(Path::new(relative))?;
     let path = root.join(relative);
-    let parent = path
+    let mut parent = path
         .parent()
         .ok_or_else(|| EngineError::InvalidPath(PathBuf::from(relative)))?;
+    loop {
+        match fs::symlink_metadata(parent) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                parent = parent
+                    .parent()
+                    .ok_or_else(|| EngineError::InvalidPath(PathBuf::from(relative)))?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
     let parent = parent.canonicalize()?;
     if !parent.starts_with(root) {
         return Err(EngineError::PathEscape(PathBuf::from(relative)));
@@ -111,6 +133,42 @@ pub fn plan_segment(
             .checked_add(PREIMAGE_METADATA_ALLOWANCE)
             .ok_or_else(|| EngineError::Invariant("segment accounting overflow".into()))?,
     ))
+}
+
+pub fn plan_ranges(path: &Path, record_id: u64, ranges: &[ByteRange]) -> Result<RangeCapturePlan> {
+    let mut segments = Vec::new();
+    let mut holes = Vec::new();
+    let mut preimage_bytes = 0_u64;
+    for range in ranges {
+        let extents = data_extents(path, range.start, range.end)?;
+        let mut cursor = range.start;
+        for extent in extents {
+            if cursor < extent.offset {
+                holes.push(DataExtent {
+                    offset: cursor,
+                    length: extent.offset - cursor,
+                });
+            }
+            let (segment, bytes) =
+                plan_segment(record_id, segments.len(), extent.offset, extent.length)?;
+            segments.push(segment);
+            preimage_bytes = preimage_bytes
+                .checked_add(bytes)
+                .ok_or_else(|| EngineError::Invariant("range accounting overflow".into()))?;
+            cursor = extent.offset + extent.length;
+        }
+        if cursor < range.end {
+            holes.push(DataExtent {
+                offset: cursor,
+                length: range.end - cursor,
+            });
+        }
+    }
+    Ok(RangeCapturePlan {
+        segments,
+        holes,
+        preimage_bytes,
+    })
 }
 
 pub fn materialize_segment(path: &Path, preimages: &Path, plan: &SegmentRef) -> Result<SegmentRef> {
@@ -161,12 +219,19 @@ pub fn plan_object(
         )
     } else if file_type.is_file() {
         let name = format!("object-{record_id:016x}.bin");
+        let sparse = sparse_layout(path, stat.len())?;
+        let data_bytes = sparse.extents.iter().try_fold(0_u64, |total, extent| {
+            total
+                .checked_add(extent.length)
+                .ok_or_else(|| EngineError::Invariant("sparse extent accounting overflow".into()))
+        })?;
         (
             ObjectSnapshotKind::Regular {
                 data: name,
                 checksum: u32::MAX,
+                sparse: Some(sparse),
             },
-            stat.len()
+            data_bytes
                 .checked_add(PREIMAGE_METADATA_ALLOWANCE)
                 .ok_or_else(|| EngineError::Invariant("object accounting overflow".into()))?,
         )
@@ -201,14 +266,25 @@ pub fn materialize_object(
     plan: &ObjectCapturePlan,
 ) -> Result<ObjectSnapshot> {
     let mut snapshot = plan.snapshot.clone();
-    if let ObjectSnapshotKind::Regular { data, checksum } = &mut snapshot.kind {
+    if let ObjectSnapshotKind::Regular {
+        data,
+        checksum,
+        sparse,
+    } = &mut snapshot.kind
+    {
         fs::create_dir_all(preimages)?;
         let destination = preimages.join(&*data);
-        let copied = match fs::copy(path, &destination) {
+        let copied = match copy_sparse(
+            path,
+            &destination,
+            sparse
+                .as_ref()
+                .expect("new regular snapshots include sparse layout"),
+        ) {
             Ok(copied) => copied,
             Err(error) => {
                 let _ = fs::remove_file(&destination);
-                return Err(error.into());
+                return Err(error);
             }
         };
         let expected = plan
@@ -220,7 +296,12 @@ pub fn materialize_object(
                 "object changed while capturing: expected {expected} bytes, copied {copied}"
             )));
         }
-        *checksum = match hash_file(&destination) {
+        *checksum = match hash_sparse(
+            &destination,
+            sparse
+                .as_ref()
+                .expect("new regular snapshots include sparse layout"),
+        ) {
             Ok(checksum) => checksum,
             Err(error) => {
                 let _ = fs::remove_file(&destination);
@@ -245,6 +326,162 @@ fn hash_file(path: &Path) -> Result<u32> {
     Ok(hasher.finalize())
 }
 
+fn hash_sparse(path: &Path, layout: &SparseLayout) -> Result<u32> {
+    let file = File::open(path)?;
+    let mut hasher = Hasher::new();
+    hasher.update(&layout.size.to_le_bytes());
+    let mut buffer = [0_u8; 64 * 1024];
+    for extent in &layout.extents {
+        hasher.update(&extent.offset.to_le_bytes());
+        hasher.update(&extent.length.to_le_bytes());
+        let mut offset = extent.offset;
+        let end = extent.offset + extent.length;
+        while offset < end {
+            let length = usize::try_from((end - offset).min(buffer.len() as u64))
+                .expect("buffer-sized extent chunk");
+            let read = file.read_at(&mut buffer[..length], offset)?;
+            if read != length {
+                return Err(EngineError::Invariant(
+                    "sparse pre-image changed while hashing".into(),
+                ));
+            }
+            hasher.update(&buffer[..read]);
+            offset += read as u64;
+        }
+    }
+    Ok(hasher.finalize())
+}
+
+fn copy_sparse(source: &Path, destination: &Path, layout: &SparseLayout) -> Result<u64> {
+    if fs::metadata(source)?.len() != layout.size {
+        return Err(EngineError::Invariant(
+            "sparse source changed while capturing".into(),
+        ));
+    }
+    let source = File::open(source)?;
+    let destination_file = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(destination)?;
+    destination_file.set_len(layout.size)?;
+    let mut copied = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    for extent in &layout.extents {
+        let mut offset = extent.offset;
+        let end = extent.offset + extent.length;
+        while offset < end {
+            let length = usize::try_from((end - offset).min(buffer.len() as u64))
+                .expect("buffer-sized extent chunk");
+            let read = source.read_at(&mut buffer[..length], offset)?;
+            if read != length {
+                return Err(EngineError::Invariant(
+                    "sparse source changed while copying".into(),
+                ));
+            }
+            write_all_at(&destination_file, &buffer[..read], offset)?;
+            offset += read as u64;
+            copied += read as u64;
+        }
+    }
+    Ok(copied)
+}
+
+fn write_all_at(file: &File, mut data: &[u8], mut offset: u64) -> std::io::Result<()> {
+    while !data.is_empty() {
+        let written = file.write_at(data, offset)?;
+        if written == 0 {
+            return Err(std::io::Error::from(std::io::ErrorKind::WriteZero));
+        }
+        data = &data[written..];
+        offset += written as u64;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn sparse_layout(path: &Path, size: u64) -> Result<SparseLayout> {
+    let extents = data_extents(path, 0, size)?;
+    Ok(SparseLayout { size, extents })
+}
+
+#[cfg(target_os = "linux")]
+fn data_extents(path: &Path, start: u64, end: u64) -> Result<Vec<DataExtent>> {
+    if start >= end {
+        return Ok(Vec::new());
+    }
+    let file = File::open(path)?;
+    let mut extents = Vec::new();
+    let mut offset = start;
+    while offset < end {
+        let data = unsafe { libc::lseek(file.as_raw_fd(), offset as i64, libc::SEEK_DATA) };
+        if data < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ENXIO) {
+                break;
+            }
+            if error.raw_os_error() == Some(libc::EINVAL) {
+                return Ok(vec![DataExtent {
+                    offset: start,
+                    length: end - start,
+                }]);
+            }
+            return Err(error.into());
+        }
+        let data = data as u64;
+        if data >= end {
+            break;
+        }
+        let hole = unsafe { libc::lseek(file.as_raw_fd(), data as i64, libc::SEEK_HOLE) };
+        let hole = if hole < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ENXIO) {
+                end
+            } else {
+                return Err(error.into());
+            }
+        } else {
+            (hole as u64).min(end)
+        };
+        if data >= hole {
+            return Err(EngineError::Invariant(
+                "filesystem returned an invalid sparse extent".into(),
+            ));
+        }
+        extents.push(DataExtent {
+            offset: data,
+            length: hole - data,
+        });
+        offset = hole;
+    }
+    Ok(extents)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn sparse_layout(_path: &Path, size: u64) -> Result<SparseLayout> {
+    Ok(SparseLayout {
+        size,
+        extents: (size != 0)
+            .then_some(DataExtent {
+                offset: 0,
+                length: size,
+            })
+            .into_iter()
+            .collect(),
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn data_extents(_path: &Path, start: u64, end: u64) -> Result<Vec<DataExtent>> {
+    Ok((start < end)
+        .then_some(DataExtent {
+            offset: start,
+            length: end - start,
+        })
+        .into_iter()
+        .collect())
+}
+
 pub fn apply_undo(root: &Path, preimages: &Path, action: &UndoAction) -> Result<()> {
     match action {
         UndoAction::RemoveCreated { path } => remove_path_if_exists(&checked_path(root, path)?)?,
@@ -258,6 +495,7 @@ pub fn apply_undo(root: &Path, preimages: &Path, action: &UndoAction) -> Result<
             path,
             old_size,
             segments,
+            holes,
             ..
         } => {
             let destination = checked_path(root, path)?;
@@ -265,6 +503,12 @@ pub fn apply_undo(root: &Path, preimages: &Path, action: &UndoAction) -> Result<
                 .read(true)
                 .write(true)
                 .open(&destination)?;
+            if let Some(size) = old_size {
+                if file.metadata()?.len() < *size {
+                    file.set_len(*size)?;
+                }
+            }
+            punch_holes(&file, holes)?;
             for segment in segments {
                 let preimage = preimages.join(&segment.file);
                 if fs::metadata(&preimage)?.len() != segment.length
@@ -313,6 +557,34 @@ pub fn apply_undo(root: &Path, preimages: &Path, action: &UndoAction) -> Result<
                 }
             } else {
                 remove_path_if_exists(&new)?;
+            }
+        }
+        UndoAction::UndoExchange {
+            first_path,
+            second_path,
+            first_backing,
+            second_backing,
+        } => {
+            let first = checked_path(root, first_path)?;
+            let second = checked_path(root, second_path)?;
+            let first_current = fs::symlink_metadata(&first)?;
+            let second_current = fs::symlink_metadata(&second)?;
+            let first_current = super::model::BackingIdentity {
+                device: first_current.dev(),
+                inode: first_current.ino(),
+            };
+            let second_current = super::model::BackingIdentity {
+                device: second_current.dev(),
+                inode: second_current.ino(),
+            };
+            if first_current == *second_backing && second_current == *first_backing {
+                rename_exchange(&first, &second)?;
+            } else if first_current != *first_backing || second_current != *second_backing {
+                return Err(EngineError::Recovery(format!(
+                    "rename exchange operands changed: {} and {}",
+                    first.display(),
+                    second.display()
+                )));
             }
         }
         UndoAction::RestoreMode { path, mode, .. } => {
@@ -451,14 +723,29 @@ fn restore_object(
         fs::create_dir_all(parent)?;
     }
     match &snapshot.kind {
-        ObjectSnapshotKind::Regular { data, checksum } => {
+        ObjectSnapshotKind::Regular {
+            data,
+            checksum,
+            sparse,
+        } => {
             let preimage = preimages.join(data);
-            if hash_file(&preimage)? != *checksum {
+            let actual = match sparse {
+                Some(layout) => hash_sparse(&preimage, layout)?,
+                None => hash_file(&preimage)?,
+            };
+            if actual != *checksum {
                 return Err(EngineError::CorruptState(format!(
                     "object checksum mismatch: {data}"
                 )));
             }
-            fs::copy(preimage, destination)?;
+            match sparse {
+                Some(layout) => {
+                    copy_sparse(&preimage, destination, layout)?;
+                }
+                None => {
+                    fs::copy(preimage, destination)?;
+                }
+            }
         }
         ObjectSnapshotKind::Directory => fs::create_dir(destination)?,
         ObjectSnapshotKind::Symlink { target } => std::os::unix::fs::symlink(target, destination)?,
@@ -524,6 +811,62 @@ fn system_time(nanos: i64) -> SystemTime {
 fn c_path(path: &Path) -> Result<CString> {
     CString::new(path.as_os_str().as_bytes())
         .map_err(|_| EngineError::InvalidPath(path.to_path_buf()))
+}
+
+#[cfg(target_os = "linux")]
+fn punch_holes(file: &File, holes: &[DataExtent]) -> Result<()> {
+    for hole in holes {
+        let result = unsafe {
+            libc::fallocate(
+                file.as_raw_fd(),
+                libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
+                hole.offset as libc::off_t,
+                hole.length as libc::off_t,
+            )
+        };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn punch_holes(_file: &File, holes: &[DataExtent]) -> Result<()> {
+    if holes.is_empty() {
+        Ok(())
+    } else {
+        Err(EngineError::UnsupportedFileType(PathBuf::from(
+            "sparse range restoration",
+        )))
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn rename_exchange(first: &Path, second: &Path) -> Result<()> {
+    let first = c_path(first)?;
+    let second = c_path(second)?;
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            first.as_ptr(),
+            libc::AT_FDCWD,
+            second.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().into())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn rename_exchange(_first: &Path, _second: &Path) -> Result<()> {
+    Err(EngineError::UnsupportedFileType(PathBuf::from(
+        "rename exchange",
+    )))
 }
 
 #[cfg(target_os = "linux")]

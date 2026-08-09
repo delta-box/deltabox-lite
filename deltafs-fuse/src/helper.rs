@@ -18,6 +18,7 @@ pub struct Config {
     pub socket: PathBuf,
     pub token_file: PathBuf,
     pub ready_file: PathBuf,
+    pub quota_bytes: u64,
 }
 
 pub fn run(config: Config) -> Result<()> {
@@ -27,7 +28,13 @@ pub fn run(config: Config) -> Result<()> {
     let mut engine = if config.state_dir.join("session.json").exists() {
         StateEngine::open(&config.source, &config.state_dir)?
     } else {
-        StateEngine::create(&config.source, &config.state_dir, EngineOptions::default())?
+        StateEngine::create(
+            &config.source,
+            &config.state_dir,
+            EngineOptions {
+                quota_bytes: config.quota_bytes,
+            },
+        )?
     };
     remove_async(engine.prepare_gc()?);
     let engine = Arc::new(Mutex::new(engine));

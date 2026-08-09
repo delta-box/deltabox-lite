@@ -19,12 +19,15 @@ use quota::{QuotaReservation, QuotaState};
 use serde::{Deserialize, Serialize};
 use snapshot::{
     apply_undo, checked_path, copy_path_state, materialize_object, materialize_segment,
-    metadata_snapshot, normalize_relative, path_state, plan_object, plan_segment,
-    set_owner as apply_owner, set_times as apply_times, ObjectCapturePlan, PathState,
+    metadata_snapshot, normalize_relative, path_state, plan_object, plan_ranges,
+    rename_exchange as apply_exchange, set_owner as apply_owner, set_times as apply_times,
+    ObjectCapturePlan, PathState,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -32,7 +35,7 @@ use thiserror::Error;
 
 const JOURNAL_RESERVATION: u64 = 4096;
 const RECORD_RECOVERY_ALLOWANCE: u64 = 64;
-const DEFAULT_QUOTA: u64 = 1024 * 1024 * 1024;
+pub const DEFAULT_QUOTA_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum EngineError {
@@ -86,7 +89,7 @@ pub struct EngineOptions {
 impl Default for EngineOptions {
     fn default() -> Self {
         Self {
-            quota_bytes: DEFAULT_QUOTA,
+            quota_bytes: DEFAULT_QUOTA_BYTES,
         }
     }
 }
@@ -527,10 +530,45 @@ impl StateEngine {
         }
     }
 
-    fn rename_binding(&mut self, inode: VInodeId, old: &str, new: &str) {
-        if let Some(entry) = self.inodes.entries.get_mut(&inode) {
-            entry.bindings.remove(old);
-            entry.bindings.insert(new.to_owned());
+    fn rename_bindings_prefix(&mut self, old: &str, new: &str) {
+        for entry in self.inodes.entries.values_mut() {
+            let replacements: Vec<(String, String)> = entry
+                .bindings
+                .iter()
+                .filter_map(|binding| {
+                    Path::new(binding)
+                        .strip_prefix(old)
+                        .ok()
+                        .map(|suffix| (binding.clone(), relative_join(new, suffix)))
+                })
+                .collect();
+            for (old, new) in replacements {
+                entry.bindings.remove(&old);
+                entry.bindings.insert(new);
+            }
+        }
+    }
+
+    fn exchange_bindings_prefix(&mut self, first: &str, second: &str) {
+        for entry in self.inodes.entries.values_mut() {
+            let replacements: Vec<(String, String)> = entry
+                .bindings
+                .iter()
+                .filter_map(|binding| {
+                    if let Ok(suffix) = Path::new(binding).strip_prefix(first) {
+                        Some((binding.clone(), relative_join(second, suffix)))
+                    } else {
+                        Path::new(binding)
+                            .strip_prefix(second)
+                            .ok()
+                            .map(|suffix| (binding.clone(), relative_join(first, suffix)))
+                    }
+                })
+                .collect();
+            for (old, new) in replacements {
+                entry.bindings.remove(&old);
+                entry.bindings.insert(new);
+            }
         }
     }
 
@@ -825,9 +863,9 @@ impl StateEngine {
         self.write_internal(
             path,
             offset,
-            data,
+            data.len() as u64,
             OperationKind::Write,
-            |destination, offset, data, partial| {
+            |destination, offset, partial| {
                 let mut file = OpenOptions::new()
                     .read(true)
                     .write(true)
@@ -844,9 +882,9 @@ impl StateEngine {
         self.write_internal(
             path,
             offset,
-            data,
+            data.len() as u64,
             OperationKind::Write,
-            |_destination, offset, data, partial| {
+            |_destination, offset, partial| {
                 let length = mutation_length(data, partial);
                 file.write_all_at(&data[..length], offset)?;
                 Ok(())
@@ -861,9 +899,9 @@ impl StateEngine {
         self.write_internal(
             Path::new(&relative),
             size,
-            data,
+            data.len() as u64,
             OperationKind::Append,
-            |destination, offset, data, partial| {
+            |destination, offset, partial| {
                 let mut file = OpenOptions::new()
                     .read(true)
                     .write(true)
@@ -876,14 +914,14 @@ impl StateEngine {
         )
     }
 
-    fn write_internal(
+    fn write_internal<T>(
         &mut self,
         path: &Path,
         offset: u64,
-        data: &[u8],
+        length: u64,
         operation: OperationKind,
-        mutation: impl FnOnce(&Path, u64, &[u8], bool) -> Result<()>,
-    ) -> Result<()> {
+        mutation: impl FnOnce(&Path, u64, bool) -> Result<T>,
+    ) -> Result<T> {
         self.ensure_usable()?;
         let relative = normalize_relative(path)?;
         let destination = checked_path(&self.live, &relative)?;
@@ -895,7 +933,7 @@ impl StateEngine {
         let old_size = metadata.len();
         let created = self.active_epoch().index.created.contains(&relative);
         let end = offset
-            .checked_add(data.len() as u64)
+            .checked_add(length)
             .ok_or_else(|| EngineError::Invariant("write range overflow".into()))?;
         let capture_end = end.min(old_size);
         let requested = ByteRange::new(offset.min(capture_end), capture_end);
@@ -913,15 +951,10 @@ impl StateEngine {
             Vec::new()
         };
         let record_id = self.allocate_record();
-        let mut planned_segments = Vec::new();
-        let mut preimage_bytes = 0_u64;
-        for (index, range) in uncovered.iter().enumerate() {
-            let (segment, bytes) = plan_segment(record_id, index, range.start, range.len())?;
-            planned_segments.push(segment);
-            preimage_bytes = preimage_bytes
-                .checked_add(bytes)
-                .ok_or_else(|| EngineError::Invariant("preimage size overflow".into()))?;
-        }
+        let capture = plan_ranges(&destination, record_id, &uncovered)?;
+        let planned_segments = capture.segments;
+        let holes = capture.holes;
+        let preimage_bytes = capture.preimage_bytes;
         let capture_size_field =
             !created && end > old_size && !self.active_epoch().index.sizes.contains(&inode);
         let mut actions = Vec::new();
@@ -934,12 +967,13 @@ impl StateEngine {
                 mtime_ns: snapshot.mtime_ns,
             });
         }
-        if !planned_segments.is_empty() || capture_size_field {
+        if !planned_segments.is_empty() || !holes.is_empty() || capture_size_field {
             actions.push(UndoAction::RestoreRanges {
                 path: relative.clone(),
                 inode,
                 old_size: capture_size_field.then_some(old_size),
                 segments: planned_segments.clone(),
+                holes: holes.clone(),
             });
         }
         let mut record = ReadyRecord {
@@ -974,8 +1008,34 @@ impl StateEngine {
             *record_segments = segments;
         }
         self.run_record(record_id, reservation, record, |partial| {
-            mutation(&destination, offset, data, partial)
+            mutation(&destination, offset, partial)
         })
+    }
+
+    pub fn copy_file_range_file(
+        &mut self,
+        path: &Path,
+        output: &File,
+        output_offset: u64,
+        input: &File,
+        input_offset: u64,
+        length: u64,
+    ) -> Result<u64> {
+        let length = length.min(input.metadata()?.len().saturating_sub(input_offset));
+        if length == 0 {
+            return Ok(0);
+        }
+        self.write_internal(
+            path,
+            output_offset,
+            length,
+            OperationKind::CopyFileRange,
+            |_destination, output_offset, partial| {
+                let length = if partial { length.div_ceil(2) } else { length };
+                copy_file_bytes(input, input_offset, output, output_offset, length)
+                    .map_err(EngineError::from)
+            },
+        )
     }
 
     pub fn truncate(&mut self, path: &Path, size: u64) -> Result<()> {
@@ -999,17 +1059,17 @@ impl StateEngine {
             });
         }
         if needs_capture {
-            let mut segments = Vec::new();
-            if old_size > 0 {
-                let (segment, bytes) = plan_segment(record_id, 0, 0, old_size)?;
-                segments.push(segment);
-                preimage_bytes = bytes;
-            }
+            let ranges: Vec<ByteRange> = ByteRange::new(0, old_size).into_iter().collect();
+            let capture = plan_ranges(&destination, record_id, &ranges)?;
+            let segments = capture.segments;
+            let holes = capture.holes;
+            preimage_bytes = capture.preimage_bytes;
             actions.push(UndoAction::RestoreRanges {
                 path: relative.clone(),
                 inode,
                 old_size: Some(old_size),
                 segments,
+                holes,
             });
         }
         let mut record = ReadyRecord {
@@ -1044,6 +1104,124 @@ impl StateEngine {
                 .open(destination)?
                 .set_len(size)?;
             Ok(())
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn fallocate_file(
+        &mut self,
+        path: &Path,
+        file: &File,
+        offset: u64,
+        length: u64,
+        mode: i32,
+    ) -> Result<()> {
+        self.ensure_usable()?;
+        let relative = normalize_relative(path)?;
+        let destination = checked_path(&self.live, &relative)?;
+        let metadata = fs::metadata(&destination)?;
+        let inode = self.resolve_inode(&relative)?;
+        let old_size = metadata.len();
+        let end = offset
+            .checked_add(length)
+            .ok_or_else(|| EngineError::Invariant("fallocate range overflow".into()))?;
+        let requested = ByteRange::new(offset.min(old_size), end.min(old_size));
+        let created = self.active_epoch().index.created.contains(&relative);
+        let uncovered = if created || self.active_epoch().index.whole_inodes.contains(&inode) {
+            Vec::new()
+        } else if let Some(requested) = requested {
+            self.active_epoch()
+                .index
+                .ranges
+                .get(&inode)
+                .cloned()
+                .unwrap_or_default()
+                .uncovered(requested)
+        } else {
+            Vec::new()
+        };
+        let record_id = self.allocate_record();
+        let capture = plan_ranges(&destination, record_id, &uncovered)?;
+        let preserve_data = mode & (libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_ZERO_RANGE) != 0;
+        let planned_segments = if preserve_data {
+            capture.segments
+        } else {
+            Vec::new()
+        };
+        let holes = capture.holes;
+        let preimage_bytes = if preserve_data {
+            capture.preimage_bytes
+        } else {
+            0
+        };
+        let capture_size_field = !created
+            && mode & libc::FALLOC_FL_KEEP_SIZE == 0
+            && end > old_size
+            && !self.active_epoch().index.sizes.contains(&inode);
+        let mut actions = Vec::new();
+        if !created && !self.active_epoch().index.times.contains(&inode) {
+            let snapshot = metadata_snapshot(&destination)?;
+            actions.push(UndoAction::RestoreTimes {
+                path: relative.clone(),
+                inode,
+                atime_ns: snapshot.atime_ns,
+                mtime_ns: snapshot.mtime_ns,
+            });
+        }
+        if !planned_segments.is_empty() || !holes.is_empty() || capture_size_field {
+            actions.push(UndoAction::RestoreRanges {
+                path: relative.clone(),
+                inode,
+                old_size: capture_size_field.then_some(old_size),
+                segments: planned_segments.clone(),
+                holes,
+            });
+        }
+        let mut record = ReadyRecord {
+            operation: OperationKind::Fallocate,
+            actions,
+            touched: BTreeSet::from([relative]),
+            preimage_bytes,
+        };
+        let reservation = self.reserve_record(record_id, &record)?;
+        let mut segments = Vec::with_capacity(planned_segments.len());
+        for plan in &planned_segments {
+            match materialize_segment(
+                &destination,
+                &preimage_dir(&self.state, self.manifest.active_epoch),
+                plan,
+            ) {
+                Ok(segment) => segments.push(segment),
+                Err(error) => {
+                    self.cleanup_orphan_preimages()?;
+                    return Err(error);
+                }
+            }
+        }
+        if let Some(UndoAction::RestoreRanges {
+            segments: record_segments,
+            ..
+        }) = record
+            .actions
+            .iter_mut()
+            .find(|action| matches!(action, UndoAction::RestoreRanges { .. }))
+        {
+            *record_segments = segments;
+        }
+        self.run_record(record_id, reservation, record, |_partial| {
+            let result = unsafe {
+                libc::fallocate(
+                    file.as_raw_fd(),
+                    mode,
+                    offset as libc::off_t,
+                    length as libc::off_t,
+                )
+            };
+            if result == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error().into())
+            }
         })
     }
 
@@ -1106,13 +1284,27 @@ impl StateEngine {
     }
 
     pub fn rename(&mut self, old: &Path, new: &Path) -> Result<()> {
+        self.rename_internal(old, new, false)
+    }
+
+    pub fn rename_noreplace(&mut self, old: &Path, new: &Path) -> Result<()> {
+        self.rename_internal(old, new, true)
+    }
+
+    fn rename_internal(&mut self, old: &Path, new: &Path, noreplace: bool) -> Result<()> {
         self.ensure_usable()?;
         let old_relative = normalize_relative(old)?;
         let new_relative = normalize_relative(new)?;
         let old_path = checked_path(&self.live, &old_relative)?;
         let new_path = checked_path(&self.live, &new_relative)?;
+        if same_backing_object(&old_path, &new_path)? {
+            return Ok(());
+        }
         let source_inode = self.resolve_inode(&old_relative)?;
         let target_exists = fs::symlink_metadata(&new_path).is_ok();
+        if noreplace && target_exists {
+            return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists).into());
+        }
         let record_id = self.allocate_record();
         let replacement_plan = if target_exists {
             Some(self.plan_object_for_record(&new_relative, record_id)?)
@@ -1167,13 +1359,53 @@ impl StateEngine {
             }
         }
         self.run_record(record_id, reservation, record, |_partial| {
-            fs::rename(&old_path, &new_path)?;
+            if noreplace {
+                rename_noreplace_path(&old_path, &new_path)?;
+            } else {
+                fs::rename(&old_path, &new_path)?;
+            }
             Ok(())
         })?;
-        self.rename_binding(source_inode, &old_relative, &new_relative);
+        self.rename_bindings_prefix(&old_relative, &new_relative);
         if let Some(inode) = replaced_inode {
             self.remove_binding(inode, &new_relative);
         }
+        let result = self.persist_inodes();
+        self.poison_on_error(result)
+    }
+
+    pub fn rename_exchange(&mut self, first: &Path, second: &Path) -> Result<()> {
+        self.ensure_usable()?;
+        let first_relative = normalize_relative(first)?;
+        let second_relative = normalize_relative(second)?;
+        let first_path = checked_path(&self.live, &first_relative)?;
+        let second_path = checked_path(&self.live, &second_relative)?;
+        if same_backing_object(&first_path, &second_path)? {
+            return Ok(());
+        }
+        let first_inode = self.resolve_inode(&first_relative)?;
+        let second_inode = self.resolve_inode(&second_relative)?;
+        let first_backing = self.inodes.entries[&first_inode].backing;
+        let second_backing = self.inodes.entries[&second_inode].backing;
+        let record_id = self.allocate_record();
+        let mut actions = self.namespace_parent_actions(&[&first_relative, &second_relative])?;
+        actions.push(UndoAction::UndoExchange {
+            first_path: first_relative.clone(),
+            second_path: second_relative.clone(),
+            first_backing,
+            second_backing,
+        });
+        let record = ReadyRecord {
+            operation: OperationKind::RenameExchange,
+            actions,
+            touched: BTreeSet::from([first_relative.clone(), second_relative.clone()]),
+            preimage_bytes: 0,
+        };
+        let reservation = self.reserve_record(record_id, &record)?;
+        self.run_record(record_id, reservation, record, |_partial| {
+            apply_exchange(&first_path, &second_path)
+        })?;
+        self.exchange_bindings_prefix(&first_relative, &second_relative);
         let result = self.persist_inodes();
         self.poison_on_error(result)
     }
@@ -1322,16 +1554,23 @@ impl StateEngine {
         let destination = checked_path(&self.live, &relative)?;
         let inode = self.resolve_inode(&relative)?;
         let key = (inode, name.to_owned());
-        let actions = if self.active_epoch().index.xattrs.contains(&key) {
-            Vec::new()
-        } else {
-            vec![UndoAction::RestoreXattr {
+        let mut actions = Vec::new();
+        if name.starts_with("system.posix_acl_") && !self.active_epoch().index.mode.contains(&inode)
+        {
+            actions.push(UndoAction::RestoreMode {
+                path: relative.clone(),
+                inode,
+                mode: fs::symlink_metadata(&destination)?.mode(),
+            });
+        }
+        if !self.active_epoch().index.xattrs.contains(&key) {
+            actions.push(UndoAction::RestoreXattr {
                 path: relative.clone(),
                 inode,
                 name: name.to_owned(),
                 value: xattr::get(&destination, name)?,
-            }]
-        };
+            });
+        }
         let record_id = self.allocate_record();
         let record = ReadyRecord {
             operation,
@@ -1504,6 +1743,9 @@ impl StateEngine {
                         continue;
                     }
                     for action in record.ready.actions.iter().rev() {
+                        if absent_rename_in_scratch(&scratch, action)? {
+                            continue;
+                        }
                         apply_undo(&scratch, &preimage_dir(&self.state, *epoch_id), action)?;
                     }
                 }
@@ -2056,6 +2298,29 @@ fn mutation_length(data: &[u8], partial: bool) -> usize {
     }
 }
 
+fn copy_file_bytes(
+    input: &File,
+    mut input_offset: u64,
+    output: &File,
+    mut output_offset: u64,
+    mut length: u64,
+) -> std::io::Result<u64> {
+    let total = length;
+    let mut buffer = [0_u8; 64 * 1024];
+    while length != 0 {
+        let chunk = usize::try_from(length.min(buffer.len() as u64)).expect("buffer-sized chunk");
+        let read = input.read_at(&mut buffer[..chunk], input_offset)?;
+        if read == 0 {
+            break;
+        }
+        output.write_all_at(&buffer[..read], output_offset)?;
+        input_offset += read as u64;
+        output_offset += read as u64;
+        length -= read as u64;
+    }
+    Ok(total - length)
+}
+
 fn epoch_dir(state: &Path, id: u64) -> PathBuf {
     state.join("epochs").join(format!("{id:08}"))
 }
@@ -2095,6 +2360,7 @@ fn rebuild_index(loaded: &journal::LoadedJournal) -> EpochIndex {
                     inode,
                     old_size,
                     segments,
+                    holes,
                     ..
                 } => {
                     let ranges = index.ranges.entry(*inode).or_default();
@@ -2103,6 +2369,13 @@ fn rebuild_index(loaded: &journal::LoadedJournal) -> EpochIndex {
                             segment.offset,
                             segment.offset.saturating_add(segment.length),
                         ) {
+                            ranges.insert(range);
+                        }
+                    }
+                    for hole in holes {
+                        if let Some(range) =
+                            ByteRange::new(hole.offset, hole.offset.saturating_add(hole.length))
+                        {
                             ranges.insert(range);
                         }
                     }
@@ -2134,10 +2407,13 @@ fn rebuild_index(loaded: &journal::LoadedJournal) -> EpochIndex {
                 UndoAction::UndoRename {
                     old_path, new_path, ..
                 } => {
-                    if index.created.remove(old_path) {
+                    let source_created = index.created.remove(old_path);
+                    index.created.remove(new_path);
+                    if source_created {
                         index.created.insert(new_path.clone());
                     }
                 }
+                UndoAction::UndoExchange { .. } => {}
             }
         }
     }
@@ -2224,6 +2500,26 @@ fn diff_content(state: &PathState) -> (Option<u64>, Option<Vec<u8>>) {
     )
 }
 
+fn absent_rename_in_scratch(root: &Path, action: &UndoAction) -> Result<bool> {
+    let UndoAction::UndoRename {
+        old_path,
+        new_path,
+        replaced: None,
+        ..
+    } = action
+    else {
+        return Ok(false);
+    };
+    for path in [old_path, new_path] {
+        match fs::symlink_metadata(checked_path(root, path)?) {
+            Ok(_) => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(true)
+}
+
 fn hardlink_peers(
     root: &Path,
     paths: &BTreeSet<String>,
@@ -2287,6 +2583,61 @@ fn find_backing_alias(
         }
     }
     Ok(None)
+}
+
+fn relative_join(prefix: &str, suffix: &Path) -> String {
+    if suffix.as_os_str().is_empty() {
+        prefix.to_owned()
+    } else {
+        Path::new(prefix)
+            .join(suffix)
+            .to_str()
+            .expect("normalized relative paths are UTF-8")
+            .to_owned()
+    }
+}
+
+fn same_backing_object(first: &Path, second: &Path) -> Result<bool> {
+    let first = fs::symlink_metadata(first)?;
+    match fs::symlink_metadata(second) {
+        Ok(second) => Ok(first.dev() == second.dev() && first.ino() == second.ino()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn rename_noreplace_path(old: &Path, new: &Path) -> Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let old = CString::new(old.as_os_str().as_bytes())
+        .map_err(|_| EngineError::InvalidPath(old.to_path_buf()))?;
+    let new = CString::new(new.as_os_str().as_bytes())
+        .map_err(|_| EngineError::InvalidPath(new.to_path_buf()))?;
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            old.as_ptr(),
+            libc::AT_FDCWD,
+            new.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().into())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rename_noreplace_path(old: &Path, new: &Path) -> Result<()> {
+    if fs::symlink_metadata(new).is_ok() {
+        return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists).into());
+    }
+    fs::rename(old, new)?;
+    Ok(())
 }
 
 #[cfg(test)]

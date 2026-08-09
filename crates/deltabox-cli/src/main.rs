@@ -240,6 +240,8 @@ struct FsHelperArgs {
     token_file: PathBuf,
     #[arg(long)]
     ready_file: PathBuf,
+    #[arg(long)]
+    quota_bytes: u64,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -422,6 +424,7 @@ fn main() -> anyhow::Result<()> {
                 socket: args.socket,
                 token_file: args.token_file,
                 ready_file: args.ready_file,
+                quota_bytes: args.quota_bytes,
             })?;
         }
         Command::Serve => {

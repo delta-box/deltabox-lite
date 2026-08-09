@@ -55,6 +55,8 @@ struct ServeArgs {
     token_file: PathBuf,
     #[arg(long)]
     ready_file: PathBuf,
+    #[arg(long, default_value_t = deltafs_fuse::engine::DEFAULT_QUOTA_BYTES)]
+    quota_bytes: u64,
 }
 
 #[derive(Debug, clap::Args)]
@@ -150,6 +152,7 @@ fn serve(args: ServeArgs) -> Result<()> {
         socket: args.socket,
         token_file: args.token_file,
         ready_file: args.ready_file,
+        quota_bytes: args.quota_bytes,
     })
 }
 

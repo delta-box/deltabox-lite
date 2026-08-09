@@ -98,10 +98,31 @@ pub struct MetadataSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ObjectSnapshotKind {
-    Regular { data: String, checksum: u32 },
+    Regular {
+        data: String,
+        checksum: u32,
+        #[serde(default)]
+        sparse: Option<SparseLayout>,
+    },
     Directory,
-    Symlink { target: String },
-    Hardlink { source: String },
+    Symlink {
+        target: String,
+    },
+    Hardlink {
+        source: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SparseLayout {
+    pub size: u64,
+    pub extents: Vec<DataExtent>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataExtent {
+    pub offset: u64,
+    pub length: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -126,12 +147,20 @@ pub enum UndoAction {
         inode: VInodeId,
         old_size: Option<u64>,
         segments: Vec<SegmentRef>,
+        #[serde(default)]
+        holes: Vec<DataExtent>,
     },
     UndoRename {
         old_path: String,
         new_path: String,
         source_inode: VInodeId,
         replaced: Option<ObjectSnapshot>,
+    },
+    UndoExchange {
+        first_path: String,
+        second_path: String,
+        first_backing: BackingIdentity,
+        second_backing: BackingIdentity,
     },
     RestoreMode {
         path: String,
@@ -165,10 +194,13 @@ pub enum OperationKind {
     CreateDir,
     Symlink,
     Write,
+    CopyFileRange,
     Append,
     Truncate,
+    Fallocate,
     Unlink,
     Rename,
+    RenameExchange,
     Hardlink,
     SetMode,
     SetOwner,

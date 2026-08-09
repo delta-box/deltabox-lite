@@ -253,6 +253,73 @@ fn rename_replacement_across_checkpoints_restores_each_generation() {
 }
 
 #[test]
+fn rename_of_two_names_for_the_same_inode_is_a_noop() {
+    let fixture = Fixture::new();
+    fs::write(fixture.live.join("a"), b"same").unwrap();
+    fs::hard_link(fixture.live.join("a"), fixture.live.join("b")).unwrap();
+    let mut engine = fixture.engine();
+
+    engine.rename(Path::new("a"), Path::new("b")).unwrap();
+
+    assert!(fixture.live.join("a").exists());
+    assert!(fixture.live.join("b").exists());
+    assert!(engine.diff(None).unwrap().is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn rename_flags_are_atomic_and_recoverable() {
+    let fixture = Fixture::new();
+    fs::write(fixture.live.join("a"), b"A").unwrap();
+    fs::write(fixture.live.join("b"), b"B").unwrap();
+    let mut engine = fixture.engine();
+
+    assert!(engine
+        .rename_noreplace(Path::new("a"), Path::new("b"))
+        .is_err());
+    assert_eq!(read(fixture.live.join("a")), b"A");
+    assert_eq!(read(fixture.live.join("b")), b"B");
+
+    engine.set_fault_injector(FaultInjector::once(FaultPoint::AfterReady));
+    assert!(matches!(
+        engine.rename_exchange(Path::new("a"), Path::new("b")),
+        Err(EngineError::InjectedFault(FaultPoint::AfterReady))
+    ));
+    drop(engine);
+    let mut engine = fixture.reopen();
+    assert_eq!(read(fixture.live.join("a")), b"A");
+    assert_eq!(read(fixture.live.join("b")), b"B");
+
+    engine
+        .rename_exchange(Path::new("a"), Path::new("b"))
+        .unwrap();
+    assert_eq!(read(fixture.live.join("a")), b"B");
+    assert_eq!(read(fixture.live.join("b")), b"A");
+    engine.rollback(None).unwrap();
+    assert_eq!(read(fixture.live.join("a")), b"A");
+    assert_eq!(read(fixture.live.join("b")), b"B");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn exchange_during_mutation_recovers_original_names() {
+    let fixture = Fixture::new();
+    fs::write(fixture.live.join("a"), b"A").unwrap();
+    fs::write(fixture.live.join("b"), b"B").unwrap();
+    let mut engine = fixture.engine();
+    engine.set_fault_injector(FaultInjector::once(FaultPoint::DuringMutation));
+
+    assert!(matches!(
+        engine.rename_exchange(Path::new("a"), Path::new("b")),
+        Err(EngineError::InjectedFault(FaultPoint::DuringMutation))
+    ));
+    drop(engine);
+    fixture.reopen();
+    assert_eq!(read(fixture.live.join("a")), b"A");
+    assert_eq!(read(fixture.live.join("b")), b"B");
+}
+
+#[test]
 fn hardlink_writes_through_alternating_names_restore_bytes_and_identity() {
     let fixture = Fixture::new();
     fs::write(fixture.live.join("a"), b"0123456789").unwrap();
@@ -387,6 +454,31 @@ fn diff_tracks_only_effective_touched_path_changes() {
     );
     let remaining = engine.diff(None).unwrap();
     assert!(remaining.is_empty(), "remaining changes: {remaining:?}");
+}
+
+#[test]
+fn diff_handles_removed_nested_created_tree() {
+    let fixture = Fixture::new();
+    let mut engine = fixture.engine();
+    engine.create_dir(Path::new("build"), 0o755).unwrap();
+    engine
+        .create_dir(Path::new("build/temporary"), 0o755)
+        .unwrap();
+    engine
+        .create_file(Path::new("build/temporary/output"), b"output", 0o644)
+        .unwrap();
+    engine.unlink(Path::new("build/temporary/output")).unwrap();
+    engine.unlink(Path::new("build/temporary")).unwrap();
+    engine.unlink(Path::new("build")).unwrap();
+    engine
+        .create_file(Path::new("output.part"), b"temporary", 0o644)
+        .unwrap();
+    engine
+        .rename(Path::new("output.part"), Path::new("output"))
+        .unwrap();
+    engine.unlink(Path::new("output")).unwrap();
+
+    assert!(engine.diff(None).unwrap().is_empty());
 }
 
 #[test]
