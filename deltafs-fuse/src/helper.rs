@@ -22,6 +22,7 @@ pub struct Config {
     pub durability: Durability,
     pub group_commit_ms: Option<u64>,
     pub reclaim_dir: Option<PathBuf>,
+    pub allow_other: bool,
 }
 
 pub fn run(config: Config) -> Result<()> {
@@ -43,7 +44,12 @@ pub fn run(config: Config) -> Result<()> {
         remove_async(children(directory)?);
     }
     let engine = Arc::new(Mutex::new(engine));
-    let mounted = passthrough::spawn_engine(&config.source, &config.mountpoint, engine.clone())?;
+    let mounted = passthrough::spawn_engine(
+        &config.source,
+        &config.mountpoint,
+        engine.clone(),
+        config.allow_other,
+    )?;
 
     if let Some(parent) = config.socket.parent() {
         fs::create_dir_all(parent)?;

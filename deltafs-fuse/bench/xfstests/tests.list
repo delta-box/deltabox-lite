@@ -1,0 +1,13 @@
+# This suite uses only TEST_DIR and never configures a scratch device.
+generic/001
+generic/002
+generic/005
+generic/008
+generic/023
+generic/024
+generic/025
+generic/035
+generic/080
+generic/087
+generic/088
+generic/094

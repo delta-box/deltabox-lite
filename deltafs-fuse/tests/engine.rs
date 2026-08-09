@@ -1115,7 +1115,7 @@ fn checkpoint_rollback_and_commit_faults_resume_idempotently() {
 }
 
 #[test]
-fn mutation_io_failure_requires_reopen_and_recovers_ready_record() {
+fn rename_over_nonempty_directory_fails_without_poisoning_engine() {
     let fixture = Fixture::new();
     fs::create_dir(fixture.live.join("source")).unwrap();
     fs::create_dir(fixture.live.join("target")).unwrap();
@@ -1126,16 +1126,12 @@ fn mutation_io_failure_requires_reopen_and_recovers_ready_record() {
         engine.rename(Path::new("source"), Path::new("target")),
         Err(EngineError::Io(_))
     ));
-    assert!(matches!(
-        engine.diff(None),
-        Err(EngineError::ReopenRequired)
-    ));
-    drop(engine);
-
-    let engine = fixture.reopen();
     assert!(fixture.live.join("source").is_dir());
     assert_eq!(read(fixture.live.join("target/child")), b"keep");
     assert!(engine.diff(None).unwrap().is_empty());
+
+    engine.create_file(Path::new("next"), b"ok", 0o600).unwrap();
+    assert_eq!(read(fixture.live.join("next")), b"ok");
 }
 
 #[derive(Clone, Debug)]

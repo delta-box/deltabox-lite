@@ -450,6 +450,7 @@ fn main() -> anyhow::Result<()> {
                 },
                 group_commit_ms: args.group_commit_ms.map(NonZeroU64::get),
                 reclaim_dir: args.reclaim_dir,
+                allow_other: false,
             })?;
         }
         Command::Serve => {

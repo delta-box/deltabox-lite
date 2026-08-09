@@ -57,6 +57,10 @@ still waits until the group containing its record is synchronized. Commit
 returns only after changed source files, affected directories, the commit
 marker, and the marker directory have been synchronized.
 
+Add `--allow-other` only when users other than the mount owner must access the
+mounted tree. The option is disabled by default and relies on the kernel's
+normal permission checks.
+
 Durability, grouping, and quota settings are persisted with the state. Reusing
 a state directory requires the same settings; a mismatch is rejected before
 mounting.
@@ -112,6 +116,10 @@ Run the state-engine validation and empty-operation scaling benchmark with:
 cargo test --test engine
 cargo bench --bench empty_control
 ```
+
+The maintained fio, Filebench, and xfstests runners are documented in
+[`bench/README.md`](bench/README.md). They create disposable standalone mounts
+and keep generated results outside the mounted tree.
 
 ## Current limits
 

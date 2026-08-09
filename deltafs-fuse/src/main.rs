@@ -51,6 +51,9 @@ enum Command {
         /// Batch concurrent strict journal barriers for up to this many milliseconds.
         #[arg(long, requires = "durable")]
         group_commit_ms: Option<NonZeroU64>,
+        /// Allow users other than the mount owner to access the filesystem.
+        #[arg(long)]
+        allow_other: bool,
     },
     /// Run a mounted filesystem and its local control endpoint.
     Serve(ServeArgs),
@@ -82,6 +85,9 @@ struct ServeArgs {
     group_commit_ms: Option<NonZeroU64>,
     #[arg(long)]
     reclaim_dir: Option<PathBuf>,
+    /// Allow users other than the mount owner to access the filesystem.
+    #[arg(long)]
+    allow_other: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -178,7 +184,15 @@ fn main() -> Result<()> {
             state_dir,
             durable,
             group_commit_ms,
-        } => mount(source, mountpoint, state_dir, durable, group_commit_ms),
+            allow_other,
+        } => mount(
+            source,
+            mountpoint,
+            state_dir,
+            durable,
+            group_commit_ms,
+            allow_other,
+        ),
         Command::Serve(args) => serve(args),
         Command::Control(args) => {
             let token = std::fs::read_to_string(args.token_file)?;
@@ -196,6 +210,7 @@ fn mount(
     state_dir: PathBuf,
     durable: bool,
     group_commit_ms: Option<NonZeroU64>,
+    allow_other: bool,
 ) -> Result<()> {
     deltafs_fuse::passthrough::mount(
         &source,
@@ -210,6 +225,7 @@ fn mount(
             group_commit_ms: group_commit_ms.map(NonZeroU64::get),
             ..EngineOptions::default()
         },
+        allow_other,
     )
     .context("deltafs-fuse mount failed")
 }
@@ -231,6 +247,7 @@ fn serve(args: ServeArgs) -> Result<()> {
         },
         group_commit_ms: args.group_commit_ms.map(NonZeroU64::get),
         reclaim_dir: args.reclaim_dir,
+        allow_other: args.allow_other,
     })
 }
 
@@ -241,6 +258,7 @@ fn mount(
     _state_dir: PathBuf,
     _durable: bool,
     _group_commit_ms: Option<NonZeroU64>,
+    _allow_other: bool,
 ) -> Result<()> {
     bail!("this binary was built without FUSE support; rebuild with --features fuse")
 }

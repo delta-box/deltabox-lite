@@ -1,0 +1,16 @@
+[global]
+directory=${DELTAFS_FIO_DIRECTORY}
+size=${DELTAFS_FIO_SIZE}
+ioengine=psync
+rw=randrw
+rwmixread=70
+bs=4k
+numjobs=${DELTAFS_FIO_JOBS}
+time_based=1
+runtime=${DELTAFS_FIO_RUNTIME}
+group_reporting=1
+fallocate=none
+
+[workers]
+filename_format=worker.$jobnum
+

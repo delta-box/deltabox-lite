@@ -1624,6 +1624,13 @@ impl StateEngine {
         if noreplace && target_exists {
             return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists).into());
         }
+        if target_exists
+            && fs::symlink_metadata(&old_path)?.file_type().is_dir()
+            && fs::symlink_metadata(&new_path)?.file_type().is_dir()
+            && fs::read_dir(&new_path)?.next().is_some()
+        {
+            return Err(std::io::Error::from_raw_os_error(libc::ENOTEMPTY).into());
+        }
         let record_id = self.allocate_record();
         let replacement_plan = if target_exists {
             Some(self.plan_object_for_record(&new_relative, record_id)?)

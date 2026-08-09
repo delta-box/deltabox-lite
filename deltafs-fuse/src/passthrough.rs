@@ -208,6 +208,7 @@ struct DirectoryEntry {
 #[derive(Debug)]
 struct OpenDirectory {
     file: File,
+    ino: INodeNo,
     entries: Vec<DirectoryEntry>,
 }
 
@@ -272,12 +273,32 @@ impl HandleTable {
         }
     }
 
-    fn insert_directory(&mut self, file: File, entries: Vec<DirectoryEntry>) -> FileHandle {
+    fn insert_directory(
+        &mut self,
+        file: File,
+        ino: INodeNo,
+        entries: Vec<DirectoryEntry>,
+    ) -> FileHandle {
         let handle = self.next;
         self.next += 1;
         self.directories
-            .insert(handle, OpenDirectory { file, entries });
+            .insert(handle, OpenDirectory { file, ino, entries });
         FileHandle(handle)
+    }
+
+    fn metadata_by_inode(&self, ino: INodeNo) -> io::Result<Metadata> {
+        self.files
+            .values()
+            .find(|open| open.ino == ino && open.mutation_path.is_none())
+            .map(|open| &open.file)
+            .or_else(|| {
+                self.directories
+                    .values()
+                    .find(|open| open.ino == ino)
+                    .map(|open| &open.file)
+            })
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?
+            .metadata()
     }
 }
 
@@ -467,11 +488,7 @@ impl Filesystem for DeltaFs {
             self.handles
                 .lock()
                 .expect("handle table poisoned")
-                .files
-                .values()
-                .find(|open| open.ino == ino && open.mutation_path.is_none())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
-                .and_then(|open| open.file.metadata())
+                .metadata_by_inode(ino)
                 .and_then(|metadata| file_attr(ino, &metadata))
         };
         match result {
@@ -970,7 +987,7 @@ impl Filesystem for DeltaFs {
                 .handles
                 .lock()
                 .expect("handle table poisoned")
-                .insert_directory(directory, entries))
+                .insert_directory(directory, ino, entries))
         });
         match result {
             Ok(handle) => reply.opened(handle, FopenFlags::FOPEN_CACHE_DIR),
@@ -1232,6 +1249,7 @@ pub fn mount(
     mountpoint: &Path,
     state_dir: &Path,
     options: EngineOptions,
+    allow_other: bool,
 ) -> Result<()> {
     let source = source.canonicalize()?;
     let engine = if state_dir.join("session.json").exists() {
@@ -1239,7 +1257,13 @@ pub fn mount(
     } else {
         StateEngine::create(&source, state_dir, options)?
     };
-    spawn_engine(&source, mountpoint, Arc::new(Mutex::new(engine)))?.wait()?;
+    spawn_engine(
+        &source,
+        mountpoint,
+        Arc::new(Mutex::new(engine)),
+        allow_other,
+    )?
+    .wait()?;
     Ok(())
 }
 
@@ -1247,6 +1271,7 @@ pub fn spawn_engine(
     source: &Path,
     mountpoint: &Path,
     engine: Arc<Mutex<StateEngine>>,
+    allow_other: bool,
 ) -> Result<MountedEngine> {
     let source = source
         .canonicalize()
@@ -1275,6 +1300,9 @@ pub fn spawn_engine(
         MountOption::NoSuid,
         MountOption::DefaultPermissions,
     ]);
+    if allow_other {
+        config.acl = fuser::SessionACL::All;
+    }
     config.n_threads = Some(4);
     #[cfg(target_os = "linux")]
     {
@@ -1536,5 +1564,21 @@ mod tests {
         let new = Path::new("root/new");
         assert_eq!(renamed_path(new, Path::new("")), new);
         assert_eq!(renamed_path(new, Path::new("child")), new.join("child"));
+    }
+
+    #[test]
+    fn overwritten_open_directory_remains_addressable_by_inode() {
+        let root = tempdir().unwrap();
+        let source = root.path().join("source");
+        let target = root.path().join("target");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&target).unwrap();
+        let mut handles = HandleTable::new();
+        let ino = INodeNo::ROOT;
+        handles.insert_directory(File::open(&target).unwrap(), ino, Vec::new());
+
+        fs::rename(&source, &target).unwrap();
+
+        assert!(handles.metadata_by_inode(ino).unwrap().file_type().is_dir());
     }
 }

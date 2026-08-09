@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+set -o pipefail
+/bin/df "$@" | sed -e 's/[[:space:]]fuse\.deltafs[[:space:]]/ fuse /'
+

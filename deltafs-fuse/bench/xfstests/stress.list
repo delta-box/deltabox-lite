@@ -1,0 +1,7 @@
+# These cases perform large metadata or randomized operation sequences.
+generic/006
+generic/007
+generic/013
+generic/070
+generic/074
+generic/075
