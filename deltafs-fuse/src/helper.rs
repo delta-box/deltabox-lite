@@ -19,6 +19,7 @@ pub struct Config {
     pub token_file: PathBuf,
     pub ready_file: PathBuf,
     pub quota_bytes: u64,
+    pub reclaim_dir: Option<PathBuf>,
 }
 
 pub fn run(config: Config) -> Result<()> {
@@ -37,6 +38,9 @@ pub fn run(config: Config) -> Result<()> {
         )?
     };
     remove_async(engine.prepare_gc()?);
+    if let Some(directory) = &config.reclaim_dir {
+        remove_async(children(directory)?);
+    }
     let engine = Arc::new(Mutex::new(engine));
     let mounted = passthrough::spawn_engine(&config.source, &config.mountpoint, engine.clone())?;
 
@@ -54,7 +58,13 @@ pub fn run(config: Config) -> Result<()> {
     let mut running = true;
     while running {
         let (stream, _) = listener.accept()?;
-        running = handle(stream, &token, &engine, &mounted)?;
+        running = handle(
+            stream,
+            &token,
+            &engine,
+            &mounted,
+            config.reclaim_dir.as_deref(),
+        )?;
     }
 
     let _ = fs::remove_file(&config.ready_file);
@@ -68,6 +78,7 @@ fn handle(
     token: &str,
     engine: &Arc<Mutex<StateEngine>>,
     mounted: &passthrough::MountedEngine,
+    reclaim_dir: Option<&Path>,
 ) -> Result<bool> {
     let Some(request) = authenticated_request(&mut stream, token)? else {
         return Ok(true);
@@ -121,6 +132,12 @@ fn handle(
                 mounted.invalidate()?;
             }
             (result, true)
+        }
+        Command::Reclaim => {
+            if let Some(directory) = reclaim_dir {
+                remove_async(children(directory)?);
+            }
+            (Ok(ResultValue::Reclaiming), true)
         }
         Command::Shutdown => (Ok(ResultValue::ShuttingDown), false),
     };
@@ -176,6 +193,15 @@ fn remove_async(paths: Vec<PathBuf>) {
             let _ = fs::remove_dir_all(path);
         }
     });
+}
+
+fn children(directory: &Path) -> Result<Vec<PathBuf>> {
+    if !directory.exists() {
+        return Ok(Vec::new());
+    }
+    fs::read_dir(directory)?
+        .map(|entry| entry.map(|entry| entry.path()).map_err(Into::into))
+        .collect()
 }
 
 fn write_response(stream: &mut UnixStream, response: Response) -> Result<()> {

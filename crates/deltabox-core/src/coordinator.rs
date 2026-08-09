@@ -13,7 +13,7 @@ pub struct SessionCoordinator {
     project: PathBuf,
     copy_private: DurableSessionManager,
     #[cfg(target_os = "linux")]
-    cbcow_through: crate::cbcow::Manager,
+    cbcow: crate::cbcow::Manager,
 }
 
 impl SessionCoordinator {
@@ -21,13 +21,13 @@ impl SessionCoordinator {
         let project = project.canonicalize()?;
         let copy_private = DurableSessionManager::new(&project, worker_bin.clone())?;
         #[cfg(target_os = "linux")]
-        let cbcow_through =
+        let cbcow =
             crate::cbcow::Manager::new(&project, worker_bin.unwrap_or(std::env::current_exe()?))?;
         Ok(Self {
             project,
             copy_private,
             #[cfg(target_os = "linux")]
-            cbcow_through,
+            cbcow,
         })
     }
 
@@ -42,7 +42,9 @@ impl SessionCoordinator {
             FilesystemMode::CopyPrivate => self
                 .copy_private
                 .start_with_filesystem(policy, FilesystemInfo::copy_private(requested, None)),
-            FilesystemMode::CbcowThrough => self.start_cbcow(policy, require_requested),
+            FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate => {
+                self.start_cbcow(policy, requested, require_requested)
+            }
         }
     }
 
@@ -50,7 +52,7 @@ impl SessionCoordinator {
         match self.route(session_id)? {
             Route::CopyPrivate(manager) => manager.status(session_id),
             #[cfg(target_os = "linux")]
-            Route::CbcowThrough(manager) => manager.status(session_id),
+            Route::Cbcow(manager) => manager.status(session_id),
         }
     }
 
@@ -58,7 +60,7 @@ impl SessionCoordinator {
         match self.route(session_id)? {
             Route::CopyPrivate(manager) => manager.stop(session_id),
             #[cfg(target_os = "linux")]
-            Route::CbcowThrough(manager) => manager.stop(session_id),
+            Route::Cbcow(manager) => manager.stop(session_id),
         }
     }
 
@@ -66,7 +68,7 @@ impl SessionCoordinator {
         match self.route(&params.session_id)? {
             Route::CopyPrivate(manager) => manager.exec(params),
             #[cfg(target_os = "linux")]
-            Route::CbcowThrough(manager) => manager.exec(params),
+            Route::Cbcow(manager) => manager.exec(params),
         }
     }
 
@@ -74,7 +76,7 @@ impl SessionCoordinator {
         match self.route(session_id)? {
             Route::CopyPrivate(manager) => manager.read_file(session_id, path),
             #[cfg(target_os = "linux")]
-            Route::CbcowThrough(manager) => manager.read_file(session_id, path),
+            Route::Cbcow(manager) => manager.read_file(session_id, path),
         }
     }
 
@@ -82,7 +84,7 @@ impl SessionCoordinator {
         match self.route(session_id)? {
             Route::CopyPrivate(manager) => manager.write_file(session_id, path, content),
             #[cfg(target_os = "linux")]
-            Route::CbcowThrough(manager) => manager.write_file(session_id, path, content),
+            Route::Cbcow(manager) => manager.write_file(session_id, path, content),
         }
     }
 
@@ -90,7 +92,7 @@ impl SessionCoordinator {
         match self.route(&params.session_id)? {
             Route::CopyPrivate(manager) => manager.checkpoint(params),
             #[cfg(target_os = "linux")]
-            Route::CbcowThrough(manager) => manager.checkpoint(params),
+            Route::Cbcow(manager) => manager.checkpoint(params),
         }
     }
 
@@ -98,7 +100,7 @@ impl SessionCoordinator {
         match self.route(&params.session_id)? {
             Route::CopyPrivate(manager) => manager.diff(params),
             #[cfg(target_os = "linux")]
-            Route::CbcowThrough(manager) => manager.diff(params),
+            Route::Cbcow(manager) => manager.diff(params),
         }
     }
 
@@ -106,7 +108,7 @@ impl SessionCoordinator {
         match self.route(&params.session_id)? {
             Route::CopyPrivate(manager) => manager.commit(params),
             #[cfg(target_os = "linux")]
-            Route::CbcowThrough(manager) => manager.commit(params),
+            Route::Cbcow(manager) => manager.commit(params),
         }
     }
 
@@ -114,7 +116,7 @@ impl SessionCoordinator {
         match self.route(&params.session_id)? {
             Route::CopyPrivate(manager) => manager.abort(params),
             #[cfg(target_os = "linux")]
-            Route::CbcowThrough(manager) => manager.abort(params),
+            Route::Cbcow(manager) => manager.abort(params),
         }
     }
 
@@ -122,7 +124,7 @@ impl SessionCoordinator {
         match self.route(&params.session_id)? {
             Route::CopyPrivate(manager) => manager.begin_review(params),
             #[cfg(target_os = "linux")]
-            Route::CbcowThrough(manager) => manager.begin_review(params),
+            Route::Cbcow(manager) => manager.begin_review(params),
         }
     }
 
@@ -130,7 +132,7 @@ impl SessionCoordinator {
         match self.route(session_id)? {
             Route::CopyPrivate(manager) => manager.review_status(session_id),
             #[cfg(target_os = "linux")]
-            Route::CbcowThrough(manager) => manager.review_status(session_id),
+            Route::Cbcow(manager) => manager.review_status(session_id),
         }
     }
 
@@ -138,7 +140,7 @@ impl SessionCoordinator {
         match self.route(session_id)? {
             Route::CopyPrivate(manager) => manager.review_diff(session_id),
             #[cfg(target_os = "linux")]
-            Route::CbcowThrough(manager) => manager.review_diff(session_id),
+            Route::Cbcow(manager) => manager.review_diff(session_id),
         }
     }
 
@@ -146,7 +148,7 @@ impl SessionCoordinator {
         match self.route(session_id)? {
             Route::CopyPrivate(manager) => manager.review_commit(session_id),
             #[cfg(target_os = "linux")]
-            Route::CbcowThrough(manager) => manager.review_commit(session_id),
+            Route::Cbcow(manager) => manager.review_commit(session_id),
         }
     }
 
@@ -154,7 +156,7 @@ impl SessionCoordinator {
         match self.route(session_id)? {
             Route::CopyPrivate(manager) => manager.review_abort(session_id),
             #[cfg(target_os = "linux")]
-            Route::CbcowThrough(manager) => manager.review_abort(session_id),
+            Route::Cbcow(manager) => manager.review_abort(session_id),
         }
     }
 
@@ -162,18 +164,23 @@ impl SessionCoordinator {
         match self.route(session_id)? {
             Route::CopyPrivate(manager) => manager.review_skip(session_id),
             #[cfg(target_os = "linux")]
-            Route::CbcowThrough(manager) => manager.review_skip(session_id),
+            Route::Cbcow(manager) => manager.review_skip(session_id),
         }
     }
 
     #[cfg(target_os = "linux")]
-    fn start_cbcow(&self, policy: Option<&Path>, required: bool) -> Result<SessionInfo> {
+    fn start_cbcow(
+        &self,
+        policy: Option<&Path>,
+        requested: FilesystemMode,
+        required: bool,
+    ) -> Result<SessionInfo> {
         let report = deltafs_fuse::doctor::inspect();
         if report.mount_ready {
-            match self.cbcow_through.start(policy) {
+            match self.cbcow.start(policy, requested) {
                 Ok(info) => return Ok(info),
                 Err(Error::FilesystemUnavailable(reason)) if !required => {
-                    return self.start_fallback(policy, reason)
+                    return self.start_fallback(policy, requested, reason)
                 }
                 Err(error) => return Err(error),
             }
@@ -182,22 +189,32 @@ impl SessionCoordinator {
         if required {
             return Err(Error::Unsupported(reason));
         }
-        self.start_fallback(policy, reason)
+        self.start_fallback(policy, requested, reason)
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn start_cbcow(&self, policy: Option<&Path>, required: bool) -> Result<SessionInfo> {
-        let reason = "cbcow-through is unavailable on this platform".to_string();
+    fn start_cbcow(
+        &self,
+        policy: Option<&Path>,
+        requested: FilesystemMode,
+        required: bool,
+    ) -> Result<SessionInfo> {
+        let reason = format!("{requested:?} is unavailable on this platform");
         if required {
             return Err(Error::Unsupported(reason));
         }
-        self.start_fallback(policy, reason)
+        self.start_fallback(policy, requested, reason)
     }
 
-    fn start_fallback(&self, policy: Option<&Path>, reason: String) -> Result<SessionInfo> {
+    fn start_fallback(
+        &self,
+        policy: Option<&Path>,
+        requested: FilesystemMode,
+        reason: String,
+    ) -> Result<SessionInfo> {
         self.copy_private.start_with_filesystem(
             policy,
-            FilesystemInfo::copy_private(FilesystemMode::CbcowThrough, Some(reason)),
+            FilesystemInfo::copy_private(requested, Some(reason)),
         )
     }
 
@@ -217,10 +234,12 @@ impl SessionCoordinator {
         match meta.filesystem.resolved_fs_mode {
             FilesystemMode::CopyPrivate => Ok(Route::CopyPrivate(&self.copy_private)),
             #[cfg(target_os = "linux")]
-            FilesystemMode::CbcowThrough => Ok(Route::CbcowThrough(&self.cbcow_through)),
+            FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate => {
+                Ok(Route::Cbcow(&self.cbcow))
+            }
             #[cfg(not(target_os = "linux"))]
-            FilesystemMode::CbcowThrough => Err(Error::Unsupported(
-                "this cbcow-through session requires Linux".into(),
+            FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate => Err(Error::Unsupported(
+                "this CB-CoW session requires Linux".into(),
             )),
         }
     }
@@ -229,7 +248,7 @@ impl SessionCoordinator {
 enum Route<'a> {
     CopyPrivate(&'a DurableSessionManager),
     #[cfg(target_os = "linux")]
-    CbcowThrough(&'a crate::cbcow::Manager),
+    Cbcow(&'a crate::cbcow::Manager),
 }
 
 fn default_mode() -> FilesystemMode {

@@ -242,6 +242,8 @@ struct FsHelperArgs {
     ready_file: PathBuf,
     #[arg(long)]
     quota_bytes: u64,
+    #[arg(long)]
+    reclaim_dir: Option<PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -260,7 +262,7 @@ fn main() -> anyhow::Result<()> {
                     );
                 } else if let Some(reason) = &info.filesystem.fallback_reason {
                     eprintln!(
-                        "deltabox: cbcow-through is unavailable; using copy-private: {reason}"
+                        "deltabox: requested filesystem is unavailable; using copy-private: {reason}"
                     );
                 }
             }
@@ -425,6 +427,7 @@ fn main() -> anyhow::Result<()> {
                 token_file: args.token_file,
                 ready_file: args.ready_file,
                 quota_bytes: args.quota_bytes,
+                reclaim_dir: args.reclaim_dir,
             })?;
         }
         Command::Serve => {
@@ -472,8 +475,9 @@ fn split_env(s: &str) -> anyhow::Result<(String, String)> {
 fn parse_filesystem_mode(value: &str) -> Result<FilesystemMode, String> {
     match value {
         "cbcow-through" => Ok(FilesystemMode::CbcowThrough),
+        "cbcow-private" => Ok(FilesystemMode::CbcowPrivate),
         "copy-private" => Ok(FilesystemMode::CopyPrivate),
-        _ => Err("expected cbcow-through or copy-private".into()),
+        _ => Err("expected cbcow-through, cbcow-private, or copy-private".into()),
     }
 }
 

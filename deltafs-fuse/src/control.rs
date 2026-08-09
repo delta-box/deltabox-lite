@@ -21,6 +21,7 @@ pub enum Command {
     Diff { from: Option<u64> },
     Commit { target: Option<u64> },
     Abort { target: Option<u64> },
+    Reclaim,
     Shutdown,
 }
 
@@ -41,6 +42,7 @@ pub enum ResultValue {
     Diff(Vec<Change>),
     Committed(Checkpoint),
     Aborted,
+    Reclaiming,
     ShuttingDown,
 }
 

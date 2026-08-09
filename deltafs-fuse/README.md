@@ -13,7 +13,7 @@ contains:
 The mounted view reads and writes the ordinary source tree. Before a routed
 mutation destroys state, the engine records the minimum undo data required for
 rollback. Commit accepts the current source tree and retires old undo epochs.
-The journal contract targets process crashes; power-loss durability is not
+The journal design targets process crashes; power-loss durability is not
 provided.
 
 ## Build

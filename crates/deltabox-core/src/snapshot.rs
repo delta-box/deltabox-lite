@@ -171,6 +171,9 @@ pub fn clone_or_copy_file(src: &Path, dst: &Path) -> Result<u64> {
             return Ok(std::fs::metadata(dst)?.len());
         }
         std::fs::remove_file(dst)?;
+        if let Some(copied) = copy_sparse_file(src, dst)? {
+            return Ok(copied);
+        }
     }
     let mut source = File::open(src)?;
     let mut target = OpenOptions::new()
@@ -179,6 +182,48 @@ pub fn clone_or_copy_file(src: &Path, dst: &Path) -> Result<u64> {
         .truncate(true)
         .open(dst)?;
     Ok(copy(&mut source, &mut target)?)
+}
+
+#[cfg(target_os = "linux")]
+fn copy_sparse_file(src: &Path, dst: &Path) -> Result<Option<u64>> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::FileExt;
+
+    let source = File::open(src)?;
+    let length = source.metadata()?.len();
+    let target = OpenOptions::new().write(true).create_new(true).open(dst)?;
+    target.set_len(length)?;
+    let mut offset = 0_u64;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    while offset < length {
+        let data = unsafe { libc::lseek(source.as_raw_fd(), offset as i64, libc::SEEK_DATA) };
+        if data < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ENXIO) {
+                break;
+            }
+            if error.raw_os_error() == Some(libc::EINVAL) {
+                drop(target);
+                std::fs::remove_file(dst)?;
+                return Ok(None);
+            }
+            return Err(error.into());
+        }
+        let hole = unsafe { libc::lseek(source.as_raw_fd(), data, libc::SEEK_HOLE) };
+        if hole < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let mut position = data as u64;
+        let end = (hole as u64).min(length);
+        while position < end {
+            let count = buffer.len().min((end - position) as usize);
+            source.read_exact_at(&mut buffer[..count], position)?;
+            target.write_all_at(&buffer[..count], position)?;
+            position += count as u64;
+        }
+        offset = end;
+    }
+    Ok(Some(length))
 }
 
 #[cfg(target_os = "macos")]
@@ -435,6 +480,23 @@ mod tests {
             std::fs::read_to_string(dst.path().join("f.txt")).unwrap(),
             "x"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn clone_or_copy_preserves_sparse_extents() {
+        use std::os::unix::fs::{FileExt, MetadataExt};
+
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let destination = directory.path().join("destination");
+        let file = File::create(&source).unwrap();
+        file.set_len(16 * 1024 * 1024).unwrap();
+        file.write_all_at(b"tail", 16 * 1024 * 1024 - 4).unwrap();
+        clone_or_copy_file(&source, &destination).unwrap();
+        let metadata = std::fs::metadata(destination).unwrap();
+        assert_eq!(metadata.len(), 16 * 1024 * 1024);
+        assert!(metadata.blocks() * 512 < metadata.len());
     }
 
     #[test]

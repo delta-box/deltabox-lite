@@ -17,6 +17,8 @@ similar.workspace = true
 walkdir = "2"
 base64 = "0.22"
 libc.workspace = true
+sha2 = "0.10"
+xattr = "1"
 
 [dev-dependencies]
 tempfile.workspace = true

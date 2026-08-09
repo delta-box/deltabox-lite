@@ -15,6 +15,8 @@ pub mod error;
 pub mod journal;
 pub mod pathmap;
 pub mod policy;
+#[cfg(target_os = "linux")]
+mod private_publish;
 pub mod protocol;
 pub mod server;
 pub mod session;

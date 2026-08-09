@@ -207,6 +207,7 @@ pub struct SessionInfo {
 #[serde(rename_all = "kebab-case")]
 pub enum FilesystemMode {
     CbcowThrough,
+    CbcowPrivate,
     #[default]
     CopyPrivate,
 }
@@ -267,6 +268,24 @@ impl FilesystemInfo {
             fuse_provider: Some("linux-fuse3".into()),
             fallback_reason: None,
             rollback_guarantee: "fuse-routed-writes-only".into(),
+            tainted: false,
+            mountpoint: Some(mountpoint),
+            helper_pid: Some(helper_pid),
+            helper_restarts: restarts,
+            mount_namespace: false,
+        }
+    }
+
+    pub fn cbcow_private(mountpoint: PathBuf, helper_pid: u32, restarts: u64) -> Self {
+        Self {
+            requested_fs_mode: FilesystemMode::CbcowPrivate,
+            resolved_fs_mode: FilesystemMode::CbcowPrivate,
+            host_visibility: "on-commit".into(),
+            durability: "process-crash".into(),
+            isolation: platform_isolation().into(),
+            fuse_provider: Some("linux-fuse3".into()),
+            fallback_reason: None,
+            rollback_guarantee: "private-live-tree".into(),
             tainted: false,
             mountpoint: Some(mountpoint),
             helper_pid: Some(helper_pid),
@@ -391,6 +410,13 @@ mod tests {
         assert_eq!(value["durability"], "process-crash");
         assert_eq!(value["helper_restarts"], 3);
         assert_eq!(value["mount_namespace"], false);
+
+        let private = FilesystemInfo::cbcow_private("/run/private".into(), 43, 1);
+        let value = serde_json::to_value(private).unwrap();
+        assert_eq!(value["requested_fs_mode"], "cbcow-private");
+        assert_eq!(value["resolved_fs_mode"], "cbcow-private");
+        assert_eq!(value["host_visibility"], "on-commit");
+        assert_eq!(value["rollback_guarantee"], "private-live-tree");
     }
 
     #[test]

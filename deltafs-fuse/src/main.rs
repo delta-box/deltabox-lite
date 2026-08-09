@@ -57,6 +57,8 @@ struct ServeArgs {
     ready_file: PathBuf,
     #[arg(long, default_value_t = deltafs_fuse::engine::DEFAULT_QUOTA_BYTES)]
     quota_bytes: u64,
+    #[arg(long)]
+    reclaim_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -89,6 +91,7 @@ enum ControlSubcommand {
         #[arg(long)]
         target: Option<u64>,
     },
+    Reclaim,
     Shutdown,
 }
 
@@ -101,6 +104,7 @@ impl From<ControlSubcommand> for ControlCommand {
             ControlSubcommand::Diff { from } => Self::Diff { from },
             ControlSubcommand::Commit { target } => Self::Commit { target },
             ControlSubcommand::Abort { target } => Self::Abort { target },
+            ControlSubcommand::Reclaim => Self::Reclaim,
             ControlSubcommand::Shutdown => Self::Shutdown,
         }
     }
@@ -153,6 +157,7 @@ fn serve(args: ServeArgs) -> Result<()> {
         token_file: args.token_file,
         ready_file: args.ready_file,
         quota_bytes: args.quota_bytes,
+        reclaim_dir: args.reclaim_dir,
     })
 }
 

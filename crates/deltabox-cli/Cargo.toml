@@ -20,6 +20,7 @@ base64 = "0.22"
 
 [dev-dependencies]
 tempfile.workspace = true
+xattr = "1"
 libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

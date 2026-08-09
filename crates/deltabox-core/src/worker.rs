@@ -201,7 +201,9 @@ fn run_exec(root: &Path, runtime: &Path, exec: &WorkerExec) -> Result<WorkerExec
     }
 
     let start = now_ms();
-    let mut child = cmd.spawn()?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|error| Error::Backend(format!("exec spawn failed: {error}")))?;
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
     let err_thread = std::thread::spawn(move || read_capped(stderr));
@@ -209,7 +211,15 @@ fn run_exec(root: &Path, runtime: &Path, exec: &WorkerExec) -> Result<WorkerExec
     let (err_text, err_trunc) = err_thread
         .join()
         .map_err(|_| Error::Backend("output thread join failed".into()))?;
-    let status = child.wait()?;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| Error::Backend(format!("exec wait failed: {error}")))?
+        {
+            break status;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
     Ok(WorkerExecResult {
         exit_code: status.code(),
         stdout: out_text,

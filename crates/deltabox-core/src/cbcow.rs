@@ -7,6 +7,10 @@ use crate::error::{Error, Result};
 use crate::journal::{Journal, JournalEntry, JournalKind};
 use crate::pathmap::PathMapper;
 use crate::policy::Policy;
+use crate::private_publish::{
+    materialize, retire_orphans, AcceptedIndex, Publication, PublicationPhase, ACCEPTED_INDEX,
+    LIVE_DIR, PUBLISH_DIR, RETIRED_DIR,
+};
 use crate::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
     CommitResult, DiffParams, DiffResult, ExecParams, ExecRequest, ExecResult, FilesystemInfo,
@@ -38,6 +42,10 @@ const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MountRecord {
+    #[serde(default)]
+    source: PathBuf,
+    #[serde(default = "default_record_mode")]
+    mode: crate::protocol::FilesystemMode,
     mountpoint: PathBuf,
     state_dir: PathBuf,
     runtime_dir: PathBuf,
@@ -48,6 +56,8 @@ struct MountRecord {
     helper_start_ticks: u64,
     restarts: u64,
     quota_bytes: u64,
+    #[serde(default)]
+    reclaim_dir: PathBuf,
 }
 
 pub struct Manager {
@@ -68,7 +78,11 @@ impl Manager {
         })
     }
 
-    pub fn start(&self, policy_path: Option<&Path>) -> Result<SessionInfo> {
+    pub fn start(
+        &self,
+        policy_path: Option<&Path>,
+        mode: crate::protocol::FilesystemMode,
+    ) -> Result<SessionInfo> {
         let _project_lock = Lock::acquire(&self.root.join("cbcow.lock"))?;
         self.require_available_project()?;
         let policy_path = resolve_policy(&self.project, policy_path)?;
@@ -82,6 +96,18 @@ impl Manager {
         let session_id = Uuid::new_v4().to_string();
         let store = self.store(&session_id);
         fs::create_dir_all(&store)?;
+        let source = match mode {
+            crate::protocol::FilesystemMode::CbcowThrough => self.project.clone(),
+            crate::protocol::FilesystemMode::CbcowPrivate => {
+                let live = store.join(LIVE_DIR);
+                let accepted = materialize(&self.project, &live)?;
+                AcceptedIndex::create(&store.join(ACCEPTED_INDEX), accepted)?;
+                live
+            }
+            crate::protocol::FilesystemMode::CopyPrivate => {
+                return Err(Error::Backend("invalid CB-CoW mode".into()))
+            }
+        };
         save_json(&store.join(DENY_PATHS), &deny_paths)?;
         let state_root = state_base()?.join(&session_id);
         let runtime_dir = runtime_base().join(&session_id);
@@ -98,6 +124,8 @@ impl Manager {
         )?;
 
         let mut record = MountRecord {
+            source,
+            mode,
             mountpoint,
             state_dir: state_root.join("engine"),
             socket: runtime_dir.join("control.sock"),
@@ -108,6 +136,7 @@ impl Manager {
             helper_start_ticks: 0,
             restarts: 0,
             quota_bytes,
+            reclaim_dir: store.join(PUBLISH_DIR).join(RETIRED_DIR),
         };
         save_json(&store.join(MOUNT_RECORD), &record)?;
         if let Err(error) = self.spawn_helper(&mut record) {
@@ -119,11 +148,7 @@ impl Manager {
             };
         }
 
-        let filesystem = FilesystemInfo::cbcow_through(
-            record.mountpoint.clone(),
-            record.helper_pid,
-            record.restarts,
-        );
+        let filesystem = filesystem_info(&record);
         let meta = SessionMeta {
             session_id: session_id.clone(),
             project: self.project.clone(),
@@ -189,11 +214,7 @@ impl Manager {
             status: meta.status,
             checkpoint_count: status.checkpoints.len().saturating_sub(1),
             pending_changes: status.touched_paths,
-            filesystem: FilesystemInfo::cbcow_through(
-                record.mountpoint,
-                record.helper_pid,
-                record.restarts,
-            ),
+            filesystem: filesystem_info(&record),
         })
     }
 
@@ -217,11 +238,7 @@ impl Manager {
             wait_unmounted(&record.mountpoint)?;
         }
         meta.status = SessionStatus::Stopped;
-        meta.filesystem = FilesystemInfo::cbcow_through(
-            record.mountpoint.clone(),
-            record.helper_pid,
-            record.restarts,
-        );
+        meta.filesystem = filesystem_info(&record);
         meta.filesystem.helper_pid = None;
         self.save_meta(&meta)?;
         if fs::read_to_string(self.root.join(PROJECT_LEASE))
@@ -259,10 +276,15 @@ impl Manager {
             .expect("engine state has a session root")
             .to_path_buf();
         deny_paths.push(state_root.clone());
+        deny_paths.push(record.socket.clone());
         policy
             .filesystem
             .deny
             .push(state_root.to_string_lossy().into_owned());
+        policy
+            .filesystem
+            .deny
+            .push(record.socket.to_string_lossy().into_owned());
         let request = ExecRequest {
             argv: params
                 .argv
@@ -433,12 +455,72 @@ impl Manager {
     fn commit_locked(&self, params: CommitParams) -> Result<CommitResult> {
         self.running_meta(&params.session_id)?;
         let record = self.ensure_helper(&params.session_id)?;
+        if record.mode == crate::protocol::FilesystemMode::CbcowPrivate {
+            return self.commit_private(params, &record);
+        }
         let applied = self.pending(&record)?;
         let target = parse_checkpoint(params.checkpoint.as_deref())?;
         let checkpoint = match self.request(&record, ControlCommand::Commit { target })? {
             ResultValue::Committed(checkpoint) => checkpoint,
             _ => return Err(Error::Backend("unexpected commit response".into())),
         };
+        self.save_review(&params.session_id, None)?;
+        self.append(&params.session_id, JournalKind::Commit, None)?;
+        Ok(CommitResult {
+            checkpoint_id: checkpoint.id.to_string(),
+            applied,
+        })
+    }
+
+    fn commit_private(&self, params: CommitParams, record: &MountRecord) -> Result<CommitResult> {
+        let store = self.store(&params.session_id);
+        let target = parse_checkpoint(params.checkpoint.as_deref())?;
+        if target.is_some() {
+            match self.request(record, ControlCommand::Abort { target })? {
+                ResultValue::Aborted => {}
+                _ => return Err(Error::Backend("unexpected abort response".into())),
+            }
+        }
+        let changes = self.engine_changes(record, None)?;
+        if changes.is_empty() {
+            let checkpoint = match self.request(record, ControlCommand::Commit { target: None })? {
+                ResultValue::Committed(checkpoint) => checkpoint,
+                _ => return Err(Error::Backend("unexpected commit response".into())),
+            };
+            self.save_review(&params.session_id, None)?;
+            self.append(&params.session_id, JournalKind::Commit, None)?;
+            return Ok(CommitResult {
+                checkpoint_id: checkpoint.id.to_string(),
+                applied: 0,
+            });
+        }
+        let mut accepted = AcceptedIndex::open(&store.join(ACCEPTED_INDEX))?;
+        let status = self.engine_status(record)?;
+        let mut publication = Publication::prepare(
+            &store,
+            &self.project,
+            &record.source,
+            &accepted,
+            &changes,
+            status.accepted_checkpoint,
+        )?;
+        maybe_crash("private_publish_prepared");
+        publication.apply(&store, &self.project)?;
+        publication.phase = PublicationPhase::HostApplied;
+        publication.save(&store)?;
+        maybe_crash("private_publish_host_applied");
+
+        let checkpoint = match self.request(record, ControlCommand::Commit { target: None })? {
+            ResultValue::Committed(checkpoint) => checkpoint,
+            _ => return Err(Error::Backend("unexpected commit response".into())),
+        };
+        publication.phase = PublicationPhase::EngineCommitted;
+        publication.save(&store)?;
+        maybe_crash("private_publish_engine_committed");
+        accepted.refresh(&self.project, &publication.changes)?;
+        maybe_crash("private_publish_state_updated");
+        let applied = publication.changes.len();
+        self.finish_publication(&store, record, &publication)?;
         self.save_review(&params.session_id, None)?;
         self.append(&params.session_id, JournalKind::Commit, None)?;
         Ok(CommitResult {
@@ -539,6 +621,7 @@ impl Manager {
     fn ensure_helper(&self, session_id: &str) -> Result<MountRecord> {
         let mut record = self.load_record(session_id)?;
         if self.request(&record, ControlCommand::Ping).is_ok() {
+            self.recover_publication(session_id, &record)?;
             return Ok(record);
         }
         self.stop_helper(&record);
@@ -551,6 +634,7 @@ impl Manager {
         self.spawn_helper(&mut record)?;
         save_json(&self.store(session_id).join(MOUNT_RECORD), &record)?;
         self.append(session_id, JournalKind::Recovery, None)?;
+        self.recover_publication(session_id, &record)?;
         Ok(record)
     }
 
@@ -560,10 +644,15 @@ impl Manager {
             .create(true)
             .append(true)
             .open(record.state_dir.parent().unwrap().join("helper.log"))?;
-        let child = Command::new(&self.helper_bin)
+        let mut command = Command::new(&self.helper_bin);
+        command
             .arg("fs-helper")
             .arg("--source")
-            .arg(&self.project)
+            .arg(if record.source.as_os_str().is_empty() {
+                &self.project
+            } else {
+                &record.source
+            })
             .arg("--mountpoint")
             .arg(&record.mountpoint)
             .arg("--state-dir")
@@ -575,7 +664,11 @@ impl Manager {
             .arg("--ready-file")
             .arg(&record.ready_file)
             .arg("--quota-bytes")
-            .arg(record.quota_bytes.to_string())
+            .arg(record.quota_bytes.to_string());
+        if !record.reclaim_dir.as_os_str().is_empty() {
+            command.arg("--reclaim-dir").arg(&record.reclaim_dir);
+        }
+        let child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(log))
@@ -629,6 +722,85 @@ impl Manager {
             _ => Err(Error::Backend(
                 "unexpected filesystem status response".into(),
             )),
+        }
+    }
+
+    fn engine_status(&self, record: &MountRecord) -> Result<deltafs_fuse::engine::EngineStatus> {
+        match self.request(record, ControlCommand::Status)? {
+            ResultValue::Status(status) => Ok(status),
+            _ => Err(Error::Backend(
+                "unexpected filesystem status response".into(),
+            )),
+        }
+    }
+
+    fn engine_changes(
+        &self,
+        record: &MountRecord,
+        from: Option<u64>,
+    ) -> Result<Vec<deltafs_fuse::engine::Change>> {
+        match self.request(record, ControlCommand::Diff { from })? {
+            ResultValue::Diff(changes) => Ok(changes),
+            _ => Err(Error::Backend("unexpected diff response".into())),
+        }
+    }
+
+    fn recover_publication(&self, session_id: &str, record: &MountRecord) -> Result<()> {
+        if record.mode != crate::protocol::FilesystemMode::CbcowPrivate {
+            return Ok(());
+        }
+        let store = self.store(session_id);
+        let Some(mut publication) = Publication::load(&store)? else {
+            if retire_orphans(&store)? {
+                match self.request(record, ControlCommand::Reclaim)? {
+                    ResultValue::Reclaiming => {}
+                    _ => return Err(Error::Backend("unexpected reclaim response".into())),
+                }
+            }
+            return Ok(());
+        };
+        match publication.phase {
+            PublicationPhase::Prepared => {
+                publication.restore(&store, &self.project)?;
+                let mut accepted = AcceptedIndex::open(&store.join(ACCEPTED_INDEX))?;
+                accepted.refresh(&self.project, &publication.changes)?;
+            }
+            PublicationPhase::HostApplied => {
+                let status = self.engine_status(record)?;
+                if status.accepted_checkpoint == publication.engine_accepted_checkpoint {
+                    match self.request(record, ControlCommand::Commit { target: None })? {
+                        ResultValue::Committed(_) => {}
+                        _ => return Err(Error::Backend("unexpected commit response".into())),
+                    }
+                }
+                publication.phase = PublicationPhase::EngineCommitted;
+                publication.save(&store)?;
+                let mut accepted = AcceptedIndex::open(&store.join(ACCEPTED_INDEX))?;
+                accepted.refresh(&self.project, &publication.changes)?;
+            }
+            PublicationPhase::EngineCommitted => {
+                let mut accepted = AcceptedIndex::open(&store.join(ACCEPTED_INDEX))?;
+                accepted.refresh(&self.project, &publication.changes)?;
+            }
+        }
+        self.finish_publication(&store, record, &publication)?;
+        self.append(
+            session_id,
+            JournalKind::Recovery,
+            Some(serde_json::json!({"publication_id": publication.id})),
+        )
+    }
+
+    fn finish_publication(
+        &self,
+        store: &Path,
+        record: &MountRecord,
+        publication: &Publication,
+    ) -> Result<()> {
+        publication.retire(store)?;
+        match self.request(record, ControlCommand::Reclaim)? {
+            ResultValue::Reclaiming => Ok(()),
+            _ => Err(Error::Backend("unexpected reclaim response".into())),
         }
     }
 
@@ -861,6 +1033,26 @@ fn parse_checkpoint(value: Option<&str>) -> Result<Option<u64>> {
         .transpose()
 }
 
+fn default_record_mode() -> crate::protocol::FilesystemMode {
+    crate::protocol::FilesystemMode::CbcowThrough
+}
+
+fn filesystem_info(record: &MountRecord) -> FilesystemInfo {
+    match record.mode {
+        crate::protocol::FilesystemMode::CbcowThrough => FilesystemInfo::cbcow_through(
+            record.mountpoint.clone(),
+            record.helper_pid,
+            record.restarts,
+        ),
+        crate::protocol::FilesystemMode::CbcowPrivate => FilesystemInfo::cbcow_private(
+            record.mountpoint.clone(),
+            record.helper_pid,
+            record.restarts,
+        ),
+        crate::protocol::FilesystemMode::CopyPrivate => unreachable!("CB-CoW mount record mode"),
+    }
+}
+
 fn relative_path(project: &Path, path: &Path) -> Result<PathBuf> {
     let relative = if path.is_absolute() {
         path.strip_prefix(project)
@@ -969,4 +1161,10 @@ fn is_mounted(mountpoint: &Path) -> bool {
                 .is_some_and(|path| path == target)
         })
     })
+}
+
+fn maybe_crash(point: &str) {
+    if cfg!(debug_assertions) && std::env::var("DELTABOX_TEST_CRASH_AT").as_deref() == Ok(point) {
+        std::process::abort();
+    }
 }

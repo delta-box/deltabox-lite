@@ -36,9 +36,9 @@ each response is one JSON object per line.
 | `review.abort` | `{session_id}` | `AbortResult` |
 | `review.skip` | `{session_id}` | `ActiveReview` |
 
-`fs_mode` accepts `cbcow-through` or `copy-private`. On Linux, omitting it
-requests `cbcow-through`; a clean startup failure may resolve to
-`copy-private`. Set `require_fs_mode: true` to reject fallback.
+`fs_mode` accepts `cbcow-through`, `cbcow-private`, or `copy-private`. On Linux,
+omitting it requests `cbcow-through`; a clean CB-CoW startup failure may resolve
+to `copy-private`. Set `require_fs_mode: true` to reject fallback.
 
 `SessionInfo` = `{session_id, project, started_at_ms, status, checkpoint_count,
 pending_changes, requested_fs_mode, resolved_fs_mode, host_visibility,
@@ -46,9 +46,10 @@ durability, isolation, fuse_provider, fallback_reason, rollback_guarantee,
 tainted, mountpoint?, helper_pid?, helper_restarts, mount_namespace}`.
 
 For `cbcow-through`, `host_visibility` is `immediate`: commit accepts the
-current host-visible state and abort reverts it. `copy-private` reports
-`on-commit`. The helper PID may change after automatic recovery while the
-session and its durable state remain valid.
+current host-visible state and abort reverts it. `cbcow-private` and
+`copy-private` report `on-commit`; the former uses a private DeltaFS `LIVE` tree
+and touched-path publication. The helper PID may change after automatic
+recovery while the session and its durable state remain valid.
 
 `ExecResult` = `{exit_code, stdout, stderr, duration_ms, truncated}`.
 
@@ -60,7 +61,7 @@ the command that produced them.
 `{path, kind: added|modified|deleted, old_size, new_size, is_binary,
 added_lines, removed_lines, text_diff?}`.
 
-This is the stable contract for adapters (`pi-deltabox`, MCP server, wrappers).
+This is the stable protocol for adapters (`pi-deltabox`, MCP server, wrappers).
 The same operations are available as independent CLI commands; `serve` is an
 optional transport over the same durable state and may be restarted between
 requests.

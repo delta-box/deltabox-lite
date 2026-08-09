@@ -36,9 +36,11 @@ The JSON-RPC protocol in action — sandboxed edits, diff, abort, redo, commit:
 - **Service-free durable sessions** - Linux starts one session-scoped
   filesystem helper automatically. Durable files remain authoritative across
   independent CLI processes; no global daemon is required.
-- **Two filesystem contracts** - `cbcow-through` makes Linux changes visible
-  immediately and makes commit an O(1) acceptance operation. `copy-private`
-  keeps the host unchanged until commit and is the compatibility fallback.
+- **Three filesystem modes** - `cbcow-through` makes Linux changes visible
+  immediately and makes commit an O(1) acceptance operation. `cbcow-private`
+  runs the same DeltaFS engine over a private reflink/copy tree and publishes
+  only touched paths at commit. `copy-private` remains the compatibility
+  fallback.
 - **Diff / commit / abort** - unified text diffs, binary and large-file
   markers, and a linear checkpoint chain. Abort restores the selected
   checkpoint; commit accepts the current state.
@@ -59,6 +61,10 @@ flowchart LR
     C --> T[Linux cbcow-through]
     T --> H[Session-scoped DeltaFS helper]
     H --> P[(Host-visible LIVE tree)]
+    C --> V[Linux cbcow-private]
+    V --> F[Session-scoped DeltaFS helper]
+    F --> L[(Private LIVE tree)]
+    L -->|touched-path commit| P
     C --> R[copy-private fallback]
     R --> S[(Private working tree)]
     S -->|commit| P
@@ -68,8 +74,10 @@ flowchart LR
 On Linux with FUSE available, `session start` launches a helper that mounts the
 host project through the commit-biased state engine. Writes update the host
 tree through DeltaFS after recording rollback data; commit accepts the current
-state and abort replays undo records. In `copy-private`, each command updates a
-durable private working tree and commit publishes it to the project.
+state and abort replays undo records. `cbcow-private` preserves the same fast
+per-command path while keeping its `LIVE` tree hidden from the host until a
+conflict-checked commit. In `copy-private`, each command updates a durable
+private working tree and commit publishes it to the project.
 `deltabox serve` is only an optional JSON-RPC transport and is never the source
 of session truth. See [session semantics](docs/session-semantics.md).
 
@@ -93,11 +101,12 @@ deltabox commit <id> --project /abs/path/my-project
 ```
 
 Linux requests `cbcow-through` by default and visibly falls back to
-`copy-private` if FUSE is unavailable. Select the contract explicitly when a
+`copy-private` if FUSE is unavailable. Select the mode explicitly when a
 workflow requires it:
 
 ```bash
 deltabox session start /abs/path/my-project --fs-mode copy-private
+deltabox session start /abs/path/my-project --fs-mode cbcow-private --require-fs-mode
 deltabox session start /abs/path/my-project --fs-mode cbcow-through --require-fs-mode
 ```
 
@@ -190,7 +199,7 @@ creation and metadata validation still scale with the number of files.
 - `deltafs-fuse` — the standalone commit-biased state engine, FUSE adapter,
   helper, and local control protocol.
 - `examples/rpc-demo.mjs` — a runnable JSON-RPC demo.
-- `docs/protocol.md` — the stable JSON-RPC contract.
+- `docs/protocol.md` — the stable JSON-RPC protocol.
 - `docs/policy.md` — policy schema and enforcement boundaries.
 - `docs/macos.md` — macOS backend behavior and compatibility matrix.
 
