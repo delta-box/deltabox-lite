@@ -25,3 +25,6 @@ libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 deltafs-fuse = { workspace = true, features = ["fuse"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+deltafs-fuse.workspace = true

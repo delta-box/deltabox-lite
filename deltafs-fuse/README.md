@@ -9,6 +9,9 @@ contains:
 - a passthrough FUSE adapter backed directly by that state engine;
 - an authenticated Unix-socket control endpoint for checkpoint, diff, commit,
   abort, status, and shutdown operations.
+- a native macOS FSEvents adapter with persistent cursors, a restartable warm
+  event helper, synchronous boundaries, loss detection, and file-level event
+  delivery.
 
 The mounted view reads and writes the ordinary source tree. Before a routed
 mutation destroys state, the engine records the minimum undo data required for
@@ -24,14 +27,16 @@ Linux uses fuser's pure Rust mount implementation:
 cargo build --release --features fuse
 ```
 
-macOS requires a separately installed and approved macFUSE runtime. Deltabox
-does not install or approve macFUSE automatically:
+The Deltabox macOS provider uses APFS clones and FSEvents directly and does not
+require macFUSE. Building the optional standalone FUSE mount adapter requires a
+separately installed and approved macFUSE runtime:
 
 ```sh
 cargo build --release --features fuse
 ```
 
-Without a FUSE runtime, the platform preflight remains available:
+Platform preflight reports native-provider and optional mount readiness
+separately:
 
 ```sh
 cargo run -- doctor

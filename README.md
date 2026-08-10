@@ -17,8 +17,9 @@ Give agents a confined workspace with explicit diff, commit, and abort semantics
 deltabox-lite is a standalone sandbox runtime for AI coding agents. Agents keep
 full execution freedom inside a confined filesystem view, and every change
 they make can be **reviewed**, **committed**, or **aborted** - per task or per
-tool call. Linux defaults to a commit-biased FUSE view for low command latency;
-the private-copy mode keeps changes hidden from the host until commit.
+tool call. Linux defaults to a commit-biased FUSE view; macOS uses native APFS
+clones and FSEvents. Private modes keep changes hidden from the host until
+commit.
 
 Think of it as Git for agent sessions: less ceremony, more control, and no
 anxiety about binary or large files.
@@ -32,11 +33,12 @@ The JSON-RPC protocol in action — sandboxed edits, diff, abort, redo, commit:
 ## Highlights
 
 - **Native isolation, not a container** - Linux composes Sandlock/Landlock/
-  seccomp with DeltaFS FUSE; macOS uses Seatbelt plus APFS-cloned shadows.
-- **Service-free durable sessions** - Linux starts one session-scoped
-  filesystem helper automatically. Durable files remain authoritative across
-  independent CLI processes; no global daemon is required.
-- **Three filesystem modes** - `cbcow-through` makes Linux changes visible
+  seccomp with DeltaFS FUSE; macOS uses Seatbelt plus APFS clones and FSEvents.
+- **Service-free durable sessions** - Linux starts a session-scoped filesystem
+  helper and macOS starts a session-scoped event helper automatically. Durable
+  files remain authoritative across independent CLI processes; no global daemon
+  or manual service startup is required.
+- **Three filesystem modes** - `cbcow-through` makes changes visible
   immediately and makes commit an O(1) acceptance operation. `cbcow-private`
   runs the same DeltaFS engine over a private reflink/copy tree and publishes
   only touched paths at commit. `copy-private` remains the compatibility
@@ -65,6 +67,10 @@ flowchart LR
     V --> F[Session-scoped DeltaFS helper]
     F --> L[(Private LIVE tree)]
     L -->|touched-path commit| P
+    C --> M[macOS native APFS plus FSEvents]
+    M --> E[Session-scoped event helper]
+    E --> P
+    E --> L
     C --> R[copy-private fallback]
     R --> S[(Private working tree)]
     S -->|commit| P
@@ -78,6 +84,9 @@ state and abort replays undo records. `cbcow-private` preserves the same fast
 per-command path while keeping its `LIVE` tree hidden from the host until a
 conflict-checked commit. In `copy-private`, each command updates a durable
 private working tree and commit publishes it to the project.
+On macOS, the same modes use APFS-cloned state and a restartable FSEvents helper
+instead of a mount. The helper only keeps the event stream warm; persisted
+cursors and indexes remain authoritative.
 `deltabox serve` is only an optional JSON-RPC transport and is never the source
 of session truth. See [session semantics](docs/session-semantics.md).
 
@@ -100,9 +109,9 @@ deltabox diff <id> --project /abs/path/my-project
 deltabox commit <id> --project /abs/path/my-project
 ```
 
-Linux requests `cbcow-through` by default and visibly falls back to
-`copy-private` if FUSE is unavailable. Select the mode explicitly when a
-workflow requires it:
+Linux and macOS request `cbcow-through` by default and visibly fall back to
+`copy-private` if the native provider is unavailable. Select the mode
+explicitly when a workflow requires it:
 
 ```bash
 deltabox session start /abs/path/my-project --fs-mode copy-private
@@ -118,7 +127,12 @@ affected directories, and the acceptance marker are synchronized.
 `--group-commit-ms` lets concurrent mutations share an `APPLIED` journal
 barrier while preserving that per-operation success boundary.
 Strict mode requires `cbcow-through` or `cbcow-private`; startup fails instead
-of falling back to `copy-private` when the requested CB-CoW mount is unavailable.
+of falling back to `copy-private` when the requested provider is unavailable.
+On macOS, fast `cbcow-through` also assumes Deltabox is the exclusive project
+writer. Fast `exec` defers FSEvents accounting to the next state operation;
+strict mode closes a sentinel boundary before each result, detects external
+writes, and refuses an unsafe abort. Use `cbcow-private` when host isolation is
+required before commit.
 
 No service needs to be started first. To use the optional JSON-RPC transport:
 
@@ -182,24 +196,12 @@ one `cbcow-through` session.
 The no-op path does not scan or copy the project per command. Empty DeltaFS
 checkpoint and commit operations remain below 1 ms in the scaling benchmark.
 
-Measured on an Apple-silicon MacBook Air (macOS 14.6, APFS, release build).
-Each row reports the p50 of 30 interleaved no-op commands after three warmups
-over a pre-created project and session.
-
-| Runner | 10 files | 200 files | 1000 files |
-|---|---:|---:|---:|
-| service-free CLI (`copy-private`) | 88 ms | 142 ms | 333 ms |
-| optional `serve` | 84 ms | 138 ms | 324 ms |
-| Anthropic sandbox-runtime 0.0.70 | 137 ms | 137 ms | 137 ms |
-| Carderne sandbox-runtime 0.0.69 | 132 ms | 133 ms | 129 ms |
-| raw `sandbox-exec` | 10 ms | 10 ms | 10 ms |
-| plain shell | 3 ms | 3 ms | 3 ms |
-
-The raw Seatbelt row denies network but allows filesystem access, so it is a
-launch-overhead baseline rather than a sandbox with Deltabox semantics.
-Deltabox clones and validates a crash-recoverable candidate tree for every
-arbitrary command. APFS makes file contents copy-on-write, but directory entry
-creation and metadata validation still scale with the number of files.
+On macOS, the native provider materializes its APFS accepted base once at
+session start. Fast commands do not clone or scan the project per invocation;
+status, diff, checkpoint, commit, and abort close the FSEvents reconciliation
+boundary. Private mode additionally materializes a private APFS `LIVE` tree and
+therefore trades more startup and command-path work for pre-commit host
+isolation.
 
 ## Project layout
 

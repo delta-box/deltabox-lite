@@ -17,11 +17,10 @@ host visibility, rollback guarantee, helper state, and any fallback reason.
 | `copy-private` | The host project remains unchanged | Validates and publishes the private working diff | Restores the private working view |
 
 Linux requests `cbcow-through` by default when DeltaFS FUSE is mount-ready.
-If startup cannot establish a clean mounted session, Deltabox reports the
-reason and falls back to `copy-private`. `--require-fs-mode` converts that
-fallback into an error. Other supported platforms currently resolve to
-`copy-private`. Select `cbcow-private` on Linux when pre-commit host isolation
-is required without returning to per-command tree materialization.
+macOS requests the native APFS/FSEvents `cbcow-through` provider. If startup
+cannot establish the requested provider, Deltabox reports the reason and falls
+back to `copy-private`; `--require-fs-mode` converts that fallback into an
+error. Select `cbcow-private` when pre-commit host isolation is required.
 
 Independent CLI processes may execute, read, write, diff, commit, checkpoint,
 or abort the same session. `diff` compares the current view with the accepted
@@ -50,17 +49,27 @@ checkpoint chain to infer the rollback target.
 
 ## Process model
 
-Normal CLI operations are service-free and synchronous. A Linux CB-CoW session
-owns one automatically launched filesystem helper and FUSE mount; each `exec`
-still launches a short-lived confined process. The helper can be restarted from
-its journal and state files after process failure. `cbcow-through` mounts the
-host tree, while `cbcow-private` mounts a private reflink/copy materialization.
-`copy-private` uses a short-lived sandbox transaction and materializes its
-result into a durable private working view.
+Normal CLI operations are synchronous and require no prestarted service. A
+Linux CB-CoW session owns one automatically launched filesystem helper and FUSE
+mount; each `exec` still launches a short-lived confined process. The helper can
+be restarted from its journal and state files after process failure.
+`cbcow-through` mounts the host tree, while `cbcow-private` mounts a private
+reflink/copy materialization. `copy-private` uses a short-lived sandbox
+transaction and materializes its result into a durable private working view.
+
+On macOS, the session owns a small FSEvents helper so independent CLI processes
+reuse one warm stream. The helper holds only pending event candidates and can
+be recreated from the durable cursor and device identity after failure. Fast
+`exec` calls may leave event accounting queued in that helper; the next state
+operation closes a supervisor-only sentinel before it reads or changes session
+state. Strict `exec` closes the sentinel before returning. There is no mount.
 
 Live command processes, file descriptors, and shell state are not durable
-session state. A command must complete before its filesystem result becomes a
-completed transaction boundary.
+session state. On Linux and in strict macOS sessions, a command completes its
+filesystem transaction boundary before returning. Fast macOS `exec` returns
+after the child exits and defers event accounting to the next state operation;
+the persisted cursor remains behind until that synchronization, so helper or
+CLI failure replays rather than loses those events.
 
 `serve` may optimize transport or sandbox startup, but it uses the same on-disk
 state and remains restartable. It is never the source of truth. A failed worker
@@ -72,14 +81,17 @@ descriptors are not recoverable state.
 
 Only one mutating operation may own a session at a time. A per-session process
 lock serializes operations and stale locks are recoverable after process death.
-Only one active CB-CoW session may lease a project. Host writes during a
-`cbcow-through` session are unsupported because they bypass FUSE pre-image
-capture.
-`cbcow-private` and `copy-private` reject conflicting external project changes
-instead of silently overwriting them. The CB-CoW private mode uses strong
-content and metadata fingerprints for each touched path and its namespace
-parents; unrelated file-content edits outside those paths do not force a full
-tree scan at commit.
+Only one active CB-CoW session may lease a project. Host writes outside the
+coordinated command path during `cbcow-through` are unsupported. Fast macOS
+through mode uses this exclusive-writer contract to avoid an FSEvents sentinel
+wait on every `exec`; pending counts and aggregate storage-limit checks become
+synchronous at the next status, diff, or commit boundary. Strict macOS through
+mode detects historical external events, marks the session tainted, and refuses
+abort until the state is explicitly accepted. `cbcow-private` and
+`copy-private` reject conflicting external project changes instead of silently
+overwriting them. The CB-CoW private mode uses strong content and metadata
+fingerprints for each touched path and its namespace parents; unrelated
+file-content edits outside those paths do not force a full tree scan at commit.
 
 ## Crash recovery and storage
 
@@ -106,10 +118,10 @@ stable. Checkpoint, abort, and commit drain any pending group before publishing
 their result. Session status reports `durability: "strict"` and the configured
 `group_commit_ms`; fast sessions report `durability: "process-crash"`.
 Strict startup requires `cbcow-through` or `cbcow-private` and fails if the
-requested mount is unavailable. It never reports strict durability for a
+requested provider is unavailable. It never reports strict durability for a
 `copy-private` fallback.
 
-`cbcow-private` uses the same undo engine against private `LIVE`. Commit stages
+Linux `cbcow-private` uses the same undo engine against private `LIVE`. Commit stages
 only effective touched paths with `FICLONE` when supported, a sparse-aware copy
 fallback otherwise, and preserves hardlink groups and extended metadata. A
 publication marker and per-path backups make process-crash recovery converge
@@ -136,6 +148,11 @@ to ordinary copying when cloning is unavailable. Manifest, scan-index,
 registry, session, and
 review metadata updates use fsynced temporary files, atomic rename, and parent
 directory fsync. Boundary journal entries are fdatasynced.
+
+The macOS provider stores incremental path snapshots, tombstones, indexes, and
+transaction backups in its external state tree. A prepared commit restores the
+old base and host paths after process failure; once the accepted manifest names
+the transaction, recovery keeps the new accepted state and retires its backup.
 
 The default policy caps direct writes and aggregate pending storage. A Linux
 through session resolves existing deny-pattern matches once at session start

@@ -906,7 +906,9 @@ fn copy_metadata(source: &Path, destination: &Path) -> Result<()> {
     }
     for name in xattr::list(source)? {
         if let Some(value) = xattr::get(source, &name)? {
-            xattr::set(destination, &name, &value)?;
+            if xattr::get(destination, &name)?.as_deref() != Some(value.as_slice()) {
+                xattr::set(destination, &name, &value)?;
+            }
         }
     }
     set_times(

@@ -66,6 +66,22 @@ DELTAFS_MODE=strict DELTAFS_FIO_SIZE=1g \
 `FIO` selects the executable. `DELTAFS_FIO_SIZE`, `DELTAFS_FIO_RUNTIME`,
 `DELTAFS_FIO_JOBS`, and `DELTAFS_FIO_FILES` size the workloads.
 
+On macOS, fio can exercise the native APFS/FSEvents provider without a mount or
+macFUSE runtime:
+
+```sh
+brew install fio
+./deltafs-fuse/bench/run-macos-fio.sh
+DELTAFS_FS_MODE=cbcow-private DELTAFS_MODE=strict \
+  ./deltafs-fuse/bench/run-macos-fio.sh deltafs-fuse/bench/fio/metadata.fio
+```
+
+The runner creates a disposable APFS project and external state directory,
+requires the requested native mode, executes fio inside the Seatbelt sandbox,
+commits once so private-mode results are publishable, and copies JSON results
+out before cleanup. `DELTAFS_FIO_ALLOC_KB` defaults to 2048 so fio stays below
+the 4 MiB SysV shared-memory limit used by a default macOS installation.
+
 ## Filebench
 
 The runner uses the file-server, mail-server, and web-server personalities from
@@ -82,11 +98,19 @@ another installed workload directory. Filebench can fail during startup when
 Linux shared-memory limits are too small; follow the upstream Filebench guidance
 for the benchmark host instead of changing the filesystem.
 
+The pinned Filebench revision is a Linux gate. It does not build unmodified on
+current macOS because its large-file and C identifier compatibility checks are
+not portable. Use fio and the Deltabox compatibility suite for native macOS
+coverage; do not compare results from a locally patched Filebench fork as if
+they came from the maintained benchmark revision.
+
 ## xfstests
 
 xfstests expects root privileges and a set of test users. The runner mounts
 DeltaFS over a disposable directory and passes only `TEST_DEV`, `TEST_DIR`, and
 `FSTYP=fuse`. It deliberately omits every scratch setting:
+
+xfstests is Linux-only and is not a native macOS gate.
 
 ```sh
 sudo useradd -m fsgqa

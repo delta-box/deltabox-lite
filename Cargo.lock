@@ -384,6 +384,7 @@ name = "deltabox-core"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "bincode",
  "deltafs-fuse",
  "libc",
  "sandlock-core",
@@ -396,6 +397,7 @@ dependencies = [
  "tokio",
  "toml",
  "uuid",
+ "wait-timeout",
  "walkdir",
  "xattr",
 ]

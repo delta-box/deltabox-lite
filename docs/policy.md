@@ -99,5 +99,8 @@ direct-write limits are platform-neutral and remain fully enforced.
 
 `max_write_bytes` applies to one direct write request. `max_storage_bytes` is
 the aggregate size of regular files added or modified relative to the accepted
-baseline. It is checked after both direct writes and sandbox execs. Exceeding a
-limit rejects the whole operation without publishing partial working state.
+baseline. Direct writes and strict macOS sandbox execs check it before
+returning. Fast native macOS execs defer the check to the next status, diff, or
+commit boundary so the command path does not wait for FSEvents reconciliation.
+An over-limit boundary returns an error; the pending changes remain available
+for review, reduction, or abort.

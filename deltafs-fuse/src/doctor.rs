@@ -12,6 +12,7 @@ pub struct DoctorReport {
     pub fusermount: Option<PathBuf>,
     pub macfuse_installed: bool,
     pub macfuse_pkg_config: bool,
+    pub native_provider_ready: bool,
     pub mount_ready: bool,
     pub notes: Vec<String>,
 }
@@ -26,6 +27,7 @@ pub fn inspect() -> DoctorReport {
         .status()
         .is_ok_and(|status| status.success());
     let fuse_feature = cfg!(feature = "fuse") && !cfg!(feature = "macos-no-mount");
+    let native_provider_ready = os == "macos" && Path::new("/usr/bin/sandbox-exec").is_file();
 
     let mount_ready = match os {
         "linux" => fuse_feature && dev_fuse && fusermount.is_some(),
@@ -44,15 +46,16 @@ pub fn inspect() -> DoctorReport {
             }
         }
         "macos" => {
-            if !macfuse_installed {
-                notes.push("macFUSE is not installed".into());
+            if native_provider_ready {
+                notes.push(
+                    "native APFS/FSEvents sessions are available without a FUSE runtime".into(),
+                );
+            } else {
+                notes.push("/usr/bin/sandbox-exec is unavailable".into());
             }
-            if !macfuse_pkg_config {
-                notes.push("pkg-config cannot resolve the macFUSE fuse library".into());
+            if !mount_ready {
+                notes.push("the optional macFUSE mount adapter is not ready".into());
             }
-            notes.push(
-                "macFUSE installation and extension approval require explicit user action".into(),
-            );
         }
         _ => notes.push("deltafs-fuse supports Linux and macOS only".into()),
     }
@@ -68,6 +71,7 @@ pub fn inspect() -> DoctorReport {
         fusermount,
         macfuse_installed,
         macfuse_pkg_config,
+        native_provider_ready,
         mount_ready,
         notes,
     }

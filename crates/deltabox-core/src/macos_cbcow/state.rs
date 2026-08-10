@@ -1,0 +1,1457 @@
+use crate::changeset::{describe_change, Change, ChangeKind, DEFAULT_TEXT_SIZE_LIMIT};
+use crate::error::{Error, Result};
+use crate::macos_tree::{
+    clone_path, copy_metadata, read_acl, remove_path, replace_path, sync_dir, sync_tree,
+    tracked_xattr,
+};
+use crate::snapshot::read_capped_file;
+use deltafs_fuse::macos::{
+    EventBatch, ITEM_CLONED, ITEM_CREATED, ITEM_IS_HARDLINK, ITEM_REMOVED, ITEM_RENAMED,
+};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::os::darwin::fs::MetadataExt as DarwinMetadataExt;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Component, Path, PathBuf};
+use uuid::Uuid;
+
+const FORMAT_VERSION: u32 = 1;
+const MANIFEST_FILE: &str = "state.json";
+const TRANSACTION_FILE: &str = "transaction.json";
+const BASE_DIR: &str = "base";
+const LIVE_DIR: &str = "live";
+const CHECKPOINTS_DIR: &str = "checkpoints";
+const INDEXES_DIR: &str = "indexes";
+const TRANSACTIONS_DIR: &str = "transactions";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Mode {
+    Through,
+    Private,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Manifest {
+    version: u32,
+    mode: Mode,
+    accepted_id: u64,
+    next_id: u64,
+    checkpoints: Vec<Checkpoint>,
+    pending_paths: BTreeSet<String>,
+    epoch_paths: BTreeSet<String>,
+    event_id: u64,
+    device_uuid: String,
+    index_generation: String,
+    durable: bool,
+    tainted: bool,
+    last_transaction: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Checkpoint {
+    id: u64,
+    label: Option<String>,
+    created_at_ms: u64,
+    paths: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct TreeIndex {
+    entries: BTreeMap<String, Entry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct Entry {
+    kind: EntryKind,
+    size: u64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    mtime_ns: i64,
+    ctime_ns: i64,
+    device: u64,
+    inode: u64,
+    links: u64,
+    flags: u32,
+    acl: Vec<u8>,
+    target: Option<Vec<u8>>,
+    xattrs: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum EntryKind {
+    File,
+    Directory,
+    Symlink,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SnapshotManifest {
+    entries: Vec<SnapshotEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SnapshotEntry {
+    path: String,
+    present: bool,
+    kind: Option<EntryKind>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Transaction {
+    id: String,
+    mode: Mode,
+    paths: BTreeSet<String>,
+}
+
+pub(crate) struct State {
+    project: PathBuf,
+    root: PathBuf,
+    manifest: Manifest,
+    index: Option<TreeIndex>,
+}
+
+pub(crate) struct Status {
+    pub mode: Mode,
+    pub checkpoints: usize,
+    pub pending: usize,
+    pub event_id: u64,
+    pub device_uuid: String,
+    pub tainted: bool,
+}
+
+impl State {
+    pub fn create(
+        project: &Path,
+        root: &Path,
+        mode: Mode,
+        durable: bool,
+        event_id: u64,
+        device_uuid: String,
+    ) -> Result<Self> {
+        fs::create_dir_all(root)?;
+        fs::create_dir_all(root.join(CHECKPOINTS_DIR))?;
+        fs::create_dir_all(root.join(INDEXES_DIR))?;
+        fs::create_dir_all(root.join(TRANSACTIONS_DIR))?;
+        materialize(project, &root.join(BASE_DIR), durable)
+            .map_err(|error| Error::Backend(format!("create accepted APFS base: {error}")))?;
+        let live = match mode {
+            Mode::Through => project.to_path_buf(),
+            Mode::Private => {
+                materialize(project, &root.join(LIVE_DIR), durable).map_err(|error| {
+                    Error::Backend(format!("create private APFS live tree: {error}"))
+                })?;
+                root.join(LIVE_DIR)
+            }
+        };
+        let index = TreeIndex::scan(&live)
+            .map_err(|error| Error::Backend(format!("index initial live tree: {error}")))?;
+        let manifest = Manifest {
+            version: FORMAT_VERSION,
+            mode,
+            accepted_id: 0,
+            next_id: 1,
+            checkpoints: Vec::new(),
+            pending_paths: BTreeSet::new(),
+            epoch_paths: BTreeSet::new(),
+            event_id,
+            device_uuid,
+            index_generation: String::new(),
+            durable,
+            tainted: false,
+            last_transaction: None,
+        };
+        let mut state = Self {
+            project: project.to_path_buf(),
+            root: root.to_path_buf(),
+            manifest,
+            index: Some(index),
+        };
+        state
+            .save_with_index()
+            .map_err(|error| Error::Backend(format!("save initial macOS state: {error}")))?;
+        Ok(state)
+    }
+
+    pub fn open(project: &Path, root: &Path) -> Result<Self> {
+        recover_transaction(project, root)?;
+        let manifest: Manifest = read_json(&root.join(MANIFEST_FILE))?;
+        if manifest.version != FORMAT_VERSION {
+            return Err(Error::Backend(format!(
+                "unsupported macOS state format: {}",
+                manifest.version
+            )));
+        }
+        let state = Self {
+            project: project.to_path_buf(),
+            root: root.to_path_buf(),
+            manifest,
+            index: None,
+        };
+        state.cleanup_orphans()?;
+        Ok(state)
+    }
+
+    pub fn live(&self) -> PathBuf {
+        match self.manifest.mode {
+            Mode::Through => self.project.clone(),
+            Mode::Private => self.root.join(LIVE_DIR),
+        }
+    }
+
+    pub fn event_socket(&self) -> PathBuf {
+        let session_id = self
+            .root
+            .parent()
+            .and_then(Path::file_name)
+            .expect("macOS state root has a session directory");
+        Path::new("/private/tmp").join(format!("deltafs-{}.sock", session_id.to_string_lossy()))
+    }
+
+    pub fn status(&self) -> Status {
+        Status {
+            mode: self.manifest.mode,
+            checkpoints: self.manifest.checkpoints.len(),
+            pending: self.manifest.pending_paths.len(),
+            event_id: self.manifest.event_id,
+            device_uuid: self.manifest.device_uuid.clone(),
+            tainted: self.manifest.tainted,
+        }
+    }
+
+    pub fn durable(&self) -> bool {
+        self.manifest.durable
+    }
+
+    pub fn set_event_boundary(&mut self, event_id: u64, device_uuid: String) -> Result<()> {
+        if self.manifest.event_id == event_id && self.manifest.device_uuid == device_uuid {
+            return Ok(());
+        }
+        self.manifest.event_id = event_id;
+        self.manifest.device_uuid = device_uuid;
+        self.save_manifest()
+    }
+
+    pub fn reconcile(
+        &mut self,
+        batch: &EventBatch,
+        historical: bool,
+        device_uuid: String,
+    ) -> Result<usize> {
+        let previous_event_id = self.manifest.event_id;
+        let previous_device_uuid = self.manifest.device_uuid.clone();
+        let was_tainted = self.manifest.tainted;
+        let live = self.live();
+        let has_project_events = batch.events.iter().any(|event| {
+            event
+                .path
+                .strip_prefix(&live)
+                .is_ok_and(|path| !path.as_os_str().is_empty() && !excluded(path))
+        });
+        if !batch.must_scan && !batch.root_changed && !has_project_events {
+            self.manifest.event_id = self.manifest.event_id.max(batch.latest_id);
+            self.manifest.device_uuid = device_uuid;
+            if self.manifest.event_id != previous_event_id
+                || self.manifest.device_uuid != previous_device_uuid
+            {
+                self.save_manifest()?;
+            }
+            return Ok(0);
+        }
+        self.load_index()?;
+        let before = self.index.as_ref().expect("index loaded").clone();
+        let mut paths = BTreeSet::new();
+        if batch.must_scan || batch.root_changed {
+            let next = TreeIndex::scan(&self.live())?;
+            paths.extend(changed_index_paths(&before, &next));
+            self.index = Some(next);
+        } else {
+            let mut parents = BTreeSet::new();
+            for event in &batch.events {
+                let Ok(relative) = event.path.strip_prefix(&live) else {
+                    continue;
+                };
+                if relative.as_os_str().is_empty() || excluded(relative) {
+                    continue;
+                }
+                let path = relative_string(relative)?;
+                if event.flags & ITEM_CLONED != 0 && indexed_path_matches(&before, &live, &path)? {
+                    continue;
+                }
+                paths.insert(path.clone());
+                if event.flags & (ITEM_CREATED | ITEM_REMOVED | ITEM_RENAMED | ITEM_IS_HARDLINK)
+                    != 0
+                {
+                    parents.insert(parent_string(&path)?);
+                }
+                if event.flags & ITEM_IS_HARDLINK != 0 {
+                    for peer in before.hardlink_peers(&path) {
+                        paths.insert(peer.clone());
+                        parents.insert(parent_string(&peer)?);
+                    }
+                }
+            }
+            for parent in parents {
+                paths.extend(before.children(&parent));
+                paths.extend(current_children(&live, &parent)?);
+            }
+            expand_subtrees(&before, &live, &mut paths)?;
+            self.index
+                .as_mut()
+                .expect("index loaded")
+                .refresh(&live, &paths)?;
+        }
+
+        if historical && self.manifest.mode == Mode::Through && !paths.is_empty() {
+            self.manifest.tainted = true;
+        }
+        self.manifest.pending_paths.extend(paths.iter().cloned());
+        self.manifest.epoch_paths.extend(paths.iter().cloned());
+        self.manifest.event_id = self.manifest.event_id.max(batch.latest_id);
+        self.manifest.device_uuid = device_uuid;
+        if paths.is_empty()
+            && (self.manifest.event_id != previous_event_id
+                || self.manifest.device_uuid != previous_device_uuid
+                || self.manifest.tainted != was_tainted)
+        {
+            self.save_manifest()?;
+        } else if !paths.is_empty() {
+            self.save_with_index()?;
+        }
+        Ok(paths.len())
+    }
+
+    #[cfg(test)]
+    pub fn mark_paths(&mut self, paths: impl IntoIterator<Item = String>) -> Result<()> {
+        let mut paths: BTreeSet<String> = paths.into_iter().collect();
+        let live = self.live();
+        self.load_index()?;
+        expand_subtrees(
+            self.index.as_ref().expect("index loaded"),
+            &live,
+            &mut paths,
+        )?;
+        self.index
+            .as_mut()
+            .expect("index loaded")
+            .refresh(&live, &paths)?;
+        self.manifest.pending_paths.extend(paths.iter().cloned());
+        self.manifest.epoch_paths.extend(paths);
+        self.save_with_index()
+    }
+
+    pub fn checkpoint(&mut self, label: Option<String>) -> Result<(u64, usize)> {
+        let id = self.manifest.next_id;
+        self.manifest.next_id += 1;
+        let paths = self.manifest.epoch_paths.clone();
+        let temporary = self.root.join(CHECKPOINTS_DIR).join(format!(".{id}.tmp"));
+        let destination = self.root.join(CHECKPOINTS_DIR).join(id.to_string());
+        remove_path(&temporary)?;
+        capture_snapshot(&self.live(), &temporary, &paths, self.manifest.durable)?;
+        fs::rename(&temporary, &destination)?;
+        if self.manifest.durable {
+            sync_dir(&self.root.join(CHECKPOINTS_DIR))?;
+        }
+        self.manifest.checkpoints.push(Checkpoint {
+            id,
+            label,
+            created_at_ms: crate::session::now_ms(),
+            paths: paths.clone(),
+        });
+        self.manifest.epoch_paths.clear();
+        self.save_manifest()?;
+        Ok((id, paths.len()))
+    }
+
+    pub fn diff(&self, from: Option<u64>, to: Option<u64>) -> Result<Vec<Change>> {
+        let from = from.unwrap_or(self.manifest.accepted_id);
+        self.require_checkpoint(from)?;
+        if let Some(to) = to {
+            self.require_checkpoint(to)?;
+        }
+        let paths = self.diff_paths(from, to);
+        let mut changes = Vec::new();
+        for path in paths {
+            let old = self.resolve(from, &path)?;
+            let new = match to {
+                Some(id) => self.resolve(id, &path)?,
+                None => existing(self.live().join(&path)),
+            };
+            if paths_equal(old.as_deref(), new.as_deref())? {
+                continue;
+            }
+            let old_entry = old.as_deref().map(Entry::read).transpose()?;
+            let new_entry = new.as_deref().map(Entry::read).transpose()?;
+            let kind = match (&old_entry, &new_entry) {
+                (None, Some(_)) => ChangeKind::Added,
+                (Some(_), None) => ChangeKind::Deleted,
+                _ => ChangeKind::Modified,
+            };
+            let old_bytes = old.as_deref().map(read_capped_file).transpose()?.flatten();
+            let new_bytes = new.as_deref().map(read_capped_file).transpose()?.flatten();
+            changes.push(describe_change(
+                &path,
+                kind,
+                old_entry.as_ref().map(|entry| entry.size),
+                new_entry.as_ref().map(|entry| entry.size),
+                old_bytes.as_deref(),
+                new_bytes.as_deref(),
+                DEFAULT_TEXT_SIZE_LIMIT,
+            ));
+        }
+        Ok(changes)
+    }
+
+    pub fn abort(&mut self, target: Option<u64>) -> Result<(u64, usize)> {
+        if self.manifest.tainted && self.manifest.mode == Mode::Through {
+            return Err(Error::Backend(
+                "through-mode session was modified outside a command; abort is refused".into(),
+            ));
+        }
+        let target = target.unwrap_or(self.manifest.accepted_id);
+        self.require_checkpoint(target)?;
+        let paths = self.paths_after(target);
+        let restore = self.root.join("restore");
+        remove_path(&restore)?;
+        capture_resolved(self, target, &restore, &paths)?;
+        apply_snapshot(&restore, &self.live(), self.manifest.durable)?;
+        remove_path(&restore)?;
+        self.manifest
+            .checkpoints
+            .retain(|checkpoint| checkpoint.id <= target);
+        self.manifest.pending_paths = self
+            .manifest
+            .checkpoints
+            .iter()
+            .flat_map(|checkpoint| checkpoint.paths.iter().cloned())
+            .collect();
+        self.manifest.epoch_paths.clear();
+        let live = self.live();
+        self.load_index()?;
+        self.index
+            .as_mut()
+            .expect("index loaded")
+            .refresh(&live, &paths)?;
+        self.save_with_index()?;
+        self.cleanup_orphans()?;
+        Ok((target, paths.len()))
+    }
+
+    pub fn commit(&mut self, target: Option<u64>) -> Result<(u64, usize)> {
+        if let Some(target) = target {
+            self.abort(Some(target))?;
+        }
+        let paths = self.manifest.pending_paths.clone();
+        if self.manifest.mode == Mode::Private {
+            validate_paths(&self.root.join(BASE_DIR), &self.project, &paths)?;
+        }
+        let id = Uuid::new_v4().to_string();
+        let transaction_root = self.root.join(TRANSACTIONS_DIR).join(&id);
+        fs::create_dir_all(&transaction_root)?;
+        capture_snapshot(
+            &self.live(),
+            &transaction_root.join("staged"),
+            &paths,
+            self.manifest.durable,
+        )?;
+        capture_snapshot(
+            &self.root.join(BASE_DIR),
+            &transaction_root.join("base-backup"),
+            &paths,
+            self.manifest.durable,
+        )?;
+        if self.manifest.mode == Mode::Private {
+            capture_snapshot(
+                &self.project,
+                &transaction_root.join("host-backup"),
+                &paths,
+                self.manifest.durable,
+            )?;
+        }
+        save_json(
+            &self.root.join(TRANSACTION_FILE),
+            &Transaction {
+                id: id.clone(),
+                mode: self.manifest.mode,
+                paths: paths.clone(),
+            },
+            self.manifest.durable,
+        )?;
+        maybe_crash("macos_commit_prepared");
+        if self.manifest.mode == Mode::Private {
+            apply_snapshot(
+                &transaction_root.join("staged"),
+                &self.project,
+                self.manifest.durable,
+            )?;
+        }
+        apply_snapshot(
+            &transaction_root.join("staged"),
+            &self.root.join(BASE_DIR),
+            self.manifest.durable,
+        )?;
+        maybe_crash("macos_commit_applied");
+
+        let checkpoint_id = self.manifest.next_id;
+        self.manifest.next_id += 1;
+        self.manifest.accepted_id = checkpoint_id;
+        self.manifest.checkpoints.clear();
+        self.manifest.pending_paths.clear();
+        self.manifest.epoch_paths.clear();
+        self.manifest.tainted = false;
+        self.manifest.last_transaction = Some(id.clone());
+        self.save_with_index()?;
+        maybe_crash("macos_commit_state_updated");
+        remove_path(&self.root.join(TRANSACTION_FILE))?;
+        remove_path(&transaction_root)?;
+        self.cleanup_orphans()?;
+        Ok((checkpoint_id, paths.len()))
+    }
+
+    fn require_checkpoint(&self, id: u64) -> Result<()> {
+        if id == self.manifest.accepted_id
+            || self
+                .manifest
+                .checkpoints
+                .iter()
+                .any(|checkpoint| checkpoint.id == id)
+        {
+            Ok(())
+        } else {
+            Err(Error::CheckpointNotFound(id.to_string()))
+        }
+    }
+
+    fn resolve(&self, checkpoint_id: u64, path: &str) -> Result<Option<PathBuf>> {
+        if checkpoint_id == self.manifest.accepted_id {
+            return Ok(existing(self.root.join(BASE_DIR).join(path)));
+        }
+        for checkpoint in self.manifest.checkpoints.iter().rev() {
+            if checkpoint.id > checkpoint_id || !checkpoint.paths.contains(path) {
+                continue;
+            }
+            let snapshot = self
+                .root
+                .join(CHECKPOINTS_DIR)
+                .join(checkpoint.id.to_string());
+            let manifest: SnapshotManifest = read_json(&snapshot.join("snapshot.json"))?;
+            let entry = manifest
+                .entries
+                .into_iter()
+                .find(|entry| entry.path == path)
+                .ok_or_else(|| Error::Backend(format!("checkpoint entry is missing: {path}")))?;
+            return Ok(entry.present.then(|| snapshot.join("objects").join(path)));
+        }
+        Ok(existing(self.root.join(BASE_DIR).join(path)))
+    }
+
+    fn diff_paths(&self, from: u64, to: Option<u64>) -> BTreeSet<String> {
+        let mut paths = self
+            .manifest
+            .checkpoints
+            .iter()
+            .filter(|checkpoint| checkpoint.id > from && to.is_none_or(|to| checkpoint.id <= to))
+            .flat_map(|checkpoint| checkpoint.paths.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        if to.is_none() {
+            paths.extend(self.manifest.epoch_paths.iter().cloned());
+        }
+        paths
+    }
+
+    fn paths_after(&self, target: u64) -> BTreeSet<String> {
+        self.manifest
+            .checkpoints
+            .iter()
+            .filter(|checkpoint| checkpoint.id > target)
+            .flat_map(|checkpoint| checkpoint.paths.iter().cloned())
+            .chain(self.manifest.epoch_paths.iter().cloned())
+            .collect()
+    }
+
+    fn save_with_index(&mut self) -> Result<()> {
+        let Some(index) = &self.index else {
+            return self.save_manifest();
+        };
+        let old = self.manifest.index_generation.clone();
+        let generation = Uuid::new_v4().to_string();
+        save_binary(
+            &self
+                .root
+                .join(INDEXES_DIR)
+                .join(format!("{generation}.bin")),
+            index,
+            self.manifest.durable,
+        )?;
+        self.manifest.index_generation = generation;
+        self.save_manifest()?;
+        if !old.is_empty() {
+            remove_path(&self.root.join(INDEXES_DIR).join(format!("{old}.bin")))?;
+        }
+        Ok(())
+    }
+
+    fn load_index(&mut self) -> Result<()> {
+        if self.index.is_none() {
+            self.index = Some(read_binary(
+                &self
+                    .root
+                    .join(INDEXES_DIR)
+                    .join(format!("{}.bin", self.manifest.index_generation)),
+            )?);
+        }
+        Ok(())
+    }
+
+    fn save_manifest(&self) -> Result<()> {
+        save_json(
+            &self.root.join(MANIFEST_FILE),
+            &self.manifest,
+            self.manifest.durable,
+        )
+    }
+
+    fn cleanup_orphans(&self) -> Result<()> {
+        let checkpoints: BTreeSet<String> = self
+            .manifest
+            .checkpoints
+            .iter()
+            .map(|checkpoint| checkpoint.id.to_string())
+            .collect();
+        cleanup_children(&self.root.join(CHECKPOINTS_DIR), &checkpoints)?;
+        cleanup_children(
+            &self.root.join(INDEXES_DIR),
+            &BTreeSet::from([format!("{}.bin", self.manifest.index_generation)]),
+        )?;
+        let active = fs::read(self.root.join(TRANSACTION_FILE))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Transaction>(&bytes).ok())
+            .map(|transaction| transaction.id);
+        cleanup_children(
+            &self.root.join(TRANSACTIONS_DIR),
+            &active.into_iter().collect(),
+        )
+    }
+}
+
+impl TreeIndex {
+    fn scan(root: &Path) -> Result<Self> {
+        let mut index = Self::default();
+        for path in walk(root)? {
+            let relative =
+                relative_string(path.strip_prefix(root).expect("walk stays below root"))?;
+            index.entries.insert(relative, Entry::read(&path)?);
+        }
+        Ok(index)
+    }
+
+    fn refresh(&mut self, root: &Path, paths: &BTreeSet<String>) -> Result<()> {
+        for path in paths {
+            self.entries
+                .retain(|candidate, _| candidate != path && !is_descendant(path, candidate));
+            let absolute = root.join(path);
+            if fs::symlink_metadata(&absolute).is_err() {
+                continue;
+            }
+            self.entries.insert(path.clone(), Entry::read(&absolute)?);
+            if fs::symlink_metadata(&absolute)?.is_dir() {
+                for entry in walk(&absolute)? {
+                    let relative = relative_string(
+                        entry.strip_prefix(root).expect("subtree stays below root"),
+                    )?;
+                    self.entries.insert(relative, Entry::read(&entry)?);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn children(&self, parent: &str) -> BTreeSet<String> {
+        self.entries
+            .keys()
+            .filter(|path| parent_string(path).ok().as_deref() == Some(parent))
+            .cloned()
+            .collect()
+    }
+
+    fn hardlink_peers(&self, path: &str) -> Vec<String> {
+        let Some(entry) = self.entries.get(path).filter(|entry| entry.links > 1) else {
+            return Vec::new();
+        };
+        self.entries
+            .iter()
+            .filter(|(_, candidate)| {
+                candidate.kind == EntryKind::File
+                    && candidate.device == entry.device
+                    && candidate.inode == entry.inode
+            })
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+}
+
+impl Entry {
+    fn read(path: &Path) -> Result<Self> {
+        let metadata = fs::symlink_metadata(path)?;
+        let kind = if metadata.is_file() {
+            EntryKind::File
+        } else if metadata.is_dir() {
+            EntryKind::Directory
+        } else if metadata.file_type().is_symlink() {
+            EntryKind::Symlink
+        } else {
+            return Err(Error::Backend(format!(
+                "unsupported project entry: {}",
+                path.display()
+            )));
+        };
+        let mut xattrs = Vec::new();
+        for name in xattr::list(path)?.filter(|name| tracked_xattr(name)) {
+            xattrs.push((
+                name.as_bytes().to_vec(),
+                xattr::get(path, &name)?.unwrap_or_default(),
+            ));
+        }
+        xattrs.sort();
+        Ok(Self {
+            kind,
+            size: metadata.len(),
+            mode: metadata.mode(),
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+            mtime_ns: timestamp_ns(metadata.mtime(), metadata.mtime_nsec()),
+            ctime_ns: timestamp_ns(metadata.ctime(), metadata.ctime_nsec()),
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            links: metadata.nlink(),
+            flags: metadata.st_flags(),
+            acl: read_acl(path)?,
+            target: (kind == EntryKind::Symlink)
+                .then(|| fs::read_link(path).map(|path| path.as_os_str().as_bytes().to_vec()))
+                .transpose()?,
+            xattrs,
+        })
+    }
+
+    fn semantic_eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.size == other.size
+            && self.mode == other.mode
+            && self.uid == other.uid
+            && self.gid == other.gid
+            && self.mtime_ns == other.mtime_ns
+            && self.flags == other.flags
+            && self.acl == other.acl
+            && self.target == other.target
+            && self.xattrs == other.xattrs
+    }
+}
+
+fn capture_snapshot(
+    source: &Path,
+    destination: &Path,
+    paths: &BTreeSet<String>,
+    durable: bool,
+) -> Result<()> {
+    remove_path(destination)?;
+    fs::create_dir_all(destination.join("objects"))?;
+    let mut entries = Vec::new();
+    let mut links = HashMap::new();
+    let mut directories = Vec::new();
+    for path in paths {
+        let source_path = source.join(path);
+        let metadata = match fs::symlink_metadata(&source_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                entries.push(SnapshotEntry {
+                    path: path.clone(),
+                    present: false,
+                    kind: None,
+                });
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let kind = entry_kind(&metadata)?;
+        let target = destination.join("objects").join(path);
+        if kind == EntryKind::Directory {
+            fs::create_dir_all(&target)?;
+            directories.push((source_path, target));
+        } else {
+            clone_path(&source_path, &target, &mut links)?;
+        }
+        entries.push(SnapshotEntry {
+            path: path.clone(),
+            present: true,
+            kind: Some(kind),
+        });
+    }
+    for (source, target) in directories.into_iter().rev() {
+        copy_metadata(&source, &target)?;
+    }
+    save_json(
+        &destination.join("snapshot.json"),
+        &SnapshotManifest { entries },
+        durable,
+    )?;
+    if durable {
+        sync_tree(destination)?;
+    }
+    Ok(())
+}
+
+fn capture_resolved(
+    state: &State,
+    checkpoint: u64,
+    destination: &Path,
+    paths: &BTreeSet<String>,
+) -> Result<()> {
+    remove_path(destination)?;
+    fs::create_dir_all(destination.join("objects"))?;
+    let mut entries = Vec::new();
+    let mut links = HashMap::new();
+    let mut directories = Vec::new();
+    for path in paths {
+        let Some(source) = state.resolve(checkpoint, path)? else {
+            entries.push(SnapshotEntry {
+                path: path.clone(),
+                present: false,
+                kind: None,
+            });
+            continue;
+        };
+        let metadata = fs::symlink_metadata(&source)?;
+        let kind = entry_kind(&metadata)?;
+        let target = destination.join("objects").join(path);
+        if kind == EntryKind::Directory {
+            fs::create_dir_all(&target)?;
+            directories.push((source, target));
+        } else {
+            clone_path(&source, &target, &mut links)?;
+        }
+        entries.push(SnapshotEntry {
+            path: path.clone(),
+            present: true,
+            kind: Some(kind),
+        });
+    }
+    for (source, target) in directories.into_iter().rev() {
+        copy_metadata(&source, &target)?;
+    }
+    save_json(
+        &destination.join("snapshot.json"),
+        &SnapshotManifest { entries },
+        state.manifest.durable,
+    )
+}
+
+fn apply_snapshot(snapshot: &Path, target: &Path, durable: bool) -> Result<()> {
+    let manifest: SnapshotManifest = read_json(&snapshot.join("snapshot.json"))?;
+    let mut entries = manifest.entries;
+    entries.sort_by_key(|entry| depth(&entry.path));
+    for entry in entries.iter().rev() {
+        let destination = target.join(&entry.path);
+        if !entry.present {
+            remove_path(&destination)?;
+            continue;
+        }
+        let current_kind = fs::symlink_metadata(&destination)
+            .ok()
+            .and_then(|metadata| entry_kind(&metadata).ok());
+        if current_kind != entry.kind {
+            remove_path(&destination)?;
+        }
+    }
+    let mut links = HashMap::new();
+    let mut directories = Vec::new();
+    for entry in &entries {
+        if !entry.present {
+            continue;
+        }
+        let source = snapshot.join("objects").join(&entry.path);
+        let destination = target.join(&entry.path);
+        if entry.kind == Some(EntryKind::Directory) {
+            fs::create_dir_all(&destination)?;
+            directories.push((source, destination));
+        } else {
+            replace_path(&source, &destination, &mut links)?;
+        }
+    }
+    for (source, destination) in directories.into_iter().rev() {
+        copy_metadata(&source, &destination)?;
+    }
+    if durable {
+        sync_tree(target)?;
+    }
+    Ok(())
+}
+
+fn validate_paths(base: &Path, host: &Path, paths: &BTreeSet<String>) -> Result<()> {
+    for path in paths {
+        if !paths_equal(
+            existing(base.join(path)).as_deref(),
+            existing(host.join(path)).as_deref(),
+        )? {
+            return Err(Error::ProjectConflict(format!(
+                "host path changed after session start: {path}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn paths_equal(left: Option<&Path>, right: Option<&Path>) -> Result<bool> {
+    let (Some(left), Some(right)) = (left, right) else {
+        return Ok(left.is_none() && right.is_none());
+    };
+    let left_entry = Entry::read(left)?;
+    let right_entry = Entry::read(right)?;
+    if !left_entry.semantic_eq(&right_entry) {
+        return Ok(false);
+    }
+    if left_entry.kind != EntryKind::File {
+        return Ok(true);
+    }
+    files_equal(left, right)
+}
+
+fn files_equal(left: &Path, right: &Path) -> Result<bool> {
+    let mut left = File::open(left)?;
+    let mut right = File::open(right)?;
+    let mut left_buffer = [0_u8; 64 * 1024];
+    let mut right_buffer = [0_u8; 64 * 1024];
+    loop {
+        let left_count = left.read(&mut left_buffer)?;
+        let right_count = right.read(&mut right_buffer)?;
+        if left_count != right_count || left_buffer[..left_count] != right_buffer[..right_count] {
+            return Ok(false);
+        }
+        if left_count == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+fn recover_transaction(project: &Path, root: &Path) -> Result<()> {
+    let path = root.join(TRANSACTION_FILE);
+    if !path.exists() {
+        return Ok(());
+    }
+    let transaction: Transaction = read_json(&path)?;
+    let state: Manifest = read_json(&root.join(MANIFEST_FILE))?;
+    let transaction_root = root.join(TRANSACTIONS_DIR).join(&transaction.id);
+    if state.last_transaction.as_deref() != Some(&transaction.id) {
+        apply_snapshot(
+            &transaction_root.join("base-backup"),
+            &root.join(BASE_DIR),
+            state.durable,
+        )?;
+        if transaction.mode == Mode::Private {
+            apply_snapshot(
+                &transaction_root.join("host-backup"),
+                project,
+                state.durable,
+            )?;
+        }
+    }
+    remove_path(&path)?;
+    remove_path(&transaction_root)
+}
+
+fn materialize(source: &Path, destination: &Path, durable: bool) -> Result<()> {
+    remove_path(destination)?;
+    fs::create_dir_all(destination)?;
+    let mut links = HashMap::new();
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        if entry.file_name() != ".deltabox" {
+            clone_path(
+                &entry.path(),
+                &destination.join(entry.file_name()),
+                &mut links,
+            )?;
+        }
+    }
+    copy_metadata(source, destination)?;
+    if durable {
+        sync_tree(destination)?;
+    }
+    Ok(())
+}
+
+fn expand_subtrees(before: &TreeIndex, live: &Path, paths: &mut BTreeSet<String>) -> Result<()> {
+    let roots: Vec<String> = paths.iter().cloned().collect();
+    for root in roots {
+        if before
+            .entries
+            .get(&root)
+            .is_some_and(|entry| entry.kind == EntryKind::Directory)
+        {
+            paths.extend(
+                before
+                    .entries
+                    .keys()
+                    .filter(|path| is_descendant(&root, path))
+                    .cloned(),
+            );
+        }
+        let absolute = live.join(&root);
+        if fs::symlink_metadata(&absolute).is_ok_and(|metadata| metadata.is_dir()) {
+            for entry in walk(&absolute)? {
+                paths.insert(relative_string(
+                    entry.strip_prefix(live).expect("subtree stays below live"),
+                )?);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn current_children(live: &Path, parent: &str) -> Result<BTreeSet<String>> {
+    let directory = if parent.is_empty() {
+        live.to_path_buf()
+    } else {
+        live.join(parent)
+    };
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
+        Err(error) => return Err(error.into()),
+    };
+    entries
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| !parent.is_empty() || entry.file_name() != ".deltabox")
+        .map(|entry| {
+            relative_string(
+                entry
+                    .path()
+                    .strip_prefix(live)
+                    .expect("directory entry stays below live"),
+            )
+        })
+        .collect()
+}
+
+fn changed_index_paths(before: &TreeIndex, after: &TreeIndex) -> BTreeSet<String> {
+    before
+        .entries
+        .keys()
+        .chain(after.entries.keys())
+        .filter(|path| before.entries.get(*path) != after.entries.get(*path))
+        .cloned()
+        .collect()
+}
+
+fn indexed_path_matches(index: &TreeIndex, live: &Path, path: &str) -> Result<bool> {
+    let current = match fs::symlink_metadata(live.join(path)) {
+        Ok(_) => Some(Entry::read(&live.join(path))?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    Ok(match (index.entries.get(path), current.as_ref()) {
+        (Some(before), Some(current)) => before.semantic_eq(current),
+        (None, None) => true,
+        _ => false,
+    })
+}
+
+fn walk(root: &Path) -> Result<Vec<PathBuf>> {
+    walkdir::WalkDir::new(root)
+        .min_depth(1)
+        .follow_links(false)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_entry(|entry| entry.depth() != 1 || entry.file_name() != ".deltabox")
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path().to_path_buf())
+                .map_err(|error| Error::Io(std::io::Error::other(error)))
+        })
+        .collect()
+}
+
+fn entry_kind(metadata: &fs::Metadata) -> Result<EntryKind> {
+    if metadata.is_file() {
+        Ok(EntryKind::File)
+    } else if metadata.is_dir() {
+        Ok(EntryKind::Directory)
+    } else if metadata.file_type().is_symlink() {
+        Ok(EntryKind::Symlink)
+    } else {
+        Err(Error::Backend("unsupported filesystem entry".into()))
+    }
+}
+
+fn relative_string(path: &Path) -> Result<String> {
+    if path
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(Error::Backend("invalid relative path".into()));
+    }
+    path.to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| Error::Backend("non-UTF-8 project path".into()))
+}
+
+fn parent_string(path: &str) -> Result<String> {
+    let parent = Path::new(path)
+        .parent()
+        .ok_or_else(|| Error::Backend("relative path has no parent".into()))?;
+    if parent.as_os_str().is_empty() {
+        Ok(String::new())
+    } else {
+        relative_string(parent)
+    }
+}
+
+fn excluded(path: &Path) -> bool {
+    path.components()
+        .next()
+        .is_some_and(|component| component.as_os_str() == ".deltabox")
+}
+
+fn is_descendant(parent: &str, path: &str) -> bool {
+    path.strip_prefix(parent)
+        .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn depth(path: &str) -> usize {
+    Path::new(path).components().count()
+}
+
+fn existing(path: PathBuf) -> Option<PathBuf> {
+    fs::symlink_metadata(&path).is_ok().then_some(path)
+}
+
+fn timestamp_ns(seconds: i64, nanos: i64) -> i64 {
+    seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
+}
+
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
+    Ok(serde_json::from_slice(&fs::read(path)?)?)
+}
+
+fn read_binary<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
+    bincode::deserialize(&fs::read(path)?)
+        .map_err(|error| Error::Backend(format!("decode macOS index: {error}")))
+}
+
+fn save_json(path: &Path, value: &impl Serialize, durable: bool) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("tmp");
+    let mut file = File::create(&temporary)?;
+    file.write_all(&serde_json::to_vec(value)?)?;
+    if durable {
+        file.sync_all()?;
+    }
+    fs::rename(&temporary, path)?;
+    if durable {
+        sync_dir(path.parent().expect("state file has a parent"))?;
+    }
+    Ok(())
+}
+
+fn save_binary(path: &Path, value: &impl Serialize, durable: bool) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("tmp");
+    let bytes = bincode::serialize(value)
+        .map_err(|error| Error::Backend(format!("encode macOS index: {error}")))?;
+    let mut file = File::create(&temporary)?;
+    file.write_all(&bytes)?;
+    if durable {
+        file.sync_all()?;
+    }
+    fs::rename(&temporary, path)?;
+    if durable {
+        sync_dir(path.parent().expect("state file has a parent"))?;
+    }
+    Ok(())
+}
+
+fn cleanup_children(directory: &Path, keep: &BTreeSet<String>) -> Result<()> {
+    if !directory.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || !keep.contains(&name) {
+            remove_path(&entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+fn maybe_crash(point: &str) {
+    if cfg!(debug_assertions) && std::env::var("DELTABOX_TEST_CRASH_AT").as_deref() == Ok(point) {
+        std::process::abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deltafs_fuse::macos::Event;
+    use std::os::unix::fs::{FileExt, PermissionsExt};
+    use std::process::Command;
+
+    fn state(mode: Mode) -> (tempfile::TempDir, State) {
+        let project = tempfile::tempdir().unwrap();
+        fs::write(project.path().join("a.txt"), "accepted").unwrap();
+        fs::create_dir(project.path().join("empty")).unwrap();
+        let root = project.path().join(".deltabox/test/native");
+        let state = State::create(project.path(), &root, mode, false, 1, "device".into()).unwrap();
+        (project, state)
+    }
+
+    fn command(program: &str, args: &[&str], path: &Path) {
+        let status = Command::new(program).args(args).arg(path).status().unwrap();
+        assert!(status.success(), "{program} failed for {}", path.display());
+    }
+
+    #[test]
+    fn through_checkpoint_abort_and_commit() {
+        let (project, mut state) = state(Mode::Through);
+        fs::write(project.path().join("a.txt"), "v1").unwrap();
+        state.mark_paths(["a.txt".into()]).unwrap();
+        let (checkpoint, _) = state.checkpoint(Some("one".into())).unwrap();
+        fs::write(project.path().join("a.txt"), "v2").unwrap();
+        state.mark_paths(["a.txt".into()]).unwrap();
+        state.abort(Some(checkpoint)).unwrap();
+        assert_eq!(
+            fs::read_to_string(project.path().join("a.txt")).unwrap(),
+            "v1"
+        );
+        state.commit(None).unwrap();
+        fs::write(project.path().join("a.txt"), "pending").unwrap();
+        state.mark_paths(["a.txt".into()]).unwrap();
+        state.abort(None).unwrap();
+        assert_eq!(
+            fs::read_to_string(project.path().join("a.txt")).unwrap(),
+            "v1"
+        );
+    }
+
+    #[test]
+    fn private_commit_publishes_and_abort_stays_private() {
+        let (project, mut state) = state(Mode::Private);
+        fs::write(state.live().join("a.txt"), "pending").unwrap();
+        state.mark_paths(["a.txt".into()]).unwrap();
+        assert_eq!(
+            fs::read_to_string(project.path().join("a.txt")).unwrap(),
+            "accepted"
+        );
+        state.abort(None).unwrap();
+        assert_eq!(
+            fs::read_to_string(state.live().join("a.txt")).unwrap(),
+            "accepted"
+        );
+        fs::write(state.live().join("a.txt"), "committed").unwrap();
+        state.mark_paths(["a.txt".into()]).unwrap();
+        state.commit(None).unwrap();
+        assert_eq!(
+            fs::read_to_string(project.path().join("a.txt")).unwrap(),
+            "committed"
+        );
+    }
+
+    #[test]
+    fn namespace_and_hardlinks_round_trip() {
+        let (project, mut state) = state(Mode::Through);
+        fs::hard_link(
+            project.path().join("a.txt"),
+            project.path().join("peer.txt"),
+        )
+        .unwrap();
+        state
+            .mark_paths(["a.txt".into(), "peer.txt".into()])
+            .unwrap();
+        state.commit(None).unwrap();
+        fs::remove_file(project.path().join("a.txt")).unwrap();
+        fs::remove_file(project.path().join("peer.txt")).unwrap();
+        state
+            .mark_paths(["a.txt".into(), "peer.txt".into()])
+            .unwrap();
+        state.abort(None).unwrap();
+        assert_eq!(
+            fs::metadata(project.path().join("a.txt")).unwrap().ino(),
+            fs::metadata(project.path().join("peer.txt")).unwrap().ino()
+        );
+    }
+
+    #[test]
+    fn metadata_and_sparse_files_round_trip() {
+        let project = tempfile::tempdir().unwrap();
+        let file = project.path().join("metadata.txt");
+        let directory = project.path().join("metadata-dir");
+        let sparse = project.path().join("sparse.bin");
+        fs::write(&file, "accepted").unwrap();
+        fs::create_dir(&directory).unwrap();
+        let sparse_file = File::create(&sparse).unwrap();
+        sparse_file.set_len(64 * 1024 * 1024).unwrap();
+        sparse_file
+            .write_all_at(b"tail", 64 * 1024 * 1024 - 4)
+            .unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o750)).unwrap();
+        xattr::set(&file, "com.deltabox.test", b"file-xattr").unwrap();
+        xattr::set(&directory, "com.deltabox.test", b"dir-xattr").unwrap();
+        let user = String::from_utf8(
+            Command::new("/usr/bin/id")
+                .arg("-un")
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        let acl = format!("{} allow read", user.trim());
+        command("/bin/chmod", &["+a", &acl], &file);
+        command("/bin/chmod", &["+a", &acl], &directory);
+        command("/usr/bin/chflags", &["hidden"], &file);
+        command("/usr/bin/chflags", &["hidden"], &directory);
+        command("/usr/bin/touch", &["-t", "202001020304.05"], &file);
+        command("/usr/bin/touch", &["-t", "202001020304.05"], &directory);
+
+        let expected_file = Entry::read(&file).unwrap();
+        let expected_directory = Entry::read(&directory).unwrap();
+        let expected_sparse = Entry::read(&sparse).unwrap();
+        let root = project.path().join(".deltabox/test/native");
+        let mut state = State::create(
+            project.path(),
+            &root,
+            Mode::Through,
+            false,
+            1,
+            "device".into(),
+        )
+        .unwrap();
+
+        fs::write(&file, "modified").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        xattr::remove(&file, "com.deltabox.test").unwrap();
+        command("/bin/chmod", &["-N"], &file);
+        command("/usr/bin/chflags", &["nohidden"], &file);
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        xattr::remove(&directory, "com.deltabox.test").unwrap();
+        xattr::set(&directory, "com.deltabox.extra", b"remove-me").unwrap();
+        command("/bin/chmod", &["-N"], &directory);
+        command("/usr/bin/chflags", &["nohidden"], &directory);
+        fs::write(&sparse, vec![1_u8; 1024 * 1024]).unwrap();
+        state
+            .mark_paths([
+                "metadata.txt".into(),
+                "metadata-dir".into(),
+                "sparse.bin".into(),
+            ])
+            .unwrap();
+        state.abort(None).unwrap();
+
+        assert!(expected_file.semantic_eq(&Entry::read(&file).unwrap()));
+        assert!(expected_directory.semantic_eq(&Entry::read(&directory).unwrap()));
+        assert!(expected_sparse.semantic_eq(&Entry::read(&sparse).unwrap()));
+        assert_eq!(fs::read(&file).unwrap(), b"accepted");
+        let sparse_metadata = fs::metadata(&sparse).unwrap();
+        assert!(sparse_metadata.blocks() * 512 < sparse_metadata.len() / 100);
+        assert!(xattr::get(&directory, "com.deltabox.extra")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn commit_to_older_checkpoint_accepts_its_exact_view() {
+        let (project, mut state) = state(Mode::Through);
+        fs::write(project.path().join("a.txt"), "one").unwrap();
+        state.mark_paths(["a.txt".into()]).unwrap();
+        let (one, _) = state.checkpoint(Some("one".into())).unwrap();
+        fs::write(project.path().join("a.txt"), "two").unwrap();
+        state.mark_paths(["a.txt".into()]).unwrap();
+        state.checkpoint(Some("two".into())).unwrap();
+        fs::write(project.path().join("a.txt"), "three").unwrap();
+        state.mark_paths(["a.txt".into()]).unwrap();
+
+        state.commit(Some(one)).unwrap();
+        assert_eq!(
+            fs::read_to_string(project.path().join("a.txt")).unwrap(),
+            "one"
+        );
+        assert!(state.diff(None, None).unwrap().is_empty());
+        fs::write(project.path().join("a.txt"), "pending").unwrap();
+        state.mark_paths(["a.txt".into()]).unwrap();
+        state.abort(None).unwrap();
+        assert_eq!(
+            fs::read_to_string(project.path().join("a.txt")).unwrap(),
+            "one"
+        );
+    }
+
+    #[test]
+    fn dropped_events_reconcile_current_tree_and_taint_through_mode() {
+        let (project, mut state) = state(Mode::Through);
+        fs::write(project.path().join("new.txt"), "new").unwrap();
+        let batch = EventBatch {
+            latest_id: 9,
+            history_done: true,
+            must_scan: true,
+            ..EventBatch::default()
+        };
+        assert_eq!(state.reconcile(&batch, true, "device".into()).unwrap(), 1);
+        assert_eq!(state.status().pending, 1);
+        assert!(state.status().tainted);
+    }
+
+    #[test]
+    fn root_change_reconciles_the_tree_and_updates_device_identity() {
+        let (project, mut state) = state(Mode::Through);
+        fs::write(project.path().join("a.txt"), "changed").unwrap();
+        let batch = EventBatch {
+            latest_id: 11,
+            history_done: true,
+            root_changed: true,
+            ..EventBatch::default()
+        };
+        assert_eq!(
+            state
+                .reconcile(&batch, false, "replacement-device".into())
+                .unwrap(),
+            1
+        );
+        let status = state.status();
+        assert_eq!(status.pending, 1);
+        assert_eq!(status.event_id, 11);
+        assert_eq!(status.device_uuid, "replacement-device");
+        assert!(!status.tainted);
+        state.abort(None).unwrap();
+        assert_eq!(
+            fs::read_to_string(project.path().join("a.txt")).unwrap(),
+            "accepted"
+        );
+    }
+
+    #[test]
+    fn unchanged_clone_source_event_is_not_a_pending_write() {
+        let (project, mut state) = state(Mode::Through);
+        let batch = EventBatch {
+            events: vec![Event {
+                path: project.path().join("a.txt"),
+                flags: ITEM_CLONED | ITEM_CREATED,
+                id: 2,
+            }],
+            latest_id: 2,
+            history_done: true,
+            ..EventBatch::default()
+        };
+        assert_eq!(state.reconcile(&batch, true, "device".into()).unwrap(), 0);
+        assert_eq!(state.status().pending, 0);
+        assert!(!state.status().tainted);
+    }
+}

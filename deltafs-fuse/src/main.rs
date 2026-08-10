@@ -149,6 +149,7 @@ fn main() -> Result<()> {
                 println!("os: {} ({})", report.os, report.arch);
                 println!("fuse feature: {}", report.fuse_feature);
                 println!("mount ready: {}", report.mount_ready);
+                println!("native provider ready: {}", report.native_provider_ready);
                 for note in report.notes {
                     println!("note: {note}");
                 }

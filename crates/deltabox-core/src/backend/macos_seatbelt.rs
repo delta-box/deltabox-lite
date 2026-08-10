@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use wait_timeout::ChildExt;
 
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(600);
@@ -521,16 +522,10 @@ impl SandboxBackend for SeatbeltBackend {
         let stderr = child.stderr.take().expect("stderr piped");
         let out_thread = std::thread::spawn(move || read_capped(stdout));
         let err_thread = std::thread::spawn(move || read_capped(stderr));
-        let status = loop {
-            if let Some(status) = child.try_wait()? {
-                break status;
-            }
-            if start.elapsed() >= COMMAND_TIMEOUT {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(Error::Backend("session command timed out".into()));
-            }
-            std::thread::sleep(Duration::from_millis(10));
+        let Some(status) = child.wait_timeout(COMMAND_TIMEOUT)? else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Error::Backend("session command timed out".into()));
         };
         let (stdout, out_truncated) = out_thread
             .join()
@@ -798,9 +793,10 @@ fn build_profile(
         "(deny default)".to_string(),
         "(allow process-exec process-fork)".to_string(),
         "(allow process-info* signal (target same-sandbox))".to_string(),
+        "(allow system-sched (target self))".to_string(),
         "(allow mach-priv-task-port (target same-sandbox))".to_string(),
         "(allow user-preference-read)".to_string(),
-        "(allow ipc-posix-shm ipc-posix-sem)".to_string(),
+        "(allow ipc-posix-shm ipc-posix-sem ipc-sysv-shm ipc-sysv-sem)".to_string(),
         "(allow distributed-notification-post)".to_string(),
         "(allow iokit-get-properties)".to_string(),
         "(allow system-socket (require-all (socket-domain AF_SYSTEM) (socket-protocol 2)))"
@@ -851,7 +847,9 @@ fn build_profile(
         "(allow file-read* (subpath {}))",
         quote_path(runtime)
     ));
-    lines.push(format!("(allow file-read* (subpath {}))", quote_path(host)));
+    if host == root || root.starts_with(host) {
+        lines.push(format!("(allow file-read* (subpath {}))", quote_path(host)));
+    }
 
     for path in policy_paths(&policy.filesystem.write, root) {
         lines.push(format!(
@@ -864,7 +862,12 @@ fn build_profile(
         quote_path(runtime)
     ));
     if host != root {
-        lines.push(format!("(deny file-write* (subpath {}))", quote_path(host)));
+        if !root.starts_with(host) {
+            lines.push(format!(
+                "(deny file-read* file-write* (subpath {}))",
+                quote_path(host)
+            ));
+        }
         lines.push(format!(
             "(allow file-write* (subpath {}))",
             quote_path(root)
@@ -933,6 +936,8 @@ fn policy_paths(paths: &[PathBuf], root: &Path) -> Vec<PathBuf> {
         .map(|path| {
             if path.is_absolute() {
                 path.clone()
+            } else if path == Path::new(".") {
+                root.to_path_buf()
             } else {
                 root.join(path)
             }
@@ -1104,8 +1109,37 @@ mod tests {
         .unwrap();
         assert!(profile.contains("/tmp/a project"));
         assert!(profile.contains("file-write-data"));
+        assert!(profile.contains("(allow file-write* (subpath \"/tmp/a project\"))"));
         assert!(profile.contains("\\.env"));
-        assert!(profile.contains("deny file-write* (subpath \"/tmp/host\")"));
+        assert!(profile.contains("deny file-read* file-write* (subpath \"/tmp/host\")"));
+    }
+
+    #[test]
+    fn profile_allows_a_shadow_nested_under_the_host() {
+        let profile = build_profile(
+            &Policy::default_agent(),
+            Path::new("/tmp/host/.deltabox/shadow"),
+            Path::new("/tmp/runtime"),
+            Path::new("/tmp/host"),
+            None,
+            &[],
+        )
+        .unwrap();
+        assert!(!profile.contains("deny file-read* file-write* (subpath \"/tmp/host\")"));
+    }
+
+    #[test]
+    fn profile_denies_an_external_private_host() {
+        let profile = build_profile(
+            &Policy::default_agent(),
+            Path::new("/tmp/private/live"),
+            Path::new("/tmp/runtime"),
+            Path::new("/tmp/host"),
+            None,
+            &[],
+        )
+        .unwrap();
+        assert!(profile.contains("deny file-read* file-write* (subpath \"/tmp/host\")"));
     }
 
     #[test]

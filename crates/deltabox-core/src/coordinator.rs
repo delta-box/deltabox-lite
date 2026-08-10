@@ -14,6 +14,8 @@ pub struct SessionCoordinator {
     copy_private: DurableSessionManager,
     #[cfg(target_os = "linux")]
     cbcow: crate::cbcow::Manager,
+    #[cfg(target_os = "macos")]
+    macos_cbcow: crate::macos_cbcow::Manager,
 }
 
 impl SessionCoordinator {
@@ -23,11 +25,18 @@ impl SessionCoordinator {
         #[cfg(target_os = "linux")]
         let cbcow =
             crate::cbcow::Manager::new(&project, worker_bin.unwrap_or(std::env::current_exe()?))?;
+        #[cfg(target_os = "macos")]
+        let macos_cbcow = crate::macos_cbcow::Manager::new(
+            &project,
+            worker_bin.unwrap_or(std::env::current_exe()?),
+        )?;
         Ok(Self {
             project,
             copy_private,
             #[cfg(target_os = "linux")]
             cbcow,
+            #[cfg(target_os = "macos")]
+            macos_cbcow,
         })
     }
 
@@ -90,6 +99,8 @@ impl SessionCoordinator {
             Route::CopyPrivate(manager) => manager.status(session_id),
             #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.status(session_id),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.status(session_id),
         }
     }
 
@@ -98,6 +109,8 @@ impl SessionCoordinator {
             Route::CopyPrivate(manager) => manager.stop(session_id),
             #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.stop(session_id),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.stop(session_id),
         }
     }
 
@@ -106,6 +119,8 @@ impl SessionCoordinator {
             Route::CopyPrivate(manager) => manager.exec(params),
             #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.exec(params),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.exec(params),
         }
     }
 
@@ -114,6 +129,8 @@ impl SessionCoordinator {
             Route::CopyPrivate(manager) => manager.read_file(session_id, path),
             #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.read_file(session_id, path),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.read_file(session_id, path),
         }
     }
 
@@ -122,6 +139,8 @@ impl SessionCoordinator {
             Route::CopyPrivate(manager) => manager.write_file(session_id, path, content),
             #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.write_file(session_id, path, content),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.write_file(session_id, path, content),
         }
     }
 
@@ -130,6 +149,8 @@ impl SessionCoordinator {
             Route::CopyPrivate(manager) => manager.checkpoint(params),
             #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.checkpoint(params),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.checkpoint(params),
         }
     }
 
@@ -138,6 +159,8 @@ impl SessionCoordinator {
             Route::CopyPrivate(manager) => manager.diff(params),
             #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.diff(params),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.diff(params),
         }
     }
 
@@ -146,6 +169,8 @@ impl SessionCoordinator {
             Route::CopyPrivate(manager) => manager.commit(params),
             #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.commit(params),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.commit(params),
         }
     }
 
@@ -154,6 +179,8 @@ impl SessionCoordinator {
             Route::CopyPrivate(manager) => manager.abort(params),
             #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.abort(params),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.abort(params),
         }
     }
 
@@ -162,6 +189,8 @@ impl SessionCoordinator {
             Route::CopyPrivate(manager) => manager.begin_review(params),
             #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.begin_review(params),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.begin_review(params),
         }
     }
 
@@ -170,6 +199,8 @@ impl SessionCoordinator {
             Route::CopyPrivate(manager) => manager.review_status(session_id),
             #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.review_status(session_id),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.review_status(session_id),
         }
     }
 
@@ -178,6 +209,8 @@ impl SessionCoordinator {
             Route::CopyPrivate(manager) => manager.review_diff(session_id),
             #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.review_diff(session_id),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.review_diff(session_id),
         }
     }
 
@@ -186,6 +219,8 @@ impl SessionCoordinator {
             Route::CopyPrivate(manager) => manager.review_commit(session_id),
             #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.review_commit(session_id),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.review_commit(session_id),
         }
     }
 
@@ -194,6 +229,8 @@ impl SessionCoordinator {
             Route::CopyPrivate(manager) => manager.review_abort(session_id),
             #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.review_abort(session_id),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.review_abort(session_id),
         }
     }
 
@@ -202,6 +239,8 @@ impl SessionCoordinator {
             Route::CopyPrivate(manager) => manager.review_skip(session_id),
             #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.review_skip(session_id),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.review_skip(session_id),
         }
     }
 
@@ -236,7 +275,30 @@ impl SessionCoordinator {
         self.start_fallback(policy, requested, reason)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    fn start_cbcow(
+        &self,
+        policy: Option<&Path>,
+        requested: FilesystemMode,
+        required: bool,
+        durability: DurabilityMode,
+        group_commit_ms: Option<u64>,
+    ) -> Result<SessionInfo> {
+        match self
+            .macos_cbcow
+            .start(policy, requested, durability, group_commit_ms)
+        {
+            Ok(info) => Ok(info),
+            Err(Error::FilesystemUnavailable(reason))
+                if !required && durability == DurabilityMode::Fast =>
+            {
+                self.start_fallback(policy, requested, reason)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn start_cbcow(
         &self,
         policy: Option<&Path>,
@@ -283,7 +345,11 @@ impl SessionCoordinator {
             FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate => {
                 Ok(Route::Cbcow(&self.cbcow))
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "macos")]
+            FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate => {
+                Ok(Route::MacosCbcow(&self.macos_cbcow))
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate => Err(Error::Unsupported(
                 "this CB-CoW session requires Linux".into(),
             )),
@@ -295,6 +361,8 @@ enum Route<'a> {
     CopyPrivate(&'a DurableSessionManager),
     #[cfg(target_os = "linux")]
     Cbcow(&'a crate::cbcow::Manager),
+    #[cfg(target_os = "macos")]
+    MacosCbcow(&'a crate::macos_cbcow::Manager),
 }
 
 fn default_mode() -> FilesystemMode {
@@ -330,6 +398,41 @@ mod tests {
     }
 
     #[test]
+    fn fallback_session_routes_after_coordinator_reopen() {
+        let project = tempfile::tempdir().unwrap();
+        fs::write(project.path().join("tracked.txt"), "accepted").unwrap();
+        let first = SessionCoordinator::new(project.path(), None).unwrap();
+        let started = first
+            .start_fallback(
+                None,
+                FilesystemMode::CbcowThrough,
+                "native provider unavailable".into(),
+            )
+            .unwrap();
+        assert_eq!(
+            started.filesystem.resolved_fs_mode,
+            FilesystemMode::CopyPrivate
+        );
+        assert_eq!(
+            started.filesystem.fallback_reason.as_deref(),
+            Some("native provider unavailable")
+        );
+        drop(first);
+
+        let reopened = SessionCoordinator::new(project.path(), None).unwrap();
+        let status = reopened.status(&started.session_id).unwrap();
+        assert_eq!(status.session_id, started.session_id);
+        assert_eq!(
+            status.filesystem.requested_fs_mode,
+            FilesystemMode::CbcowThrough
+        );
+        assert_eq!(
+            status.filesystem.resolved_fs_mode,
+            FilesystemMode::CopyPrivate
+        );
+    }
+
+    #[test]
     fn strict_durability_rejects_copy_private() {
         let project = tempfile::tempdir().unwrap();
         let coordinator = SessionCoordinator::new(project.path(), None).unwrap();
@@ -345,7 +448,7 @@ mod tests {
         assert!(matches!(error, Error::InvalidDurability(_)));
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     #[test]
     fn required_cbcow_mode_does_not_fallback() {
         let project = tempfile::tempdir().unwrap();
@@ -356,7 +459,7 @@ mod tests {
         assert!(matches!(error, Error::Unsupported(_)));
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     #[test]
     fn strict_cbcow_mode_does_not_fallback() {
         let project = tempfile::tempdir().unwrap();
@@ -373,7 +476,7 @@ mod tests {
         assert!(matches!(error, Error::Unsupported(_)));
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     #[test]
     fn default_mode_records_cbcow_fallback() {
         let project = tempfile::tempdir().unwrap();

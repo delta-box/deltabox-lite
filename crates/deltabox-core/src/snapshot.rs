@@ -136,7 +136,8 @@ pub fn clone_or_copy_file(src: &Path, dst: &Path) -> Result<u64> {
             .map_err(|_| Error::Backend("source path contains a NUL byte".into()))?;
         let target = CString::new(dst.as_os_str().as_bytes())
             .map_err(|_| Error::Backend("target path contains a NUL byte".into()))?;
-        if unsafe { libc::clonefile(source.as_ptr(), target.as_ptr(), 0) } == 0 {
+        const CLONE_ACL: libc::c_uint = 0x0004;
+        if unsafe { libc::clonefile(source.as_ptr(), target.as_ptr(), CLONE_ACL) } == 0 {
             make_owner_writable(dst)?;
             return Ok(std::fs::metadata(dst)?.len());
         }
@@ -144,7 +145,7 @@ pub fn clone_or_copy_file(src: &Path, dst: &Path) -> Result<u64> {
             Some(libc::ENOTSUP | libc::EXDEV | libc::EINVAL) => {}
             Some(libc::EEXIST) => {
                 std::fs::remove_file(dst)?;
-                if unsafe { libc::clonefile(source.as_ptr(), target.as_ptr(), 0) } == 0 {
+                if unsafe { libc::clonefile(source.as_ptr(), target.as_ptr(), CLONE_ACL) } == 0 {
                     make_owner_writable(dst)?;
                     return Ok(std::fs::metadata(dst)?.len());
                 }

@@ -55,6 +55,9 @@ enum Command {
     #[cfg(target_os = "linux")]
     #[command(hide = true)]
     FsHelper(FsHelperArgs),
+    #[cfg(target_os = "macos")]
+    #[command(hide = true)]
+    MacosEvents(MacosEventsArgs),
     /// Serve the JSON-RPC protocol over stdio.
     Serve,
 }
@@ -227,6 +230,17 @@ struct WorkerArgs {
     root: PathBuf,
     #[arg(long)]
     runtime: PathBuf,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(clap::Args)]
+struct MacosEventsArgs {
+    #[arg(long)]
+    socket: PathBuf,
+    #[arg(long)]
+    live: PathBuf,
+    #[arg(long)]
+    since: u64,
 }
 
 #[cfg(target_os = "linux")]
@@ -452,6 +466,15 @@ fn main() -> anyhow::Result<()> {
                 reclaim_dir: args.reclaim_dir,
                 allow_other: false,
             })?;
+        }
+        #[cfg(target_os = "macos")]
+        Command::MacosEvents(args) => {
+            deltafs_fuse::macos::run_event_helper(
+                &args.socket,
+                &args.live,
+                args.since,
+                std::time::Duration::from_secs(30),
+            )?;
         }
         Command::Serve => {
             let project = std::env::current_dir()?;

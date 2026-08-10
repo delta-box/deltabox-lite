@@ -1,11 +1,33 @@
 # macOS backend
 
-Deltabox-lite uses the native macOS Seatbelt runtime through
-`/usr/bin/sandbox-exec`. Each durable command runs directly in the transaction
-layer's APFS-cloned working tree; it does not create a second backend shadow.
-The optional long-running server is a transport over the same durable
-per-command transactions. The real project is write-denied until `commit`
-publishes the reviewed delta.
+Deltabox-lite combines Seatbelt confinement with a native APFS/FSEvents state
+provider. It does not require macFUSE, a system extension, root, Full Disk
+Access, or a prestarted service. Independent CLI processes reopen the same
+on-disk state.
+
+`cbcow-through` runs directly in the project, so host changes are immediate.
+An APFS-cloned accepted base supplies rollback state. `cbcow-private` runs in a
+private APFS-cloned `LIVE` tree and conflict-checks touched host paths before
+publishing them at commit. State is kept in a hidden sibling of the project by
+default; `DELTABOX_STATE_DIR` overrides that location.
+
+Each session starts a small FSEvents helper to retain the warm file-level event
+stream across CLI processes. The helper owns no filesystem state: if it exits,
+the next operation rebuilds it from the persisted event ID and device UUID.
+Events identify paths to reconcile against the current tree; they are not
+replayed as filesystem operations. Dropped events, event-ID wrap, root
+replacement, or device identity change force a current-tree scan. Source-side
+APFS clone notifications are ignored only when reconciliation proves the
+indexed path is unchanged.
+
+Fast `cbcow-through` assumes Deltabox is the exclusive project writer while a
+session is active. Fast `exec` returns after the confined child exits; the next
+status, diff, checkpoint, commit, abort, or stop operation closes a sentinel
+boundary and persists event accounting before reading state. Strict sessions
+close that boundary before every `exec` returns, mark historical external
+writes as tainted, and refuse abort until those writes are accepted. Private
+mode keeps its `LIVE` tree separate and conflict-checks touched host paths at
+commit.
 
 ## Path mapping
 
@@ -19,7 +41,8 @@ The public `deltabox_core::pathmap::PathMapper` maps:
 It deliberately does not replace substrings in shell source, Python source,
 configuration blobs, or other arbitrary text. Use relative paths or pass an
 absolute project path as its own argument when portability matters. Hardcoded
-real-project writes are denied rather than redirected.
+real-project access is denied rather than redirected in private mode. The
+`.deltabox` session metadata and native state tree are denied in both modes.
 
 ## Compatibility status
 
@@ -32,15 +55,17 @@ We validated deltabox-lite with the following scenarios to check the compatibili
 | Git, Node/npm, Python/pip/pytest | Supported |
 | Rust/cargo, make/CMake | Supported; rustup toolchains are read-only |
 | `rg`, `find`, tar/gzip/zip | Supported |
-| Durable diff/commit/abort | Supported with APFS clones |
+| Cross-process diff/checkpoint/commit/abort | Supported with APFS clones and persistent FSEvents cursors |
 | Optional `serve` transport | Supported over the same durable per-command transactions |
 | Network deny-all | Enforced by Seatbelt |
 | Literal localhost allowlist | Direct Seatbelt rule for the listed port |
 | Hostname/remote-IP allowlist | Authenticated local HTTP/CONNECT proxy |
 | Raw sockets to an allowed hostname | Not proxied; use a proxy-aware client |
-| Hardcoded absolute path inside source text | Not remapped; real-project writes denied |
+| Hardcoded absolute path inside source text | Not remapped; original host tree denied in private mode |
 | `max_open_files`, `max_memory_bytes` | Enforced with rlimits |
 | `max_processes`, `max_cpu_percent` | Not enforced as OS process/CPU limits |
 
-APFS clone support is detected per file. Deltabox-lite falls back to an
-ordinary copy on filesystems where `clonefile` is unavailable.
+Required native modes probe `clonefile` between the project and state directory
+at session start. If the requested mode is optional and the probe fails,
+Deltabox reports the reason and resolves to `copy-private`; required mode fails.
+macFUSE remains optional and is not used by the native provider.

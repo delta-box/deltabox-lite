@@ -13,6 +13,10 @@ pub mod coordinator;
 pub mod durable;
 pub mod error;
 pub mod journal;
+#[cfg(target_os = "macos")]
+pub mod macos_cbcow;
+#[cfg(target_os = "macos")]
+mod macos_tree;
 pub mod pathmap;
 pub mod policy;
 #[cfg(target_os = "linux")]

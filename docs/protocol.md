@@ -36,27 +36,35 @@ each response is one JSON object per line.
 | `review.abort` | `{session_id}` | `AbortResult` |
 | `review.skip` | `{session_id}` | `ActiveReview` |
 
-`fs_mode` accepts `cbcow-through`, `cbcow-private`, or `copy-private`. On Linux,
-omitting it requests `cbcow-through`; a clean CB-CoW startup failure may resolve
-to `copy-private`. Set `require_fs_mode: true` to reject fallback.
+`fs_mode` accepts `cbcow-through`, `cbcow-private`, or `copy-private`. On Linux
+and macOS, omitting it requests `cbcow-through`; a clean CB-CoW startup failure
+may resolve to `copy-private`. Set `require_fs_mode: true` to reject fallback.
 
 `durability` accepts `fast` (the default) or `strict`. Strict operations wait
 for ordered storage barriers. `group_commit_ms` is optional in strict mode and
 batches concurrent `APPLIED` journal barriers without allowing an operation to
-return before its own group is synchronized. Strict mode requires
+return before its own group is synchronized. Group commit is available to the
+Linux FUSE provider; the native macOS provider rejects it. Strict mode requires
 `cbcow-through` or `cbcow-private`; it rejects `copy-private` and does not use
 automatic filesystem fallback.
 
+On macOS, fast `session.exec` returns after the confined child exits and may
+defer FSEvents accounting until the next state operation. Status, diff,
+checkpoint, commit, abort, and stop first synchronize that accounting; status,
+diff, and commit also enforce the aggregate storage limit. Strict sessions
+close the event boundary before returning each `session.exec` result.
+
 `SessionInfo` = `{session_id, project, started_at_ms, status, checkpoint_count,
 pending_changes, requested_fs_mode, resolved_fs_mode, host_visibility,
-durability, group_commit_ms?, isolation, fuse_provider, fallback_reason, rollback_guarantee,
+durability, group_commit_ms?, isolation, state_provider, fallback_reason, rollback_guarantee,
 tainted, mountpoint?, helper_pid?, helper_restarts, mount_namespace}`.
 
 For `cbcow-through`, `host_visibility` is `immediate`: commit accepts the
 current host-visible state and abort reverts it. `cbcow-private` and
-`copy-private` report `on-commit`; the former uses a private DeltaFS `LIVE` tree
-and touched-path publication. The helper PID may change after automatic
-recovery while the session and its durable state remain valid.
+`copy-private` report `on-commit`; the former uses a private `LIVE` tree and
+touched-path publication. The Linux helper PID may change after automatic
+recovery while the session and its durable state remain valid. The macOS native
+provider has no mountpoint and does not expose its restartable event helper PID.
 
 `ExecResult` = `{exit_code, stdout, stderr, duration_ms, truncated}`.
 

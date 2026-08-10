@@ -233,7 +233,8 @@ pub struct FilesystemInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_commit_ms: Option<u64>,
     pub isolation: String,
-    pub fuse_provider: Option<String>,
+    #[serde(default, alias = "fuse_provider")]
+    pub state_provider: Option<String>,
     pub fallback_reason: Option<String>,
     pub rollback_guarantee: String,
     pub tainted: bool,
@@ -276,7 +277,7 @@ impl FilesystemInfo {
             durability: "process-crash".into(),
             group_commit_ms: None,
             isolation: platform_isolation().into(),
-            fuse_provider: None,
+            state_provider: None,
             fallback_reason,
             rollback_guarantee: "private-working-tree".into(),
             tainted: false,
@@ -295,7 +296,7 @@ impl FilesystemInfo {
             durability: "process-crash".into(),
             group_commit_ms: None,
             isolation: platform_isolation().into(),
-            fuse_provider: Some("linux-fuse3".into()),
+            state_provider: Some("linux-fuse3".into()),
             fallback_reason: None,
             rollback_guarantee: "fuse-routed-writes-only".into(),
             tainted: false,
@@ -314,13 +315,38 @@ impl FilesystemInfo {
             durability: "process-crash".into(),
             group_commit_ms: None,
             isolation: platform_isolation().into(),
-            fuse_provider: Some("linux-fuse3".into()),
+            state_provider: Some("linux-fuse3".into()),
             fallback_reason: None,
             rollback_guarantee: "private-live-tree".into(),
             tainted: false,
             mountpoint: Some(mountpoint),
             helper_pid: Some(helper_pid),
             helper_restarts: restarts,
+            mount_namespace: false,
+        }
+    }
+
+    pub fn macos_native(mode: FilesystemMode) -> Self {
+        let private = mode == FilesystemMode::CbcowPrivate;
+        Self {
+            requested_fs_mode: mode,
+            resolved_fs_mode: mode,
+            host_visibility: if private { "on-commit" } else { "immediate" }.into(),
+            durability: "process-crash".into(),
+            group_commit_ms: None,
+            isolation: "seatbelt".into(),
+            state_provider: Some("macos-apfs-fsevents".into()),
+            fallback_reason: None,
+            rollback_guarantee: if private {
+                "private-live-tree"
+            } else {
+                "exclusive-writer-apfs-base"
+            }
+            .into(),
+            tainted: false,
+            mountpoint: None,
+            helper_pid: None,
+            helper_restarts: 0,
             mount_namespace: false,
         }
     }
