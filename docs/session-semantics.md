@@ -47,6 +47,11 @@ Calling `review.begin` while a scope is active returns the existing scope;
 commit and abort close it. Adapters must not create their own per-tool
 checkpoint chain to infer the rollback target.
 
+The resolved filesystem mode is stored in each session record and remains the
+routing authority after CLI, helper, or coordinator restart. Changing the
+platform default affects only new sessions. Session records created before
+filesystem metadata was introduced continue to resolve to `copy-private`.
+
 ## Process model
 
 Normal CLI operations are synchronous and require no prestarted service. A

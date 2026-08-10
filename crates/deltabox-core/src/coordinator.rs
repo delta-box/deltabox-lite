@@ -433,6 +433,35 @@ mod tests {
     }
 
     #[test]
+    fn legacy_session_without_filesystem_metadata_stays_copy_private() {
+        let project = tempfile::tempdir().unwrap();
+        fs::write(project.path().join("tracked.txt"), "accepted").unwrap();
+        let first = SessionCoordinator::new(project.path(), None).unwrap();
+        let started = first
+            .start(None, Some(FilesystemMode::CopyPrivate), true)
+            .unwrap();
+        drop(first);
+
+        let meta_path = project
+            .path()
+            .join(".deltabox")
+            .join(&started.session_id)
+            .join("session.json");
+        let mut meta: serde_json::Value =
+            serde_json::from_slice(&fs::read(&meta_path).unwrap()).unwrap();
+        meta.as_object_mut().unwrap().remove("filesystem");
+        fs::write(&meta_path, serde_json::to_vec_pretty(&meta).unwrap()).unwrap();
+
+        let reopened = SessionCoordinator::new(project.path(), None).unwrap();
+        let status = reopened.status(&started.session_id).unwrap();
+        assert_eq!(
+            status.filesystem.resolved_fs_mode,
+            FilesystemMode::CopyPrivate
+        );
+        assert_eq!(status.filesystem.host_visibility, "on-commit");
+    }
+
+    #[test]
     fn strict_durability_rejects_copy_private() {
         let project = tempfile::tempdir().unwrap();
         let coordinator = SessionCoordinator::new(project.path(), None).unwrap();

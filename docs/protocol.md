@@ -54,6 +54,10 @@ checkpoint, commit, abort, and stop first synchronize that accounting; status,
 diff, and commit also enforce the aggregate storage limit. Strict sessions
 close the event boundary before returning each `session.exec` result.
 
+The CLI form `deltabox session start PROJECT --json` prints the same structured
+`SessionInfo` returned by `session.start`. Without `--json`, it retains the
+original session-ID stdout format for shell compatibility.
+
 `SessionInfo` = `{session_id, project, started_at_ms, status, checkpoint_count,
 pending_changes, requested_fs_mode, resolved_fs_mode, host_visibility,
 durability, group_commit_ms?, isolation, state_provider, fallback_reason, rollback_guarantee,

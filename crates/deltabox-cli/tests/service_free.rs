@@ -42,6 +42,40 @@ fn start(project: &Path) -> String {
     .unwrap()
 }
 
+#[test]
+fn json_start_reports_the_pinned_filesystem_contract() {
+    let project = tempfile::tempdir().unwrap();
+    let output = run(
+        project.path(),
+        &[
+            "session",
+            "start",
+            project.path().to_str().unwrap(),
+            "--json",
+            "--fs-mode",
+            "copy-private",
+            "--require-fs-mode",
+        ],
+    );
+    let info: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(info["requested_fs_mode"], "copy-private");
+    assert_eq!(info["resolved_fs_mode"], "copy-private");
+    assert_eq!(info["host_visibility"], "on-commit");
+    assert_eq!(info["durability"], "process-crash");
+    assert!(output.stderr.is_empty());
+
+    run(
+        project.path(),
+        &[
+            "session",
+            "stop",
+            info["session_id"].as_str().unwrap(),
+            "--project",
+            project.path().to_str().unwrap(),
+        ],
+    );
+}
+
 fn start_with_policy(project: &Path, policy: &str) -> String {
     let policy_path = project.join("policy.toml");
     let policy = format!(

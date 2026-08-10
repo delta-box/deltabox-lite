@@ -118,6 +118,9 @@ struct ReviewDiffArgs {
 #[derive(clap::Args)]
 struct StartArgs {
     project: PathBuf,
+    /// Print the complete session record instead of only the session ID.
+    #[arg(long)]
+    json: bool,
     #[arg(long)]
     policy: Option<PathBuf>,
     #[arg(long, value_parser = parse_filesystem_mode)]
@@ -285,15 +288,19 @@ fn main() -> anyhow::Result<()> {
                     },
                     args.group_commit_ms.map(NonZeroU64::get),
                 )?;
-                println!("{}", info.session_id);
-                if info.filesystem.resolved_fs_mode == FilesystemMode::CbcowThrough {
-                    eprintln!(
-                        "deltabox: host changes are immediate; commit accepts them and abort reverts them"
-                    );
-                } else if let Some(reason) = &info.filesystem.fallback_reason {
-                    eprintln!(
-                        "deltabox: requested filesystem is unavailable; using copy-private: {reason}"
-                    );
+                if args.json {
+                    println!("{}", serde_json::to_string_pretty(&info)?);
+                } else {
+                    println!("{}", info.session_id);
+                    if info.filesystem.resolved_fs_mode == FilesystemMode::CbcowThrough {
+                        eprintln!(
+                            "deltabox: host changes are immediate; commit accepts them and abort reverts them"
+                        );
+                    } else if let Some(reason) = &info.filesystem.fallback_reason {
+                        eprintln!(
+                            "deltabox: requested filesystem is unavailable; using copy-private: {reason}"
+                        );
+                    }
                 }
             }
             SessionCmd::Stop(args) => {

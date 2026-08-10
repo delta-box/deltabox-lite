@@ -1,0 +1,80 @@
+name: prebuilds
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  binary:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.87.0
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+      - run: node scripts/package-prebuild.mjs ${{ matrix.target }} dist
+      - name: Verify packaged launcher
+        run: |
+          mkdir -p dist/smoke
+          npm pack ./npm/deltabox-lite --pack-destination dist/smoke
+          npm install --offline --ignore-scripts --no-audit --no-fund \
+            --prefix dist/smoke/install ./dist/*.tgz ./dist/smoke/*.tgz
+          dist/smoke/install/node_modules/.bin/deltabox --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*.tgz
+      - if: github.event_name == 'release'
+        run: npm publish dist/*.tgz --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - if: github.event_name == 'release'
+        run: gh release upload "${GITHUB_REF_NAME}" dist/*.tgz --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  package:
+    needs: binary
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: mkdir -p dist
+      - run: npm pack ./npm/deltabox-lite --pack-destination dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deltabox-lite
+          path: dist/*.tgz
+      - if: github.event_name == 'release'
+        run: npm publish dist/*.tgz --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - if: github.event_name == 'release'
+        run: gh release upload "${GITHUB_REF_NAME}" dist/*.tgz --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

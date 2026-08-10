@@ -99,6 +99,15 @@ cargo build --release
 export PATH="$PWD/target/release:$PATH"
 ```
 
+Release builds are also packaged for npm on Linux and macOS, x64 and arm64:
+
+```bash
+npm install --global deltabox-lite
+```
+
+The npm package exposes the platform prebuild directly. Pi integrations resolve
+the same native binary, so commands do not start an extra Node process.
+
 Start a persistent session and use it from independent CLI processes:
 
 ```bash
@@ -108,6 +117,10 @@ deltabox exec <id> --project /abs/path/my-project -- npm install
 deltabox diff <id> --project /abs/path/my-project
 deltabox commit <id> --project /abs/path/my-project
 ```
+
+Add `--json` to `session start` to receive the complete structured filesystem
+contract instead of only the session ID. This is intended for agent adapters
+that need to surface provider fallback, visibility, durability, or taint state.
 
 Linux and macOS request `cbcow-through` by default and visibly fall back to
 `copy-private` if the native provider is unavailable. Select the mode
