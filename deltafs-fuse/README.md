@@ -89,10 +89,28 @@ cargo run -- diagnose --state-dir /tmp/deltafs-state --json
 ```
 
 An unresolved `READY` record or active recovery action is recoverable by
-restarting the helper. A checksum, sequence, or torn-record error stops
-automatic recovery. Preserve both the state directory and source tree before
-replacing damaged state; `diagnose` reports the affected file and does not
-delete evidence.
+restarting the helper or by running the offline repair command after stopping
+the helper:
+
+```sh
+cargo run -- repair --state-dir /tmp/deltafs-state
+```
+
+`repair` only completes validated journal recovery. A checksum, sequence, or
+torn-record error stops automatic repair. Preserve both the state directory
+and source tree before replacing damaged state; `diagnose` reports the affected
+file and neither command deletes corrupt evidence.
+
+State metadata writers use the current checksummed format while readers accept
+the immediately preceding format. To rewrite validated metadata after stopping
+the helper, run:
+
+```sh
+cargo run -- upgrade --state-dir /tmp/deltafs-state
+```
+
+The upgrade rewrites one metadata file or journal at a time. Mixed old/current
+state remains readable, so an interrupted upgrade can be rerun.
 
 For programmatic lifecycle control, run `serve` with external socket, token,
 and ready-file paths, then use `control`. The token file must contain a random

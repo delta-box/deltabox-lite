@@ -37,6 +37,22 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Upgrade validated on-disk metadata to the current format.
+    Upgrade {
+        #[arg(long)]
+        state_dir: PathBuf,
+        /// Emit structured JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Complete interrupted journal recovery without mounting.
+    Repair {
+        #[arg(long)]
+        state_dir: PathBuf,
+        /// Emit structured JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Mount a source directory through DeltaFS.
     Mount {
         #[arg(long)]
@@ -174,6 +190,38 @@ fn main() -> Result<()> {
                 }
             }
             if report.healthy {
+                Ok(())
+            } else {
+                anyhow::bail!("recovery state is not healthy")
+            }
+        }
+        Command::Upgrade { state_dir, json } => {
+            let report = deltafs_fuse::engine::upgrade(&state_dir)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("state: {}", report.state_root.display());
+                println!("format version: {}", report.format_version);
+                println!("state files upgraded: {}", report.state_files_upgraded);
+                println!(
+                    "journal records upgraded: {}",
+                    report.journal_records_upgraded
+                );
+            }
+            Ok(())
+        }
+        Command::Repair { state_dir, json } => {
+            let report = deltafs_fuse::engine::repair(&state_dir)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("state: {}", report.state_root.display());
+                for action in &report.actions {
+                    println!("action: {action}");
+                }
+                println!("healthy: {}", report.after.healthy);
+            }
+            if report.after.healthy {
                 Ok(())
             } else {
                 anyhow::bail!("recovery state is not healthy")

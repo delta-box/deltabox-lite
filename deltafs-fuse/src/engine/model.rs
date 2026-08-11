@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::quota::QuotaState;
 use super::ranges::RangeSet;
 
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
+pub const LEGACY_FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VInodeId(pub u64);
@@ -245,6 +246,8 @@ pub struct JournalBody {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JournalEnvelope {
     pub format_version: u32,
+    #[serde(default)]
+    pub kind: Option<String>,
     pub payload_length: u64,
     pub checksum: u32,
     pub payload: JournalBody,

@@ -46,6 +46,29 @@ fn rewind_manifest_counters(path: &Path) {
     fs::write(path, serde_json::to_vec_pretty(&envelope).unwrap()).unwrap();
 }
 
+fn downgrade_state_file(path: &Path) {
+    let mut envelope: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    envelope["format_version"] = serde_json::json!(1);
+    envelope.as_object_mut().unwrap().remove("kind");
+    fs::write(path, serde_json::to_vec_pretty(&envelope).unwrap()).unwrap();
+}
+
+fn downgrade_journal(path: &Path) {
+    let bytes = fs::read(path).unwrap();
+    let mut output = Vec::new();
+    for line in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let mut envelope: serde_json::Value = serde_json::from_slice(line).unwrap();
+        envelope["format_version"] = serde_json::json!(1);
+        envelope.as_object_mut().unwrap().remove("kind");
+        serde_json::to_writer(&mut output, &envelope).unwrap();
+        output.push(b'\n');
+    }
+    fs::write(path, output).unwrap();
+}
+
 struct Fixture {
     _root: TempDir,
     live: PathBuf,
@@ -880,9 +903,122 @@ fn incompatible_state_version_is_rejected() {
         StateEngine::open(&fixture.live, &fixture.state),
         Err(EngineError::UnsupportedFormat {
             found: 999,
-            supported: 1
+            supported: 2
         })
     ));
+}
+
+#[test]
+fn legacy_state_opens_and_upgrades_idempotently() {
+    let fixture = Fixture::new();
+    fs::write(fixture.live.join("a"), b"old-value").unwrap();
+    let mut engine = fixture.engine();
+    engine.write(Path::new("a"), 0, b"new-value").unwrap();
+    drop(engine);
+
+    for path in [
+        fixture.state.join("session.json"),
+        fixture.state.join("inodes.idx"),
+        fixture.state.join("touched.idx"),
+        fixture.state.join("epochs/00000001/epoch.json"),
+    ] {
+        downgrade_state_file(&path);
+    }
+    downgrade_journal(&fixture.state.join("epochs/00000001/journal.log"));
+
+    assert!(deltafs_fuse::engine::diagnose(&fixture.state).healthy);
+    let report = deltafs_fuse::engine::upgrade(&fixture.state).unwrap();
+    assert_eq!(report.format_version, 2);
+    assert_eq!(report.state_files_upgraded, 4);
+    assert_eq!(report.journal_records_upgraded, 2);
+
+    let second = deltafs_fuse::engine::upgrade(&fixture.state).unwrap();
+    assert_eq!(second.state_files_upgraded, 0);
+    assert_eq!(second.journal_records_upgraded, 0);
+    let mut engine = fixture.reopen();
+    engine.rollback(None).unwrap();
+    assert_eq!(read(fixture.live.join("a")), b"old-value");
+}
+
+#[test]
+fn current_state_rejects_a_mismatched_object_kind() {
+    let fixture = Fixture::new();
+    drop(fixture.engine());
+    let session = fixture.state.join("session.json");
+    let mut envelope: serde_json::Value =
+        serde_json::from_slice(&fs::read(&session).unwrap()).unwrap();
+    envelope["kind"] = serde_json::json!("epoch");
+    fs::write(&session, serde_json::to_vec_pretty(&envelope).unwrap()).unwrap();
+    assert!(matches!(
+        StateEngine::open(&fixture.live, &fixture.state),
+        Err(EngineError::CorruptState(message)) if message.contains("state kind mismatch")
+    ));
+}
+
+#[test]
+fn offline_repair_completes_existing_journal_recovery() {
+    let fixture = Fixture::new();
+    fs::write(fixture.live.join("a"), b"old-value").unwrap();
+    let mut engine = fixture.strict_engine(None);
+    engine.set_fault_injector(FaultInjector::once(FaultPoint::AfterReady));
+    assert!(engine.write(Path::new("a"), 0, b"new-value").is_err());
+    drop(engine);
+
+    let report = deltafs_fuse::engine::repair(&fixture.state).unwrap();
+    assert!(report.before.healthy);
+    assert!(report
+        .actions
+        .iter()
+        .any(|action| action.contains("unresolved journal")));
+    assert!(report.after.healthy);
+    assert_eq!(
+        report
+            .after
+            .epochs
+            .iter()
+            .map(|epoch| epoch.unresolved_records)
+            .sum::<usize>(),
+        0
+    );
+    assert_eq!(read(fixture.live.join("a")), b"old-value");
+    assert!(fixture.reopen().diff(None).unwrap().is_empty());
+}
+
+#[test]
+fn offline_repair_preserves_corrupt_journal_evidence() {
+    let fixture = Fixture::new();
+    drop(fixture.engine());
+    let journal = fixture.state.join("epochs/00000001/journal.log");
+    fs::write(&journal, b"torn").unwrap();
+    assert!(matches!(
+        deltafs_fuse::engine::repair(&fixture.state),
+        Err(EngineError::CorruptState(_))
+    ));
+    assert_eq!(read(journal), b"torn");
+}
+
+#[test]
+fn offline_upgrade_preserves_invalid_journal_order() {
+    let fixture = Fixture::new();
+    fs::write(fixture.live.join("a"), b"old-value").unwrap();
+    let mut engine = fixture.engine();
+    engine.write(Path::new("a"), 0, b"new-value").unwrap();
+    drop(engine);
+
+    let journal = fixture.state.join("epochs/00000001/journal.log");
+    let bytes = fs::read(&journal).unwrap();
+    let mut lines = bytes
+        .split_inclusive(|byte| *byte == b'\n')
+        .collect::<Vec<_>>();
+    lines.swap(0, 1);
+    let corrupt = lines.concat();
+    fs::write(&journal, &corrupt).unwrap();
+
+    assert!(matches!(
+        deltafs_fuse::engine::upgrade(&fixture.state),
+        Err(EngineError::CorruptJournal(_))
+    ));
+    assert_eq!(read(journal), corrupt);
 }
 
 #[test]
@@ -1178,8 +1314,13 @@ fn assert_model(live: &Path, model: &BTreeMap<String, Vec<u8>>) {
     }
 }
 
+fn randomized_case_count() -> u32 {
+    std::env::var("DELTAFS_PROPTEST_CASES")
+        .map_or(96, |value| value.parse().expect("valid case count"))
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(96))]
+    #![proptest_config(ProptestConfig::with_cases(randomized_case_count()))]
 
     #[test]
     fn randomized_sequences_match_full_copy_oracle(ops in prop::collection::vec(model_op(), 1..80)) {

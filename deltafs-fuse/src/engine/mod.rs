@@ -15,7 +15,7 @@ pub use ranges::{ByteRange, RangeSet};
 use model::{
     ApplyOutcome, BackingIdentity, CommitMarker, EpochIndex, EpochMeta, EpochStatus, InodeEntry,
     InodeRegistry, JournalBody, JournalEvent, ObjectSnapshot, OperationKind, ReadyRecord,
-    RecoveryAction, RecoveryState, SessionManifest, UndoAction,
+    RecoveryAction, RecoveryState, SessionManifest, UndoAction, FORMAT_VERSION,
 };
 use quota::{QuotaReservation, QuotaState};
 use serde::{Deserialize, Serialize};
@@ -156,6 +156,130 @@ pub struct DiagnosticReport {
     pub epochs: Vec<DiagnosticEpoch>,
     pub issues: Vec<String>,
     pub repair: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpgradeReport {
+    pub state_root: PathBuf,
+    pub format_version: u32,
+    pub state_files_upgraded: usize,
+    pub journal_records_upgraded: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepairReport {
+    pub state_root: PathBuf,
+    pub actions: Vec<String>,
+    pub before: DiagnosticReport,
+    pub after: DiagnosticReport,
+}
+
+pub fn upgrade(state: &Path) -> Result<UpgradeReport> {
+    let state = state.canonicalize()?;
+    let mut state_files_upgraded = 0;
+    let mut journal_records_upgraded = 0;
+    for path in state_files(&state)? {
+        state_files_upgraded += usize::from(storage::upgrade_file(&path)?);
+    }
+    for (epoch, path) in journal_files(&state)? {
+        journal_records_upgraded += journal::upgrade(&path, epoch)?;
+    }
+    Ok(UpgradeReport {
+        state_root: state,
+        format_version: FORMAT_VERSION,
+        state_files_upgraded,
+        journal_records_upgraded,
+    })
+}
+
+pub fn repair(state: &Path) -> Result<RepairReport> {
+    let state = state.canonicalize()?;
+    let before = diagnose(&state);
+    if !before.healthy {
+        return Err(EngineError::CorruptState(before.issues.join("; ")));
+    }
+    let mut actions = Vec::new();
+    if before
+        .epochs
+        .iter()
+        .any(|epoch| epoch.unresolved_records != 0)
+    {
+        actions.push("completed unresolved journal records".into());
+    }
+    if before.recovery_action.is_some() {
+        actions.push("resumed the recorded recovery action".into());
+    }
+    if latest_marker_checkpoint(&state)?
+        .is_some_and(|checkpoint| Some(checkpoint) != before.accepted_checkpoint)
+    {
+        actions.push("finalized the latest durable commit marker".into());
+    }
+    let manifest: SessionManifest = storage::read_state(&state.join("session.json"))?;
+    drop(StateEngine::open(Path::new(&manifest.live_root), &state)?);
+    let after = diagnose(&state);
+    Ok(RepairReport {
+        state_root: state,
+        actions,
+        before,
+        after,
+    })
+}
+
+fn state_files(state: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = ["session.json", "inodes.idx", "touched.idx"]
+        .into_iter()
+        .map(|name| state.join(name))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    for entry in fs::read_dir(state.join("epochs"))? {
+        let path = entry?.path().join("epoch.json");
+        if path.is_file() {
+            paths.push(path);
+        }
+    }
+    for directory in ["commits", "recovery"] {
+        for entry in fs::read_dir(state.join(directory))? {
+            let path = entry?.path();
+            if path.is_file()
+                && (directory == "recovery"
+                    || path
+                        .extension()
+                        .is_some_and(|extension| extension == "marker"))
+            {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+fn journal_files(state: &Path) -> Result<Vec<(u64, PathBuf)>> {
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(state.join("epochs"))? {
+        let directory = entry?.path();
+        let path = directory.join("journal.log");
+        if path.is_file() {
+            let epoch: EpochMeta = storage::read_state(&directory.join("epoch.json"))?;
+            paths.push((epoch.id, path));
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+fn latest_marker_checkpoint(state: &Path) -> Result<Option<u64>> {
+    let mut latest: Option<CommitMarker> = None;
+    for entry in fs::read_dir(state.join("commits"))? {
+        let marker: CommitMarker = storage::read_state(&entry?.path())?;
+        if latest
+            .as_ref()
+            .is_none_or(|current| marker.sequence > current.sequence)
+        {
+            latest = Some(marker);
+        }
+    }
+    Ok(latest.map(|marker| marker.checkpoint.id))
 }
 
 pub fn diagnose(state: &Path) -> DiagnosticReport {

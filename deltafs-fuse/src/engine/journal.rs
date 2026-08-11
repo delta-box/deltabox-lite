@@ -6,6 +6,7 @@ use std::path::Path;
 
 use super::model::{
     ApplyOutcome, JournalBody, JournalEnvelope, JournalEvent, ReadyRecord, FORMAT_VERSION,
+    LEGACY_FORMAT_VERSION,
 };
 use super::{EngineError, Result};
 
@@ -43,6 +44,7 @@ fn envelope(body: JournalBody) -> Result<JournalEnvelope> {
     let payload = serde_json::to_vec(&body)?;
     Ok(JournalEnvelope {
         format_version: FORMAT_VERSION,
+        kind: Some("journal".into()),
         payload_length: payload.len() as u64,
         checksum: hash(&payload),
         payload: body,
@@ -81,12 +83,7 @@ pub fn load(path: &Path, expected_epoch: u64) -> Result<LoadedJournal> {
                 line_index + 1
             ))
         })?;
-        if envelope.format_version != FORMAT_VERSION {
-            return Err(EngineError::UnsupportedFormat {
-                found: envelope.format_version,
-                supported: FORMAT_VERSION,
-            });
-        }
+        validate_envelope(&envelope, path, line_index + 1)?;
         let payload = serde_json::to_vec(&envelope.payload)?;
         if envelope.payload_length != payload.len() as u64 || envelope.checksum != hash(&payload) {
             return Err(EngineError::CorruptJournal(format!(
@@ -151,6 +148,85 @@ pub fn load(path: &Path, expected_epoch: u64) -> Result<LoadedJournal> {
         records: records.into_values().collect(),
         next_sequence: sequence + 1,
     })
+}
+
+pub fn upgrade(path: &Path, expected_epoch: u64) -> Result<usize> {
+    load(path, expected_epoch)?;
+    let bytes = fs::read(path)?;
+    if bytes.is_empty() {
+        return Ok(0);
+    }
+    if !bytes.ends_with(b"\n") {
+        return Err(EngineError::CorruptJournal(format!(
+            "torn final record in {}",
+            path.display()
+        )));
+    }
+    let mut envelopes = Vec::new();
+    let mut upgraded = 0;
+    for (line_index, line) in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .enumerate()
+    {
+        let mut envelope: JournalEnvelope = serde_json::from_slice(line).map_err(|error| {
+            EngineError::CorruptJournal(format!(
+                "{} line {}: {error}",
+                path.display(),
+                line_index + 1
+            ))
+        })?;
+        validate_envelope(&envelope, path, line_index + 1)?;
+        let payload = serde_json::to_vec(&envelope.payload)?;
+        if envelope.payload_length != payload.len() as u64 || envelope.checksum != hash(&payload) {
+            return Err(EngineError::CorruptJournal(format!(
+                "checksum or length mismatch in {} line {}",
+                path.display(),
+                line_index + 1
+            )));
+        }
+        if envelope.format_version == LEGACY_FORMAT_VERSION {
+            envelope.format_version = FORMAT_VERSION;
+            envelope.kind = Some("journal".into());
+            upgraded += 1;
+        }
+        envelopes.push(envelope);
+    }
+    if upgraded == 0 {
+        return Ok(0);
+    }
+    let temporary = path.with_extension("upgrade.tmp");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temporary)?;
+    for envelope in envelopes {
+        serde_json::to_writer(&mut file, &envelope)?;
+        file.write_all(b"\n")?;
+    }
+    file.sync_all()?;
+    fs::rename(&temporary, path)?;
+    super::storage::sync_dir(path.parent().expect("journal has a parent"))?;
+    Ok(upgraded)
+}
+
+fn validate_envelope(envelope: &JournalEnvelope, path: &Path, line: usize) -> Result<()> {
+    if envelope.format_version != LEGACY_FORMAT_VERSION && envelope.format_version != FORMAT_VERSION
+    {
+        return Err(EngineError::UnsupportedFormat {
+            found: envelope.format_version,
+            supported: FORMAT_VERSION,
+        });
+    }
+    if envelope.format_version == FORMAT_VERSION && envelope.kind.as_deref() != Some("journal") {
+        return Err(EngineError::CorruptJournal(format!(
+            "journal kind mismatch in {} line {}",
+            path.display(),
+            line
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
