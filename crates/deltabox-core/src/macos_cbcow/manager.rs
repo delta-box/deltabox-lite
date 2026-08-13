@@ -1,5 +1,5 @@
 use super::state::{Mode, State};
-use crate::backend::{macos_seatbelt::SeatbeltBackend, SandboxBackend};
+use crate::command_executor::{self, Endpoint as CommandEndpoint};
 use crate::error::{Error, Result};
 use crate::journal::{Journal, JournalEntry, JournalKind};
 use crate::policy::Policy;
@@ -101,6 +101,11 @@ impl Manager {
         fs::create_dir_all(&state_root)?;
         fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700))?;
         probe_clonefile(&self.root, &state_root)?;
+        write_file(
+            &state_root.join("command-token"),
+            format!("{}{}\n", Uuid::new_v4(), Uuid::new_v4()).as_bytes(),
+            durability == DurabilityMode::Strict,
+        )?;
 
         let durable = durability == DurabilityMode::Strict;
         let event_id = current_event_id();
@@ -185,6 +190,7 @@ impl Manager {
             self.mutate_live(&mut state, |state| state.abort(None).map(|_| ()))?;
             self.append(&record, session_id, JournalKind::Abort, None)?;
         }
+        command_executor::shutdown(&command_endpoint(&record))?;
         let _ = stop_event_helper(&state.event_socket());
         self.save_review(session_id, None)?;
         meta.status = SessionStatus::Stopped;
@@ -196,13 +202,15 @@ impl Manager {
             fs::remove_file(self.root.join(PROJECT_LEASE))?;
         }
         self.append(&record, session_id, JournalKind::SessionStop, None)?;
+        command_executor::cleanup_stopped(&command_endpoint(&record));
         Ok(info_from_stopped(meta))
     }
 
     pub fn exec(&self, params: ExecParams) -> Result<ExecResult> {
-        let _lock = self.lock(&params.session_id)?;
+        let _lock = self.exec_lock(&params.session_id)?;
         let meta = self.running_meta(&params.session_id)?;
         let record = self.record(&params.session_id)?;
+        let operation = command_executor::lock_operations(&command_endpoint(&record))?;
         let mut state = self.open_state(&record)?;
         let tracker = if state.durable() {
             Some(self.prepare_events(&mut state, false)?)
@@ -232,17 +240,27 @@ impl Manager {
         let request = ExecRequest {
             argv: params.argv,
             cwd: params.cwd,
-            env: params.env,
+            env: command_executor::capture_environment(params.env),
         };
-        let mut backend = SeatbeltBackend::new_direct();
-        backend.start_session(&params.session_id, &spec)?;
-        let result = backend.exec(&params.session_id, request);
-        let stopped = backend.stop_session(&params.session_id);
+        let endpoint = command_endpoint(&record);
+        if !endpoint.token_file.exists() {
+            write_file(
+                &endpoint.token_file,
+                format!("{}{}\n", Uuid::new_v4(), Uuid::new_v4()).as_bytes(),
+                record.durability == DurabilityMode::Strict,
+            )?;
+        }
+        command_executor::ensure_running(
+            &endpoint,
+            &self.helper_bin,
+            &record.state_root.join("command-helper.log"),
+        )?;
+        drop(operation);
+        let result = command_executor::exec(&endpoint, &params.session_id, 0, spec, request);
         let tracked = tracker.as_ref().map_or(Ok(()), |tracker| {
             self.finish_events(&mut state, tracker, true)
         });
         let result = result?;
-        stopped?;
         tracked?;
         if tracker.is_some() {
             self.enforce_storage_limit(&meta, &state)?;
@@ -733,9 +751,27 @@ impl Manager {
         self.root.join(session_id)
     }
 
-    fn lock(&self, session_id: &str) -> Result<Lock> {
+    fn lock(&self, session_id: &str) -> Result<SessionOperationLock> {
+        let session = self.exec_lock(session_id)?;
+        if !self.store(session_id).join(SESSION_META).exists() {
+            return Err(Error::SessionNotFound(session_id.into()));
+        }
+        let record = self.record(session_id)?;
+        let operation = command_executor::lock_operations(&command_endpoint(&record))?;
+        Ok(SessionOperationLock {
+            _operation: operation,
+            _session: session,
+        })
+    }
+
+    fn exec_lock(&self, session_id: &str) -> Result<Lock> {
         Lock::acquire(&self.store(session_id).join(SESSION_LOCK))
     }
+}
+
+struct SessionOperationLock {
+    _operation: command_executor::OperationLock,
+    _session: Lock,
 }
 
 struct Lock(File);
@@ -818,6 +854,25 @@ fn filesystem_info(mode: Mode, state: &State, durability: DurabilityMode) -> Fil
     });
     info.tainted = state.status().tainted;
     info.with_durability(durability, None)
+}
+
+fn command_endpoint(record: &Record) -> CommandEndpoint {
+    // Darwin's sockaddr_un.sun_path is only 104 bytes. Keep control artifacts
+    // in a short, per-user/per-session directory even when the project or an
+    // overridden DELTABOX_STATE_DIR has a long path. The authentication token
+    // remains in the private durable state root.
+    let session_id = record
+        .state_root
+        .file_name()
+        .expect("macOS state root has a session directory");
+    let runtime = Path::new("/private/tmp")
+        .join(format!("deltabox-{}", unsafe { libc::geteuid() }))
+        .join(session_id);
+    CommandEndpoint::new(
+        runtime.join("command.sock"),
+        record.state_root.join("command-token"),
+        runtime.join("command.ready"),
+    )
 }
 
 fn info_from_stopped(meta: SessionMeta) -> SessionInfo {

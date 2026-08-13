@@ -60,6 +60,8 @@ The JSON-RPC protocol in action — sandboxed edits, diff, abort, redo, commit:
 ```mermaid
 flowchart LR
     A[CLI or agent adapter] --> C[Session coordinator]
+    C --> X[Lazy session command helper]
+    X --> Y[Short-lived confined child]
     C --> T[Linux cbcow-through]
     T --> H[Session-scoped DeltaFS helper]
     H --> P[(Host-visible LIVE tree)]
@@ -87,6 +89,9 @@ private working tree and commit publishes it to the project.
 On macOS, the same modes use APFS-cloned state and a restartable FSEvents helper
 instead of a mount. The helper only keeps the event stream warm; persisted
 cursors and indexes remain authoritative.
+The first CB-CoW `exec` also launches a restartable command helper. Later CLI
+or `serve` calls reuse its warm Sandlock worker on Linux or Seatbelt
+profile/proxy on macOS without making that helper authoritative session state.
 `deltabox serve` is only an optional JSON-RPC transport and is never the source
 of session truth. See [session semantics](docs/session-semantics.md).
 

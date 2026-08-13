@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 use std::ffi::OsStr;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
@@ -116,6 +116,13 @@ impl Session {
         ]);
         assert_ok(&output);
     }
+
+    fn command_runtime(&self) -> PathBuf {
+        let uid = std::fs::metadata(self.project.path()).unwrap().uid();
+        Path::new("/private/tmp")
+            .join(format!("deltabox-{uid}"))
+            .join(&self.id)
+    }
 }
 
 #[test]
@@ -175,8 +182,15 @@ where
 #[test]
 fn strict_private_mode_is_durable_across_cli_processes() {
     let session = Session::start_with("cbcow-private", true);
+    let runtime = session.command_runtime();
+    let ready = runtime.join("command.ready");
+    let socket = runtime.join("command.sock");
     assert_eq!(session.status()["durability"], "strict");
     assert_eq!(session.exec("printf one > a.txt")["exit_code"], 0);
+    let first_ready: Value = serde_json::from_slice(&std::fs::read(&ready).unwrap()).unwrap();
+    let helper_pid = first_ready["pid"].as_u64().unwrap();
+    let helper_nonce = first_ready["nonce"].as_str().unwrap().to_owned();
+    assert!(socket.exists());
     let checkpoint = session.run([
         "checkpoint",
         &session.id,
@@ -187,6 +201,8 @@ fn strict_private_mode_is_durable_across_cli_processes() {
     let checkpoint: Value = serde_json::from_slice(&checkpoint.stdout).unwrap();
     let checkpoint = checkpoint["id"].as_str().unwrap();
     assert_eq!(session.exec("printf two > a.txt")["exit_code"], 0);
+    let second_ready: Value = serde_json::from_slice(&std::fs::read(&ready).unwrap()).unwrap();
+    assert_eq!(second_ready["pid"].as_u64(), Some(helper_pid));
     let abort = session.run([
         "abort",
         &session.id,
@@ -202,7 +218,31 @@ fn strict_private_mode_is_durable_across_cli_processes() {
         std::fs::read_to_string(session.project.path().join("a.txt")).unwrap(),
         "one"
     );
+
+    let changed_environment = Command::new(bin())
+        .env("DELTABOX_STATE_DIR", session.state.path())
+        .env("PATH", "/usr/bin:/bin")
+        .current_dir(session.project.path())
+        .args([
+            "exec",
+            &session.id,
+            "--project",
+            session.project.path().to_str().unwrap(),
+            "--",
+            "/bin/sh",
+            "-c",
+            ":",
+        ])
+        .output()
+        .unwrap();
+    assert_ok(&changed_environment);
+    let changed_ready: Value = serde_json::from_slice(&std::fs::read(&ready).unwrap()).unwrap();
+    assert_ne!(changed_ready["nonce"].as_str(), Some(helper_nonce.as_str()));
+
     session.stop();
+    assert!(!ready.exists());
+    assert!(!socket.exists());
+    assert!(!runtime.exists());
 }
 
 fn assert_ok(output: &Output) {

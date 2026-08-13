@@ -55,12 +55,21 @@ filesystem metadata was introduced continue to resolve to `copy-private`.
 ## Process model
 
 Normal CLI operations are synchronous and require no prestarted service. A
-Linux CB-CoW session owns one automatically launched filesystem helper and FUSE
-mount; each `exec` still launches a short-lived confined process. The helper can
-be restarted from its journal and state files after process failure.
-`cbcow-through` mounts the host tree, while `cbcow-private` mounts a private
-reflink/copy materialization. `copy-private` uses a short-lived sandbox
-transaction and materializes its result into a durable private working view.
+CB-CoW session lazily launches a session-scoped command helper on its first
+`exec`. Independent CLI and `serve` calls reuse its warm Sandlock worker on
+Linux or its prepared Seatbelt profile and network proxy on macOS; each user
+command is still a short-lived confined child. The helper owns no authoritative
+filesystem state and is recreated automatically after failure. A changed
+policy or a restarted Linux filesystem helper invalidates and rebuilds only the
+warm sandbox runtime. Failed commands are never replayed automatically because
+the caller may already have observed their side effects.
+
+A Linux CB-CoW session also owns one automatically launched filesystem helper
+and FUSE mount. The filesystem helper can be restarted from its journal and
+state files after process failure. `cbcow-through` mounts the host tree, while
+`cbcow-private` mounts a private reflink/copy materialization. `copy-private`
+uses a short-lived sandbox transaction and materializes its result into a
+durable private working view.
 
 On macOS, the session owns a small FSEvents helper so independent CLI processes
 reuse one warm stream. The helper holds only pending event candidates and can
@@ -76,11 +85,17 @@ after the child exits and defers event accounting to the next state operation;
 the persisted cursor remains behind until that synchronization, so helper or
 CLI failure replays rather than loses those events.
 
-`serve` may optimize transport or sandbox startup, but it uses the same on-disk
-state and remains restartable. It is never the source of truth. A failed worker
-returns an error for its request; the next request in the same `serve` process
+`serve` may optimize transport, but it uses the same helper and on-disk state
+as independent CLI calls and remains restartable. It is never the source of
+truth. A failed worker returns an error for its request; the next request
 rebuilds a worker from the durable working view. Live child processes and file
 descriptors are not recoverable state.
+
+The command helper holds a second per-session operation lock while an `exec` is
+live. If the invoking CLI exits after dispatch, later status, diff, checkpoint,
+commit, abort, stop, or exec operations wait for that orphaned command boundary
+instead of racing it. The helper acknowledges lock ownership before starting a
+command, so a request whose client disappears before handoff is not executed.
 
 ## Concurrency and conflicts
 

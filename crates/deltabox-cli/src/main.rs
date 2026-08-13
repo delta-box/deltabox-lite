@@ -58,6 +58,10 @@ enum Command {
     #[cfg(target_os = "macos")]
     #[command(hide = true)]
     MacosEvents(MacosEventsArgs),
+    /// Run a session-scoped persistent command executor.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[command(hide = true)]
+    CommandHelper(CommandHelperArgs),
     /// Serve the JSON-RPC protocol over stdio.
     Serve,
 }
@@ -233,6 +237,17 @@ struct WorkerArgs {
     root: PathBuf,
     #[arg(long)]
     runtime: PathBuf,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(clap::Args)]
+struct CommandHelperArgs {
+    #[arg(long)]
+    socket: PathBuf,
+    #[arg(long)]
+    token_file: PathBuf,
+    #[arg(long)]
+    ready_file: PathBuf,
 }
 
 #[cfg(target_os = "macos")]
@@ -482,6 +497,17 @@ fn main() -> anyhow::Result<()> {
                 args.since,
                 std::time::Duration::from_secs(30),
             )?;
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        Command::CommandHelper(args) => {
+            deltabox_core::command_executor::run(deltabox_core::command_executor::Config {
+                endpoint: deltabox_core::command_executor::Endpoint::new(
+                    args.socket,
+                    args.token_file,
+                    args.ready_file,
+                ),
+                worker_bin: std::env::current_exe()?,
+            })?;
         }
         Command::Serve => {
             let project = std::env::current_dir()?;

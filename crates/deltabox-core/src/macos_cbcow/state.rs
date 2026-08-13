@@ -307,6 +307,14 @@ impl State {
                 .refresh(&live, &paths)?;
         }
 
+        // FSEvents paths are candidates, not proof that the current tree still
+        // differs. In particular, a long-lived stream can deliver events from
+        // an abort/commit after that manager operation has refreshed the
+        // persisted index. Drop those stale notifications, along with
+        // unchanged siblings introduced by parent expansion.
+        let after = self.index.as_ref().expect("index loaded");
+        paths.retain(|path| before.entries.get(path) != after.entries.get(path));
+
         if historical && self.manifest.mode == Mode::Through && !paths.is_empty() {
             self.manifest.tainted = true;
         }
@@ -1453,5 +1461,44 @@ mod tests {
         assert_eq!(state.reconcile(&batch, true, "device".into()).unwrap(), 0);
         assert_eq!(state.status().pending, 0);
         assert!(!state.status().tainted);
+    }
+
+    #[test]
+    fn delayed_abort_event_does_not_reopen_pending_changes() {
+        let (project, mut state) = state(Mode::Through);
+        let path = project.path().join("new.txt");
+        fs::write(&path, "pending").unwrap();
+        let created = EventBatch {
+            events: vec![Event {
+                path: path.clone(),
+                flags: ITEM_CREATED,
+                id: 2,
+            }],
+            latest_id: 2,
+            history_done: true,
+            ..EventBatch::default()
+        };
+        assert_eq!(
+            state.reconcile(&created, false, "device".into()).unwrap(),
+            1
+        );
+        state.abort(None).unwrap();
+        assert_eq!(state.status().pending, 0);
+
+        let delayed = EventBatch {
+            events: vec![Event {
+                path,
+                flags: ITEM_REMOVED,
+                id: 3,
+            }],
+            latest_id: 3,
+            history_done: true,
+            ..EventBatch::default()
+        };
+        assert_eq!(
+            state.reconcile(&delayed, false, "device".into()).unwrap(),
+            0
+        );
+        assert_eq!(state.status().pending, 0);
     }
 }

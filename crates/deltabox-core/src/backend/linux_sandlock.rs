@@ -125,8 +125,8 @@ impl Default for SandlockBackend {
 
 impl Drop for SandlockBackend {
     fn drop(&mut self) {
-        let sessions = std::mem::take(&mut self.sessions);
-        for (session_id, _) in sessions {
+        let sessions: Vec<String> = self.sessions.keys().cloned().collect();
+        for session_id in sessions {
             let _ = self.stop_session(&session_id);
         }
     }

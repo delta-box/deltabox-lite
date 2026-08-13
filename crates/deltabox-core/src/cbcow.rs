@@ -1,8 +1,6 @@
-use crate::backend::{
-    linux_sandlock::{resolve_deny_paths, SandlockBackend},
-    SandboxBackend,
-};
+use crate::backend::linux_sandlock::resolve_deny_paths;
 use crate::changeset::{describe_change, ChangeKind, DEFAULT_TEXT_SIZE_LIMIT};
+use crate::command_executor::{self, Endpoint as CommandEndpoint};
 use crate::error::{Error, Result};
 use crate::journal::{Journal, JournalEntry, JournalKind};
 use crate::pathmap::PathMapper;
@@ -134,6 +132,11 @@ impl Manager {
             format!("{}{}\n", Uuid::new_v4(), Uuid::new_v4()).as_bytes(),
             durability == DurabilityMode::Strict,
         )?;
+        write_private(
+            &state_root.join("command-token"),
+            format!("{}{}\n", Uuid::new_v4(), Uuid::new_v4()).as_bytes(),
+            durability == DurabilityMode::Strict,
+        )?;
 
         let mut record = MountRecord {
             source,
@@ -260,6 +263,7 @@ impl Manager {
             self.append(session_id, JournalKind::Abort, None)?;
         }
         self.save_review(session_id, None)?;
+        command_executor::shutdown(&command_endpoint(&record))?;
         if self.request(&record, ControlCommand::Shutdown).is_err() {
             self.stop_helper(&record);
         }
@@ -277,6 +281,7 @@ impl Manager {
             let _ = fs::remove_file(self.root.join(PROJECT_LEASE));
         }
         self.append(session_id, JournalKind::SessionStop, None)?;
+        command_executor::cleanup_stopped(&command_endpoint(&record));
         Ok(SessionInfo {
             session_id: meta.session_id,
             project: meta.project,
@@ -289,9 +294,19 @@ impl Manager {
     }
 
     pub fn exec(&self, params: ExecParams) -> Result<ExecResult> {
-        let _lock = self.lock(&params.session_id)?;
+        let _lock = self.exec_lock(&params.session_id)?;
         let meta = self.running_meta(&params.session_id)?;
+        let initial_record = self.load_record(&params.session_id)?;
+        let operation = command_executor::lock_operations(&command_endpoint(&initial_record))?;
         let record = self.ensure_helper(&params.session_id)?;
+        let endpoint = command_endpoint(&record);
+        if !endpoint.token_file.exists() {
+            write_private(
+                &endpoint.token_file,
+                format!("{}{}\n", Uuid::new_v4(), Uuid::new_v4()).as_bytes(),
+                record.durability == DurabilityMode::Strict,
+            )?;
+        }
         let mapper = PathMapper::new(&self.project, &record.mountpoint);
         let mut policy = self.policy(&meta)?;
         let deny_paths: Vec<PathBuf> =
@@ -307,6 +322,9 @@ impl Manager {
             .to_path_buf();
         deny_paths.push(state_root.clone());
         deny_paths.push(record.socket.clone());
+        deny_paths.push(endpoint.socket.clone());
+        deny_paths.push(endpoint.ready_file.clone());
+        deny_paths.push(endpoint.operation_lock.clone());
         policy
             .filesystem
             .deny
@@ -315,6 +333,18 @@ impl Manager {
             .filesystem
             .deny
             .push(record.socket.to_string_lossy().into_owned());
+        policy
+            .filesystem
+            .deny
+            .push(endpoint.socket.to_string_lossy().into_owned());
+        policy
+            .filesystem
+            .deny
+            .push(endpoint.ready_file.to_string_lossy().into_owned());
+        policy
+            .filesystem
+            .deny
+            .push(endpoint.operation_lock.to_string_lossy().into_owned());
         let request = ExecRequest {
             argv: params
                 .argv
@@ -322,8 +352,7 @@ impl Manager {
                 .map(|value| mapper.map_arg(&value))
                 .collect(),
             cwd: params.cwd.as_deref().map(|path| mapper.map_path(path)),
-            env: params
-                .env
+            env: command_executor::capture_environment(params.env)
                 .map(|values| {
                     values
                         .into_iter()
@@ -339,12 +368,23 @@ impl Manager {
             policy,
             resolved_deny_paths: Some(deny_paths),
         };
-        let mut backend = SandlockBackend::new_direct(Some(self.helper_bin.clone()));
-        backend.start_session(&params.session_id, &spec)?;
-        let result = backend.exec(&params.session_id, request);
-        let stop = backend.stop_session(&params.session_id);
-        let result = result?;
-        stop?;
+        command_executor::ensure_running(
+            &endpoint,
+            &self.helper_bin,
+            &record
+                .state_dir
+                .parent()
+                .expect("engine state has a session root")
+                .join("command-helper.log"),
+        )?;
+        drop(operation);
+        let result = command_executor::exec(
+            &endpoint,
+            &params.session_id,
+            record.helper_start_ticks,
+            spec,
+            request,
+        )?;
         self.append(
             &params.session_id,
             JournalKind::Exec,
@@ -657,6 +697,7 @@ impl Manager {
             self.recover_publication(session_id, &record)?;
             return Ok(record);
         }
+        command_executor::reset(&command_endpoint(&record))?;
         self.stop_helper(&record);
         wait_helper_stopped(&record)?;
         detach_mount(&record.mountpoint)?;
@@ -850,6 +891,7 @@ impl Manager {
     }
 
     fn cleanup_start(&self, session_id: &str, record: &MountRecord) -> Result<()> {
+        let _ = command_executor::shutdown(&command_endpoint(record));
         self.stop_helper(record);
         detach_mount(&record.mountpoint)?;
         wait_unmounted(&record.mountpoint)?;
@@ -984,9 +1026,27 @@ impl Manager {
         self.root.join(session_id)
     }
 
-    fn lock(&self, session_id: &str) -> Result<Lock> {
+    fn lock(&self, session_id: &str) -> Result<SessionOperationLock> {
+        let session = self.exec_lock(session_id)?;
+        if !self.store(session_id).join(SESSION_META).exists() {
+            return Err(Error::SessionNotFound(session_id.into()));
+        }
+        let record = self.load_record(session_id)?;
+        let operation = command_executor::lock_operations(&command_endpoint(&record))?;
+        Ok(SessionOperationLock {
+            _operation: operation,
+            _session: session,
+        })
+    }
+
+    fn exec_lock(&self, session_id: &str) -> Result<Lock> {
         Lock::acquire(&self.store(session_id).join(SESSION_LOCK))
     }
+}
+
+struct SessionOperationLock {
+    _operation: command_executor::OperationLock,
+    _session: Lock,
 }
 
 struct Lock(File);
@@ -1126,6 +1186,18 @@ fn filesystem_info(record: &MountRecord) -> FilesystemInfo {
         crate::protocol::FilesystemMode::CopyPrivate => unreachable!("CB-CoW mount record mode"),
     };
     info.with_durability(record.durability, record.group_commit_ms)
+}
+
+fn command_endpoint(record: &MountRecord) -> CommandEndpoint {
+    let state_root = record
+        .state_dir
+        .parent()
+        .expect("engine state has a session root");
+    CommandEndpoint::new(
+        record.runtime_dir.join("command.sock"),
+        state_root.join("command-token"),
+        record.runtime_dir.join("command.ready"),
+    )
 }
 
 fn relative_path(project: &Path, path: &Path) -> Result<PathBuf> {
