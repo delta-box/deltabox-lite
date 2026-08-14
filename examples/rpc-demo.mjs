@@ -4,11 +4,13 @@
 // redo -> checkpoint -> diff -> commit -> session.stop.
 // Press Enter to advance between steps (auto-advances when stdin is piped).
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, readdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const project = mkdtempSync(join(tmpdir(), "deltabox-demo-"));
+// Resolve symlinks (macOS /var -> /private/var) so client-side path joins
+// match the server's canonicalized project view.
+const project = realpathSync(mkdtempSync(join(tmpdir(), "deltabox-demo-")));
 writeFileSync(join(project, "README.md"), "# demo\n\nA tiny sandboxed project.\n");
 const bin = process.env.DELTABOX_BIN ?? "deltabox";
 
