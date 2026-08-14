@@ -1,0 +1,20 @@
+{
+  "name": "deltabox-client",
+  "version": "0.1.0",
+  "description": "Node.js client SDK for the deltabox-lite JSON-RPC sandbox runtime",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": "./index.mjs",
+  "scripts": {
+    "test": "node test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ddnirvana/deltabox-lite"
+  },
+  "keywords": ["sandbox", "agent", "deltabox", "json-rpc"]
+}
