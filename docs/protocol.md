@@ -25,6 +25,8 @@ each response is one JSON object per line.
 | `session.stop` | `{session_id}` | `SessionInfo` |
 | `session.status` | `{session_id}` | `SessionInfo` |
 | `session.exec` | `{session_id, argv, cwd?, env?, label?}` | `ExecResult` |
+| `fs.read` | `{session_id, path}` | `{content_base64, size}` |
+| `fs.write` | `{session_id, path, content_base64}` | `null` |
 | `checkpoint.create` | `{session_id, label?}` | `CheckpointInfo` |
 | `diff.list` | `{session_id, from?, to?}` | `DiffResult` |
 | `changes.commit` | `{session_id, checkpoint?}` | `CommitResult` |
@@ -71,6 +73,11 @@ recovery while the session and its durable state remain valid. The macOS native
 provider has no mountpoint and does not expose its restartable event helper PID.
 
 `ExecResult` = `{exit_code, stdout, stderr, duration_ms, truncated}`.
+
+`fs.read` and `fs.write` carry file content base64-encoded. `fs.read` returns
+the decoded size in bytes alongside the content. A single `fs.write` is capped
+by the policy's `max_write_bytes` (16 MiB by default) and invalid base64 is
+rejected before any filesystem change.
 
 `label` on `session.exec` is optional free-form attribution (e.g. the Pi tool
 name); it is recorded in the session journal so change sets can be grouped by
