@@ -12,6 +12,7 @@ use crate::protocol::{
 use crate::snapshot::{
     diff_snapshots, load_snapshot, read_capped_file, save_snapshot, BASE_SCAN_FILE,
 };
+use crate::state_layout::state_root;
 use crate::worker::ScanEntry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -119,7 +120,7 @@ impl SessionManager {
         durability: Durability,
     ) -> Result<Self> {
         let project = project.canonicalize()?;
-        let root = project.join(".deltabox");
+        let root = state_root(&project)?;
         std::fs::create_dir_all(&root)?;
         let registry = SessionRegistry::load(&root)?;
         Ok(Self {
