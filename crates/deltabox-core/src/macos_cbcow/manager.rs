@@ -206,6 +206,31 @@ impl Manager {
         Ok(info_from_stopped(meta))
     }
 
+    pub fn remove_stopped(&self, session_id: &str) -> Result<()> {
+        let lock = self.exec_lock(session_id)?;
+        let meta = self.load_meta(session_id)?;
+        if meta.status != SessionStatus::Stopped {
+            return Err(Error::SessionBusy(session_id.into()));
+        }
+        let record = self.record(session_id)?;
+        let runtime = command_endpoint(&record)
+            .socket
+            .parent()
+            .expect("command socket has a runtime directory")
+            .to_path_buf();
+        let mut registry = SessionRegistry::load(&self.root)?;
+        registry.remove(session_id);
+        registry.save(&self.root)?;
+        drop(lock);
+
+        if runtime.exists() {
+            fs::remove_dir_all(runtime)?;
+        }
+        fs::remove_dir_all(record.state_root)?;
+        fs::remove_dir_all(self.store(session_id))?;
+        Ok(())
+    }
+
     pub fn exec(&self, params: ExecParams) -> Result<ExecResult> {
         let _lock = self.exec_lock(&params.session_id)?;
         let meta = self.running_meta(&params.session_id)?;

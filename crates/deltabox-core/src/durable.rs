@@ -189,6 +189,21 @@ impl DurableSessionManager {
         self.status(session_id)
     }
 
+    pub fn remove_stopped(&self, session_id: &str) -> Result<()> {
+        let store = self.store_dir(session_id);
+        let lock = SessionLock::acquire(&store)?;
+        let meta = self.require_meta(session_id)?;
+        if meta.status != SessionStatus::Stopped {
+            return Err(Error::SessionBusy(session_id.into()));
+        }
+        let mut registry = SessionRegistry::load(&self.root)?;
+        registry.remove(session_id);
+        registry.save(&self.root)?;
+        drop(lock);
+        std::fs::remove_dir_all(store)?;
+        Ok(())
+    }
+
     pub fn exec(&self, params: ExecParams) -> Result<ExecResult> {
         let _lock = self.lock_running(&params.session_id)?;
         let working = self.working_dir(&params.session_id);

@@ -92,6 +92,11 @@ impl SessionRegistry {
             self.sessions.push(meta);
         }
     }
+
+    pub fn remove(&mut self, session_id: &str) {
+        self.sessions
+            .retain(|session| session.session_id != session_id);
+    }
 }
 
 /// Bookkeeping + orchestration layer. OS-specific work goes to the backend.

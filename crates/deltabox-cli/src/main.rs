@@ -7,7 +7,7 @@ use deltabox_core::protocol::{
     FilesystemMode, Request, ReviewBeginParams, ReviewKind,
 };
 use deltabox_core::server::Server;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 
@@ -29,6 +29,8 @@ enum Command {
         #[command(subcommand)]
         cmd: SessionCmd,
     },
+    /// Run one command in a temporary transaction, then commit or abort it.
+    Run(RunArgs),
     /// Run an argv command inside a sandbox session; use `sh -c` for shell syntax.
     Exec(ExecArgs),
     /// Read a file from the sandbox view.
@@ -158,6 +160,38 @@ struct ExecArgs {
     session: String,
     #[arg(long, default_value = ".")]
     project: PathBuf,
+    #[arg(long)]
+    label: Option<String>,
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    #[arg(long)]
+    env: Vec<String>,
+    #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
+    command: Vec<String>,
+}
+
+#[derive(clap::Args)]
+struct RunArgs {
+    #[arg(long, default_value = ".")]
+    project: PathBuf,
+    #[arg(long)]
+    policy: Option<PathBuf>,
+    #[arg(long, value_parser = parse_filesystem_mode)]
+    fs_mode: Option<FilesystemMode>,
+    #[arg(long)]
+    require_fs_mode: bool,
+    /// Require CB-CoW and wait for ordered storage barriers before operations return.
+    #[arg(long)]
+    durable: bool,
+    /// Batch concurrent strict journal barriers for up to this many milliseconds.
+    #[arg(long, requires = "durable")]
+    group_commit_ms: Option<NonZeroU64>,
+    /// Commit the command's filesystem changes without prompting.
+    #[arg(long, conflicts_with = "abort")]
+    commit: bool,
+    /// Abort the command's filesystem changes without prompting.
+    #[arg(long, conflicts_with = "commit")]
+    abort: bool,
     #[arg(long)]
     label: Option<String>,
     #[arg(long)]
@@ -307,15 +341,7 @@ fn main() -> anyhow::Result<()> {
                     println!("{}", serde_json::to_string_pretty(&info)?);
                 } else {
                     println!("{}", info.session_id);
-                    if info.filesystem.resolved_fs_mode == FilesystemMode::CbcowThrough {
-                        eprintln!(
-                            "deltabox: host changes are immediate; commit accepts them and abort reverts them"
-                        );
-                    } else if let Some(reason) = &info.filesystem.fallback_reason {
-                        eprintln!(
-                            "deltabox: requested filesystem is unavailable; using copy-private: {reason}"
-                        );
-                    }
+                    print_start_notice(&info);
                 }
             }
             SessionCmd::Stop(args) => {
@@ -329,6 +355,12 @@ fn main() -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&info)?);
             }
         },
+        Command::Run(args) => {
+            let exit_code = run_transaction(args)?;
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
+        }
         Command::Exec(args) => {
             validate_exec_command(&args.command)?;
             let manager = SessionCoordinator::new(&args.project, None)?;
@@ -559,6 +591,130 @@ fn validate_exec_command(argv: &[String]) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum RunAction {
+    Commit,
+    Abort,
+}
+
+fn run_transaction(args: RunArgs) -> anyhow::Result<i32> {
+    validate_exec_command(&args.command)?;
+    let action = if args.commit {
+        Some(RunAction::Commit)
+    } else if args.abort {
+        Some(RunAction::Abort)
+    } else {
+        None
+    };
+    let interactive = std::io::stdin().is_terminal();
+    if action.is_none() && !interactive {
+        anyhow::bail!("deltabox run requires --commit or --abort when stdin is not a terminal");
+    }
+    let env = if args.env.is_empty() {
+        None
+    } else {
+        Some(
+            args.env
+                .iter()
+                .map(|entry| split_env(entry))
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        )
+    };
+
+    let manager = SessionCoordinator::new(&args.project, None)?;
+    let info = manager.start_with_durability(
+        args.policy.as_deref(),
+        args.fs_mode,
+        args.require_fs_mode,
+        if args.durable {
+            DurabilityMode::Strict
+        } else {
+            DurabilityMode::Fast
+        },
+        args.group_commit_ms.map(NonZeroU64::get),
+    )?;
+    print_start_notice(&info);
+    let session_id = info.session_id;
+
+    let outcome = (|| -> anyhow::Result<i32> {
+        let result = manager.exec(ExecParams {
+            session_id: session_id.clone(),
+            argv: args.command,
+            cwd: args.cwd,
+            env,
+            label: args.label,
+        })?;
+        std::io::stdout()
+            .lock()
+            .write_all(result.stdout.as_bytes())?;
+        std::io::stderr()
+            .lock()
+            .write_all(result.stderr.as_bytes())?;
+
+        let diff = manager.diff(DiffParams {
+            session_id: session_id.clone(),
+            from: None,
+            to: None,
+        })?;
+        eprint!("{}", deltabox_core::changeset::render_diff_text(&diff));
+        let action = match action {
+            Some(action) => action,
+            None => prompt_run_action()?,
+        };
+        match action {
+            RunAction::Commit => {
+                let committed = manager.commit(CommitParams {
+                    session_id: session_id.clone(),
+                    checkpoint: None,
+                })?;
+                eprintln!("deltabox: committed {} path(s)", committed.applied);
+            }
+            RunAction::Abort => {
+                let aborted = manager.abort(AbortParams {
+                    session_id: session_id.clone(),
+                    checkpoint: None,
+                })?;
+                eprintln!("deltabox: aborted {} change(s)", aborted.restored);
+            }
+        }
+        Ok(result.exit_code.unwrap_or(1))
+    })();
+
+    let cleanup = manager
+        .stop(&session_id)
+        .and_then(|_| manager.remove_stopped(&session_id));
+    match (outcome, cleanup) {
+        (Ok(exit_code), Ok(())) => Ok(exit_code),
+        (Ok(_), Err(error)) => Err(error.into()),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(cleanup)) => {
+            Err(error.context(format!("failed to clean temporary session: {cleanup}")))
+        }
+    }
+}
+
+fn prompt_run_action() -> anyhow::Result<RunAction> {
+    eprint!("deltabox: [c]ommit or [a]bort? ");
+    std::io::stderr().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    match answer.trim() {
+        "c" | "commit" => Ok(RunAction::Commit),
+        "a" | "abort" => Ok(RunAction::Abort),
+        _ => anyhow::bail!("expected `commit` or `abort`"),
+    }
+}
+
+fn print_start_notice(info: &deltabox_core::protocol::SessionInfo) {
+    if info.filesystem.resolved_fs_mode == FilesystemMode::CbcowThrough {
+        eprintln!(
+            "deltabox: host changes are immediate; commit accepts them and abort reverts them"
+        );
+    } else if let Some(reason) = &info.filesystem.fallback_reason {
+        eprintln!("deltabox: requested filesystem is unavailable; using copy-private: {reason}");
+    }
 }
 
 fn parse_filesystem_mode(value: &str) -> Result<FilesystemMode, String> {

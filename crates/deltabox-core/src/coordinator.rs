@@ -114,6 +114,16 @@ impl SessionCoordinator {
         }
     }
 
+    pub fn remove_stopped(&self, session_id: &str) -> Result<()> {
+        match self.route(session_id)? {
+            Route::CopyPrivate(manager) => manager.remove_stopped(session_id),
+            #[cfg(target_os = "linux")]
+            Route::Cbcow(manager) => manager.remove_stopped(session_id),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.remove_stopped(session_id),
+        }
+    }
+
     pub fn exec(&self, params: ExecParams) -> Result<ExecResult> {
         match self.route(&params.session_id)? {
             Route::CopyPrivate(manager) => manager.exec(params),

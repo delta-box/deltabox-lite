@@ -113,6 +113,24 @@ npm install --global deltabox-lite
 The npm package exposes the platform prebuild directly. Pi integrations resolve
 the same native binary, so commands do not start an extra Node process.
 
+For one command, `run` creates and cleans up the transaction automatically. It
+shows the diff and asks whether to commit or abort when used from a terminal:
+
+```bash
+cd /abs/path/my-project
+deltabox run -- npm install
+```
+
+Scripts and agent integrations must choose the outcome explicitly. The command
+does not expose a session ID, and its exit status is preserved after the
+transaction decision:
+
+```bash
+deltabox run --commit -- git apply update.patch
+deltabox run --abort -- sh -c 'printf "%s\n" trial > result.txt; exit 7'
+deltabox run --project /abs/path/my-project --commit -- make generate
+```
+
 Start a persistent session and use it from independent CLI processes. Commands
 run from the project directory can omit `--project`; use it only when invoking
 Deltabox from another directory:
@@ -131,8 +149,8 @@ that need to surface provider fallback, visibility, durability, or taint state.
 
 ### Running shell commands
 
-`deltabox exec` runs the argv after `--` directly. Commands that do not require
-shell parsing can be passed as ordinary arguments:
+`deltabox exec` and `deltabox run` execute the argv after `--` directly.
+Commands that do not require shell parsing can be passed as ordinary arguments:
 
 ```bash
 deltabox exec "$session_id" -- git status --short

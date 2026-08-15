@@ -293,6 +293,28 @@ impl Manager {
         })
     }
 
+    pub fn remove_stopped(&self, session_id: &str) -> Result<()> {
+        let lock = self.exec_lock(session_id)?;
+        let meta = self.load_meta(session_id)?;
+        if meta.status != SessionStatus::Stopped {
+            return Err(Error::SessionBusy(session_id.into()));
+        }
+        let record = self.load_record(session_id)?;
+        let mut registry = SessionRegistry::load(&self.root)?;
+        registry.remove(session_id);
+        registry.save(&self.root)?;
+        drop(lock);
+
+        let state_root = record
+            .state_dir
+            .parent()
+            .expect("engine state has a session root");
+        fs::remove_dir_all(&record.runtime_dir)?;
+        fs::remove_dir_all(state_root)?;
+        fs::remove_dir_all(self.store(session_id))?;
+        Ok(())
+    }
+
     pub fn exec(&self, params: ExecParams) -> Result<ExecResult> {
         let _lock = self.exec_lock(&params.session_id)?;
         let meta = self.running_meta(&params.session_id)?;
