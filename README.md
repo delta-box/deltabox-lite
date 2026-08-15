@@ -9,7 +9,6 @@ Give agents a confined workspace with explicit diff, commit, and abort semantics
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#license)
 [![Rust](https://img.shields.io/badge/rust-1.87+-orange.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey.svg)](#)
-[![API](https://img.shields.io/badge/API-JSON--RPC-blueviolet.svg)](docs/protocol.md)
 [![Pi](https://img.shields.io/badge/pi-deltabox-purple.svg)](https://github.com/Ddnirvana/pi-deltabox)
 
 </div>
@@ -26,9 +25,9 @@ anxiety about binary or large files.
 
 ## Demo
 
-The JSON-RPC protocol in action — sandboxed edits, diff, abort, redo, commit:
+Run a command, inspect its change set, and choose whether to keep or discard it:
 
-![deltabox-lite JSON-RPC demo](assets/deltabox-lite.gif)
+![deltabox-lite transaction demo](assets/deltabox-lite.gif)
 
 ## Highlights
 
@@ -48,52 +47,11 @@ The JSON-RPC protocol in action — sandboxed edits, diff, abort, redo, commit:
   checkpoint; commit accepts the current state.
 - **Review-scope savepoints** — task and tool adapters choose the correct abort
   target; normal commit and abort do not require a user-created checkpoint.
-- **Agent-agnostic** — a line-delimited JSON-RPC protocol over stdio. The Pi
-  adapter ships as [pi-deltabox](https://github.com/Ddnirvana/pi-deltabox);
-  adapters for other agents speak the same protocol.
+- **Agent adapters** — optional JSON-RPC over stdio for Pi and other
+  integrations; see the [adapter protocol](docs/protocol.md).
 - **Policy-first** — filesystem read/write rules, secret-path denial, network
   allow/audit, deny-all and allowlist modes, scrubbed child environments, and
   bounded writes/storage.
-
-## How it works
-
-```mermaid
-flowchart LR
-    A[CLI or agent adapter] --> C[Session coordinator]
-    C --> X[Lazy session command helper]
-    X --> Y[Short-lived confined child]
-    C --> T[Linux cbcow-through]
-    T --> H[Session-scoped DeltaFS helper]
-    H --> P[(Host-visible LIVE tree)]
-    C --> V[Linux cbcow-private]
-    V --> F[Session-scoped DeltaFS helper]
-    F --> L[(Private LIVE tree)]
-    L -->|touched-path commit| P
-    C --> M[macOS native APFS plus FSEvents]
-    M --> E[Session-scoped event helper]
-    E --> P
-    E --> L
-    C --> R[copy-private fallback]
-    R --> S[(Private working tree)]
-    S -->|commit| P
-    O[Optional deltabox serve] -.-> C
-```
-
-On Linux with FUSE available, `session start` launches a helper that mounts the
-host project through the commit-biased state engine. Writes update the host
-tree through DeltaFS after recording rollback data; commit accepts the current
-state and abort replays undo records. `cbcow-private` preserves the same fast
-per-command path while keeping its `LIVE` tree hidden from the host until a
-conflict-checked commit. In `copy-private`, each command updates a durable
-private working tree and commit publishes it to the project.
-On macOS, the same modes use APFS-cloned state and a restartable FSEvents helper
-instead of a mount. The helper only keeps the event stream warm; persisted
-cursors and indexes remain authoritative.
-The first CB-CoW `exec` also launches a restartable command helper. Later CLI
-or `serve` calls reuse its warm Sandlock worker on Linux or Seatbelt
-profile/proxy on macOS without making that helper authoritative session state.
-`deltabox serve` is only an optional JSON-RPC transport and is never the source
-of session truth. See [session semantics](docs/session-semantics.md).
 
 ## Quick start
 
@@ -113,44 +71,56 @@ npm install --global deltabox-lite
 The npm package exposes the platform prebuild directly. Pi integrations resolve
 the same native binary, so commands do not start an extra Node process.
 
-For one command, `run` creates and cleans up the transaction automatically. It
-shows the diff and asks whether to commit or abort when used from a terminal:
+For a first transaction, create a project with one ordinary file and discard a
+command's changes. No package manifest or policy file is needed:
 
 ```bash
-cd /abs/path/my-project
-deltabox run -- npm install
+demo=$(mktemp -d)
+cd "$demo"
+printf 'original\n' > notes.txt
+
+deltabox run --abort -- sh -c '
+  printf "sandboxed\n" >> notes.txt
+  printf "generated\n" > generated.txt
+  find . -maxdepth 1 -type f -print
+'
+
+cat notes.txt
+test ! -e generated.txt
 ```
 
-Scripts and agent integrations must choose the outcome explicitly. The command
-does not expose a session ID, and its exit status is preserved after the
-transaction decision:
+The command runs inside the sandbox view, prints the diff, and then aborts. The
+original `notes.txt` remains unchanged and `generated.txt` is removed.
+
+To keep a result, use the same one-command interface with `--commit`:
 
 ```bash
-deltabox run --commit -- git apply update.patch
-deltabox run --abort -- sh -c 'printf "%s\n" trial > result.txt; exit 7'
-deltabox run --project /abs/path/my-project --commit -- make generate
+deltabox run --commit -- sh -c 'printf "accepted by deltabox\n" > accepted.txt'
+cat accepted.txt
 ```
 
-Start a persistent session and use it from independent CLI processes. Commands
-run from the project directory can omit `--project`; use it only when invoking
-Deltabox from another directory:
+`run` creates and cleans up a temporary transaction. Scripts and agent
+integrations should select `--commit` or `--abort` explicitly; the child exit
+status is preserved after that decision.
+
+For multiple independent commands, start a persistent session. Commands run from
+the project directory can omit `--project`; use it only when invoking Deltabox
+from another directory:
 
 ```bash
 cd /abs/path/my-project
 session_id=$(deltabox session start .)
-deltabox exec "$session_id" -- npm install
+deltabox exec "$session_id" -- sh -c 'printf "step one\n" > step-one.txt'
+deltabox exec "$session_id" -- sh -c 'printf "step two\n" > step-two.txt'
 deltabox diff "$session_id"
 deltabox commit "$session_id"
+deltabox session stop "$session_id"
 ```
 
-Add `--json` to `session start` to receive the complete structured filesystem
-contract instead of only the session ID. This is intended for agent adapters
-that need to surface provider fallback, visibility, durability, or taint state.
+### Shell command syntax
 
-### Running shell commands
-
-`deltabox exec` and `deltabox run` execute the argv after `--` directly.
-Commands that do not require shell parsing can be passed as ordinary arguments:
+`deltabox exec` and `deltabox run` execute the argv after `--` directly. Commands
+that do not require shell parsing can be passed as ordinary arguments:
 
 ```bash
 deltabox exec "$session_id" -- git status --short
@@ -163,6 +133,7 @@ cannot perform the filesystem operation before Deltabox starts:
 
 ```bash
 deltabox exec "$session_id" -- sh -c 'printf "%s\n" hello > hello.txt'
+deltabox run --abort -- sh -c 'printf "%s\n" trial > trial.txt'
 deltabox exec "$session_id" -- sh -c 'find . -type f | sort > files.txt'
 deltabox exec "$session_id" -- sh -c 'command-that-may-be-quiet >/dev/null 2>&1'
 ```
@@ -175,10 +146,10 @@ deltabox exec "$session_id" -- echo hello > hello.txt
 ```
 
 Quoting the whole command without `sh -c` is also wrong: Deltabox would treat
-the complete string as an executable filename. Git HTTPS authentication must be
-non-interactive because sandboxed commands do not receive a terminal on stdin.
-For private repositories, configure a credential helper or another explicit
-non-interactive credential mechanism before running `git clone`.
+the complete string as an executable filename. Sandboxed commands do not receive
+a terminal on stdin, so use non-interactive flags for tools such as Git.
+
+### Choosing a filesystem mode
 
 Linux and macOS request `cbcow-through` by default and visibly fall back to
 `copy-private` if the native provider is unavailable. Select the mode
@@ -205,29 +176,50 @@ strict mode closes a sentinel boundary before each result, detects external
 writes, and refuses an unsafe abort. Use `cbcow-private` when host isolation is
 required before commit.
 
-No service needs to be started first. To use the optional JSON-RPC transport:
-
-```bash
-cd my-project
-deltabox serve
-```
-
-The optional server speaks line-delimited JSON-RPC (see
-[docs/protocol.md](docs/protocol.md)). A minimal session looks like:
-
-```json
-{"id":1,"method":"session.start","params":{"project":"/abs/path/my-project"}}
-```
-
-From there, `session.exec`, `fs.write`, `checkpoint.create`, `diff.list`,
-`changes.commit`, `changes.abort`, and the `review.*` scope methods drive the
-whole lifecycle.
-
 The fastest way to see it with an agent is the Pi extension:
 
 ```bash
 pi install npm:pi-deltabox
 ```
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[CLI or agent adapter] --> C[Session coordinator]
+    C --> X[Lazy session command helper]
+    X --> Y[Short-lived confined child]
+    C --> T[Linux cbcow-through]
+    T --> H[Session-scoped DeltaFS helper]
+    H --> P[(Host-visible LIVE tree)]
+    C --> V[Linux cbcow-private]
+    V --> F[Session-scoped DeltaFS helper]
+    F --> L[(Private LIVE tree)]
+    L -->|touched-path commit| P
+    C --> M[macOS native APFS plus FSEvents]
+    M --> E[Session-scoped event helper]
+    E --> P
+    E --> L
+    C --> R[copy-private fallback]
+    R --> S[(Private working tree)]
+    S -->|commit| P
+```
+
+On Linux with FUSE available, `session start` launches a helper that mounts the
+host project through the commit-biased state engine. Writes update the host
+tree through DeltaFS after recording rollback data; commit accepts the current
+state and abort replays undo records. `cbcow-private` preserves the same fast
+per-command path while keeping its `LIVE` tree hidden from the host until a
+conflict-checked commit. In `copy-private`, each command updates a durable
+private working tree and commit publishes it to the project.
+On macOS, the same modes use APFS-cloned state and a restartable FSEvents helper
+instead of a mount. The helper only keeps the event stream warm; persisted
+cursors and indexes remain authoritative.
+The first CB-CoW `exec` also launches a restartable command helper. Later CLI
+operations reuse its warm Sandlock worker on Linux or Seatbelt profile/proxy on
+macOS without making that helper authoritative session state. Durable files,
+not a long-running process, remain the source of session truth. See [session
+semantics](docs/session-semantics.md).
 
 ## Policy
 
@@ -278,11 +270,9 @@ isolation.
 
 - `crates/deltabox-core` — sessions, checkpoints, diff/commit/abort, policy,
   journal, platform backends.
-- `crates/deltabox-cli` — the `deltabox` binary (CLI + stdio JSON-RPC server).
+- `crates/deltabox-cli` — the `deltabox` command-line binary.
 - `deltafs-fuse` — the standalone commit-biased state engine, FUSE adapter,
   helper, and local control protocol.
-- `examples/rpc-demo.mjs` — a runnable JSON-RPC demo.
-- `docs/protocol.md` — the stable JSON-RPC protocol.
 - `docs/policy.md` — policy schema and enforcement boundaries.
 - `docs/macos.md` — macOS backend behavior and compatibility matrix.
 
