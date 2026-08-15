@@ -24,6 +24,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const EXEC_TIMEOUT: Duration = Duration::from_secs(615);
 const START_TIMEOUT: Duration = Duration::from_secs(15);
 const STOP_TIMEOUT: Duration = Duration::from_secs(15);
+const LISTENER_POLL_TIMEOUT_MS: libc::c_int = 100;
 const RUNTIME_ENVIRONMENT_KEYS: &[&str] = &["HOME", "PATH", "RUSTUP_HOME", "SDKROOT"];
 
 #[derive(Debug, Clone)]
@@ -256,16 +257,14 @@ impl<B: CommandBackend> Drop for PersistentExecutor<B> {
 /// recreate because it owns no authoritative filesystem state.
 pub fn ensure_running(endpoint: &Endpoint, helper_bin: &Path, log_file: &Path) -> Result<()> {
     let expected_environment = runtime_environment();
-    if matches!(request(endpoint, Command::Ping), Ok(ResultValue::Pong)) {
-        if helper_is_compatible(endpoint, &expected_environment)? {
-            return Ok(());
-        }
-        shutdown(endpoint)?;
+    // The next Exec request is itself a bounded, authenticated health check.
+    // Trust the atomically-published process identity on the hot path instead
+    // of paying for a separate Ping connection before every command.
+    if helper_is_compatible(endpoint, &expected_environment)? {
+        return Ok(());
     }
     if helper_is_alive(endpoint)? {
-        return Err(Error::SessionBusy(
-            "command executor is alive but did not answer its health check".into(),
-        ));
+        shutdown(endpoint)?;
     }
 
     remove_if_exists(&endpoint.ready_file)?;
@@ -301,7 +300,7 @@ pub fn ensure_running(endpoint: &Endpoint, helper_bin: &Path, log_file: &Path) -
 
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
-        if matches!(request(endpoint, Command::Ping), Ok(ResultValue::Pong)) {
+        if helper_is_compatible(endpoint, &expected_environment)? {
             thread::spawn(move || {
                 let _ = child.wait();
             });
@@ -458,6 +457,9 @@ fn run_with_backend<B: CommandBackend>(config: Config, backend: B) -> Result<()>
     let mut connections = Vec::new();
     while running.load(Ordering::Acquire) && ready_matches(&config.endpoint.ready_file, &ready) {
         reap_connections(&mut connections);
+        if !listener_has_connection(&listener)? {
+            continue;
+        }
         match listener.accept() {
             Ok((stream, _)) => {
                 let token = token.clone();
@@ -483,9 +485,7 @@ fn run_with_backend<B: CommandBackend>(config: Config, backend: B) -> Result<()>
                     }
                 }));
             }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(10));
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
             Err(error) => return Err(error.into()),
         }
     }
@@ -581,13 +581,15 @@ fn request(endpoint: &Endpoint, command: Command) -> Result<ResultValue> {
     let token = fs::read_to_string(&endpoint.token_file)?;
     let mut stream = UnixStream::connect(&endpoint.socket)?;
     let expects_start = matches!(&command, Command::Exec { .. });
-    let timeout = match &command {
-        Command::Exec { .. } => EXEC_TIMEOUT,
+    let initial_timeout = match &command {
+        // Only the post-Started response may legitimately take as long as the
+        // command. A stalled helper must fail its initial handshake quickly.
+        Command::Exec { .. } => CONNECT_TIMEOUT,
         Command::Shutdown => EXEC_TIMEOUT,
         Command::Reset => STOP_TIMEOUT,
         Command::Ping => CONNECT_TIMEOUT,
     };
-    stream.set_read_timeout(Some(timeout))?;
+    stream.set_read_timeout(Some(initial_timeout))?;
     stream.set_write_timeout(Some(CONNECT_TIMEOUT))?;
     serde_json::to_writer(
         &mut stream,
@@ -607,6 +609,9 @@ fn request(endpoint: &Endpoint, command: Command) -> Result<ResultValue> {
                 "command executor did not acknowledge the operation lock".into(),
             ));
         }
+        // Once Started has crossed the wire the helper may observe command
+        // side effects, so failures below this point must never be retried.
+        reader.get_mut().set_read_timeout(Some(EXEC_TIMEOUT))?;
         serde_json::to_writer(reader.get_mut(), &StartConfirmation { start: true })?;
         reader.get_mut().write_all(b"\n")?;
         reader.get_mut().flush()?;
@@ -651,6 +656,30 @@ fn reap_connections(connections: &mut Vec<thread::JoinHandle<()>>) {
             let _ = connection.join();
         } else {
             index += 1;
+        }
+    }
+}
+
+fn listener_has_connection(listener: &UnixListener) -> Result<bool> {
+    let mut descriptor = libc::pollfd {
+        fd: listener.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        let ready = unsafe { libc::poll(&mut descriptor, 1, LISTENER_POLL_TIMEOUT_MS) };
+        if ready > 0 {
+            if descriptor.revents & libc::POLLNVAL != 0 {
+                return Err(std::io::Error::from_raw_os_error(libc::EBADF).into());
+            }
+            return Ok(true);
+        }
+        if ready == 0 {
+            return Ok(false);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error.into());
         }
     }
 }
@@ -1025,6 +1054,47 @@ mod tests {
             .unwrap();
         assert_eq!(counts.starts.load(Ordering::Relaxed), 2);
         assert_eq!(counts.execs.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn compatible_ready_record_skips_a_separate_ping() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::new(
+            directory.path().join("missing.sock"),
+            directory.path().join("missing-token"),
+            directory.path().join("ready"),
+        );
+        write_ready(
+            &endpoint.ready_file,
+            &ReadyRecord {
+                pid: std::process::id(),
+                process_start: process_start(std::process::id()).unwrap(),
+                runtime_environment: runtime_environment(),
+                nonce: "test-ready".into(),
+            },
+        )
+        .unwrap();
+
+        ensure_running(
+            &endpoint,
+            Path::new("helper-must-not-start"),
+            &directory.path().join("helper.log"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn listener_poll_reports_a_pending_connection() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("poll.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let client = UnixStream::connect(&socket).unwrap();
+
+        assert!(listener_has_connection(&listener).unwrap());
+        let (accepted, _) = listener.accept().unwrap();
+        drop(accepted);
+        drop(client);
     }
 
     #[test]
