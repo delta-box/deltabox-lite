@@ -113,19 +113,54 @@ npm install --global deltabox-lite
 The npm package exposes the platform prebuild directly. Pi integrations resolve
 the same native binary, so commands do not start an extra Node process.
 
-Start a persistent session and use it from independent CLI processes:
+Start a persistent session and use it from independent CLI processes. Commands
+run from the project directory can omit `--project`; use it only when invoking
+Deltabox from another directory:
 
 ```bash
-deltabox session start /abs/path/my-project
-# prints a session id
-deltabox exec <id> --project /abs/path/my-project -- npm install
-deltabox diff <id> --project /abs/path/my-project
-deltabox commit <id> --project /abs/path/my-project
+cd /abs/path/my-project
+session_id=$(deltabox session start .)
+deltabox exec "$session_id" -- npm install
+deltabox diff "$session_id"
+deltabox commit "$session_id"
 ```
 
 Add `--json` to `session start` to receive the complete structured filesystem
 contract instead of only the session ID. This is intended for agent adapters
 that need to surface provider fallback, visibility, durability, or taint state.
+
+### Running shell commands
+
+`deltabox exec` runs the argv after `--` directly. Commands that do not require
+shell parsing can be passed as ordinary arguments:
+
+```bash
+deltabox exec "$session_id" -- git status --short
+deltabox exec "$session_id" -- curl -fL -o source.tar.gz https://example.com/source.tar.gz
+```
+
+Redirection, pipes, variable expansion, globbing, and command lists require an
+explicit shell. Keep the complete script inside quotes so the outer host shell
+cannot perform the filesystem operation before Deltabox starts:
+
+```bash
+deltabox exec "$session_id" -- sh -c 'printf "%s\n" hello > hello.txt'
+deltabox exec "$session_id" -- sh -c 'find . -type f | sort > files.txt'
+deltabox exec "$session_id" -- sh -c 'command-that-may-be-quiet >/dev/null 2>&1'
+```
+
+This form is wrong because the host shell handles `>` and creates `hello.txt`
+outside the sandbox transaction:
+
+```bash
+deltabox exec "$session_id" -- echo hello > hello.txt
+```
+
+Quoting the whole command without `sh -c` is also wrong: Deltabox would treat
+the complete string as an executable filename. Git HTTPS authentication must be
+non-interactive because sandboxed commands do not receive a terminal on stdin.
+For private repositories, configure a credential helper or another explicit
+non-interactive credential mechanism before running `git clone`.
 
 Linux and macOS request `cbcow-through` by default and visibly fall back to
 `copy-private` if the native provider is unavailable. Select the mode

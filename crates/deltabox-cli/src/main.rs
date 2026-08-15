@@ -29,7 +29,7 @@ enum Command {
         #[command(subcommand)]
         cmd: SessionCmd,
     },
-    /// Run a command inside a sandbox session.
+    /// Run an argv command inside a sandbox session; use `sh -c` for shell syntax.
     Exec(ExecArgs),
     /// Read a file from the sandbox view.
     Read(ReadArgs),
@@ -330,6 +330,7 @@ fn main() -> anyhow::Result<()> {
             }
         },
         Command::Exec(args) => {
+            validate_exec_command(&args.command)?;
             let manager = SessionCoordinator::new(&args.project, None)?;
             let env = if args.env.is_empty() {
                 None
@@ -549,6 +550,15 @@ fn default_backend() -> DefaultBackend {
 fn split_env(s: &str) -> anyhow::Result<(String, String)> {
     let (k, v) = s.split_once('=').context("env entries must be KEY=VALUE")?;
     Ok((k.to_string(), v.to_string()))
+}
+
+fn validate_exec_command(argv: &[String]) -> anyhow::Result<()> {
+    if argv.len() == 1 && argv[0].chars().any(char::is_whitespace) {
+        anyhow::bail!(
+            "deltabox exec accepts an argv command, not a shell command string; use `-- sh -c '...'` and keep redirects or pipes inside the quoted script"
+        );
+    }
+    Ok(())
 }
 
 fn parse_filesystem_mode(value: &str) -> Result<FilesystemMode, String> {
