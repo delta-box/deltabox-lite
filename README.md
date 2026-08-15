@@ -263,8 +263,8 @@ The delta-driven path can outperform repeated Sandlock copy-up work when a workl
 
 | Microbenchmark | `cbcow-through` p50 / p95 | raw Sandlock p50 / p95 | Faster path |
 |---|---:|---:|---|
-| One 4 KiB write in a 256 MiB existing file | 46.1 / 47.3 ms | 167.4 / 172.0 ms | `cbcow-through` |
-| 16 commands, one 4 KiB write per 32 MiB file, one final commit | 512.9 / 621.9 ms | 5607.4 / 6239.3 ms | `cbcow-through` |
+| One 4 KiB write in a 256 MiB existing file | 46.4 / 47.3 ms | 166.0 / 187.7 ms | `cbcow-through` |
+| 16 commands, one 4 KiB write per 32 MiB file, one final commit | 509.0 / 509.6 ms | 4809.5 / 5761.2 ms | `cbcow-through` |
 
 Raw Sandlock has no durable cross-command session, so the second row commits each one-shot command independently.
 
