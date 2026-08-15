@@ -259,6 +259,15 @@ one `cbcow-through` session.
 The no-op path does not scan or copy the project per command. Empty DeltaFS
 checkpoint and commit operations remain below 1 ms in the scaling benchmark.
 
+The delta-driven path can outperform repeated Sandlock copy-up work when a workload makes many small changes.
+
+| Microbenchmark | `cbcow-through` p50 / p95 | raw Sandlock p50 / p95 | Faster path |
+|---|---:|---:|---|
+| One 4 KiB write in a 256 MiB existing file | 46.1 / 47.3 ms | 167.4 / 172.0 ms | `cbcow-through` |
+| 16 commands, one 4 KiB write per 32 MiB file, one final commit | 512.9 / 621.9 ms | 5607.4 / 6239.3 ms | `cbcow-through` |
+
+Raw Sandlock has no durable cross-command session, so the second row commits each one-shot command independently.
+
 On macOS, the native provider materializes its APFS accepted base once at
 session start. Fast commands do not clone or scan the project per invocation;
 status, diff, checkpoint, commit, and abort close the FSEvents reconciliation
