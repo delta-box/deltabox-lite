@@ -11,7 +11,7 @@ use crate::protocol::{AbortResult, CommitResult, ExecRequest, ExecResult, Sessio
 use crate::snapshot::{copy_tree, move_paths_to_dir};
 use crate::worker::{ScanEntry, WorkerCommand, WorkerEvent, WorkerExec};
 use sandlock_core::sandbox::{BranchAction, ByteSize, Process, StdioMode};
-use sandlock_core::Sandbox;
+use sandlock_core::{Protection, Sandbox};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -746,6 +746,9 @@ fn build_sandbox(spec: &SessionSpec, worker_bin: &Path, direct_write: bool) -> R
     std::fs::create_dir_all(&sandbox_tmp)?;
     let mut builder = Sandbox::builder()
         .name(sandbox_name)
+        .allow_degraded(Protection::FsIoctlDev)
+        .allow_degraded(Protection::SignalScope)
+        .allow_degraded(Protection::AbstractUnixSocketScope)
         .cwd(&spec.project)
         .on_exit(BranchAction::Keep)
         .on_error(BranchAction::Keep)
