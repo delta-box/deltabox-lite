@@ -163,7 +163,12 @@ the old tree or completes the recorded boundary.
 Accepted and working scan indexes are persisted and refreshed only at
 transaction boundaries. Checkpoint trees are prepared under a temporary name,
 atomically published, capped at 100 manifest entries, and removed from disk
-when pruned. Linux uses `FICLONE`; macOS uses APFS `clonefile`; both fall back
+when pruned. `copy-private` indexes use schema-versioned SHA-256 fingerprints
+covering file contents, symlink targets, permissions, extended attributes,
+macOS ACLs, and directory entries; legacy metadata-only indexes are rebuilt on
+first use. A command hashes its resulting working tree once, and commit reuses
+the persisted accepted and working fingerprints instead of rescanning both
+private trees. Linux uses `FICLONE`; macOS uses APFS `clonefile`; both fall back
 to ordinary copying when cloning is unavailable. Manifest, scan-index,
 registry, session, and
 review metadata updates use fsynced temporary files, atomic rename, and parent

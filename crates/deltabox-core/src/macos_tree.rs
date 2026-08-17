@@ -207,7 +207,7 @@ fn set_times(path: &Path, atime_ns: i64, mtime_ns: i64, symlink: bool) -> Result
     }
 }
 
-fn copy_acl(source: &Path, destination: &Path) -> Result<()> {
+pub(crate) fn copy_acl(source: &Path, destination: &Path) -> Result<()> {
     let source = c_path(source)?;
     let destination = c_path(destination)?;
     let flags = libc::COPYFILE_ACL | libc::COPYFILE_NOFOLLOW;

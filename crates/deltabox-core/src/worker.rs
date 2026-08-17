@@ -65,7 +65,13 @@ pub struct WorkerExecResult {
 #[serde(rename_all = "snake_case")]
 pub enum ScanEntryKind {
     File,
+    Directory,
     Symlink,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanFingerprint {
+    pub sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +80,8 @@ pub struct ScanEntry {
     pub size: u64,
     pub mtime_ns: i64,
     pub kind: ScanEntryKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<ScanFingerprint>,
 }
 
 /// Directories excluded from project scans.

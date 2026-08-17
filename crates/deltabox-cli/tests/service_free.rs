@@ -356,6 +356,167 @@ fn commit_rejects_external_host_modification() {
 }
 
 #[test]
+fn same_size_same_mtime_content_change_is_detected_and_committed() {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("a.txt"), "AAAA").unwrap();
+    let sid = start(project.path());
+
+    let result = exec(
+        project.path(),
+        &sid,
+        concat!(
+            "python3 -c 'import os; p=\"a.txt\"; s=os.stat(p); ",
+            "open(p, \"wb\").write(b\"BBBB\"); ",
+            "os.utime(p, ns=(s.st_atime_ns, s.st_mtime_ns))'"
+        ),
+    );
+    assert_eq!(result["exit_code"], 0, "exec result: {result}");
+    let pending = diff(project.path(), &sid, None);
+    assert_eq!(pending["pending_changes"], 1, "pending diff: {pending}");
+    assert_eq!(pending["changes"][0]["path"], "a.txt");
+
+    run(
+        project.path(),
+        &[
+            "commit",
+            &sid,
+            "--project",
+            project.path().to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("a.txt")).unwrap(),
+        "BBBB"
+    );
+}
+
+#[test]
+fn commit_rejects_same_size_same_mtime_external_change() {
+    let project = tempfile::tempdir().unwrap();
+    let host_file = project.path().join("a.txt");
+    std::fs::write(&host_file, "AAAA").unwrap();
+    let sid = start(project.path());
+    write(project.path(), &sid, "pending.txt", "pending");
+
+    let original_mtime = std::fs::metadata(&host_file).unwrap().modified().unwrap();
+    std::fs::write(&host_file, "BBBB").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&host_file)
+        .unwrap()
+        .set_modified(original_mtime)
+        .unwrap();
+
+    let output = Command::new(bin())
+        .args([
+            "commit",
+            &sid,
+            "--project",
+            project.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("project changed outside deltabox"));
+    assert_eq!(std::fs::read_to_string(host_file).unwrap(), "BBBB");
+    assert!(!project.path().join("pending.txt").exists());
+}
+
+#[test]
+fn metadata_symlink_and_empty_directory_changes_are_published() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let project = tempfile::tempdir().unwrap();
+    let mode_file = project.path().join("mode.txt");
+    std::fs::write(&mode_file, "mode").unwrap();
+    std::fs::set_permissions(&mode_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::fs::write(project.path().join("a.txt"), "a").unwrap();
+    std::fs::write(project.path().join("b.txt"), "b").unwrap();
+    std::os::unix::fs::symlink("a.txt", project.path().join("link")).unwrap();
+    let sid = start(project.path());
+    let xattr_name = if cfg!(target_os = "linux") {
+        "user.deltabox.test"
+    } else {
+        "com.deltabox.test"
+    };
+    let set_xattr = if cfg!(target_os = "macos") {
+        format!("/usr/bin/xattr -w {xattr_name} value mode.txt")
+    } else {
+        format!("python3 -c 'import os; os.setxattr(\"mode.txt\", b\"{xattr_name}\", b\"value\")'")
+    };
+    let script = format!(
+        concat!(
+            "chmod 600 mode.txt; mkdir empty; {}; ",
+            "python3 -c 'import os; p=\"link\"; s=os.lstat(p); ",
+            "os.unlink(p); os.symlink(\"b.txt\", p); ",
+            "os.utime(p, ns=(s.st_atime_ns, s.st_mtime_ns), follow_symlinks=False)'"
+        ),
+        set_xattr
+    );
+    let result = exec(project.path(), &sid, &script);
+    assert_eq!(result["exit_code"], 0, "exec result: {result}");
+    let pending = diff(project.path(), &sid, None);
+    assert_eq!(pending["pending_changes"], 3, "pending diff: {pending}");
+
+    run(
+        project.path(),
+        &[
+            "commit",
+            &sid,
+            "--project",
+            project.path().to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        std::fs::metadata(&mode_file).unwrap().permissions().mode() & 0o7777,
+        0o600
+    );
+    assert_eq!(
+        xattr::get(&mode_file, xattr_name).unwrap().as_deref(),
+        Some(b"value".as_slice())
+    );
+    assert_eq!(
+        std::fs::read_link(project.path().join("link")).unwrap(),
+        Path::new("b.txt")
+    );
+    assert!(project.path().join("empty").is_dir());
+}
+
+#[test]
+fn legacy_copy_private_indexes_are_rebuilt_with_strong_fingerprints() {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("a.txt"), "AAAA").unwrap();
+    let sid = start(project.path());
+    let store = project.path().join(".deltabox").join(&sid);
+    let working_file = store.join("working/a.txt");
+    let original_mtime = std::fs::metadata(&working_file)
+        .unwrap()
+        .modified()
+        .unwrap();
+    std::fs::write(&working_file, "BBBB").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&working_file)
+        .unwrap()
+        .set_modified(original_mtime)
+        .unwrap();
+
+    for name in ["accepted_scan.json", "working_scan.json"] {
+        let path = store.join(name);
+        let mut snapshot: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        snapshot.as_object_mut().unwrap().remove("version");
+        for entry in snapshot["entries"].as_array_mut().unwrap() {
+            entry.as_object_mut().unwrap().remove("fingerprint");
+        }
+        std::fs::write(path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+    }
+
+    let pending = diff(project.path(), &sid, None);
+    assert_eq!(pending["pending_changes"], 1, "pending diff: {pending}");
+    assert_eq!(pending["changes"][0]["path"], "a.txt");
+}
+
+#[test]
 fn live_lock_rejects_concurrency_and_stale_lock_recovers() {
     let project = tempfile::tempdir().unwrap();
     let sid = start(project.path());
