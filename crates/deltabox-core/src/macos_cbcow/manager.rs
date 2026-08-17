@@ -727,6 +727,7 @@ impl Manager {
             durable,
         )?;
         let mut registry = SessionRegistry::load(&self.root)?;
+        crate::test_hooks::maybe_pause("registry_loaded");
         registry.upsert(meta.clone());
         registry.save(&self.root)
     }

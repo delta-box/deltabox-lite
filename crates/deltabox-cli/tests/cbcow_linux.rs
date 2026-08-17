@@ -940,6 +940,10 @@ fn helper_start_failure_falls_back_only_after_cleanup() {
     assert!(std::fs::read_dir(&required_state).unwrap().next().is_none());
 }
 
+// f2a59c6 removed the Linux project lease entirely, so this exclusivity
+// guarantee does not currently hold; the mode-aware lease split reinstates
+// it for through mode and this test is re-enabled with it.
+#[ignore = "project lease removed upstream; reinstated by the mode-aware lease split"]
 #[test]
 fn one_through_session_holds_the_project_lease() {
     if !available() {

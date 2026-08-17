@@ -24,6 +24,7 @@ pub mod policy;
 #[cfg(target_os = "linux")]
 mod private_publish;
 pub mod protocol;
+pub(crate) mod test_hooks;
 pub mod server;
 pub mod session;
 mod state_layout;

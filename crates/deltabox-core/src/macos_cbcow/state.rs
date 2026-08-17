@@ -1,5 +1,6 @@
 use crate::changeset::{describe_change, Change, ChangeKind, DEFAULT_TEXT_SIZE_LIMIT};
 use crate::error::{Error, Result};
+use crate::test_hooks::maybe_pause;
 use crate::macos_tree::{
     clone_path, copy_metadata, read_acl, remove_path, replace_path, sync_dir, sync_tree,
     tracked_xattr,
@@ -150,6 +151,7 @@ impl State {
         fs::create_dir_all(root.join(TRANSACTIONS_DIR))?;
         materialize(project, &root.join(BASE_DIR), durable)
             .map_err(|error| Error::Backend(format!("create accepted APFS base: {error}")))?;
+        maybe_pause("macos_base_materialized");
         let live = match mode {
             Mode::Through => project.to_path_buf(),
             Mode::Private => {
@@ -540,6 +542,7 @@ impl State {
                 self.manifest.durable,
             )?;
         }
+        maybe_pause("publish_host_partially_applied");
         apply_snapshot(
             &transaction_root.join("staged"),
             &self.root.join(BASE_DIR),

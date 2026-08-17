@@ -179,6 +179,60 @@ where
         .unwrap()
 }
 
+/// A project/state pair that several sessions can target, for multi-session
+/// tests. `Session` above owns one directory pair per session and stays as-is.
+struct SharedProject {
+    project: tempfile::TempDir,
+    state: tempfile::TempDir,
+}
+
+impl SharedProject {
+    fn new() -> Self {
+        let project = tempfile::Builder::new()
+            .prefix("deltabox-macos-shared-project-")
+            .tempdir_in("/private/tmp")
+            .unwrap();
+        let state = tempfile::Builder::new()
+            .prefix("deltabox-macos-shared-state-")
+            .tempdir_in("/private/tmp")
+            .unwrap();
+        std::fs::write(project.path().join("a.txt"), "accepted").unwrap();
+        Self { project, state }
+    }
+
+    fn try_start(&self, mode: &str) -> Output {
+        command(
+            self.project.path(),
+            self.state.path(),
+            [
+                "session",
+                "start",
+                self.project.path().to_str().unwrap(),
+                "--fs-mode",
+                mode,
+                "--require-fs-mode",
+            ],
+        )
+    }
+}
+
+// Today's admission rule is one CB-CoW session per project regardless of
+// mode. The planned lease split will let N private sessions coexist; this
+// guard pins the current behavior and is expected to flip then.
+#[test]
+fn private_sessions_are_still_exclusive_per_project() {
+    let env = SharedProject::new();
+    let first = env.try_start("cbcow-private");
+    assert_ok(&first);
+    let second = env.try_start("cbcow-private");
+    assert!(!second.status.success());
+    assert!(
+        String::from_utf8_lossy(&second.stderr).contains("session busy"),
+        "expected SessionBusy, got: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+}
+
 #[test]
 fn strict_private_mode_is_durable_across_cli_processes() {
     let session = Session::start_with("cbcow-private", true);

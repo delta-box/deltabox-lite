@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
 use crate::snapshot::clone_or_copy_file;
+use crate::test_hooks::maybe_pause;
 use deltafs_fuse::engine::{Change, ChangeKind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -552,6 +553,7 @@ impl Publication {
         for change in deletions {
             remove_path(&project.join(&change.path))?;
             maybe_crash("private_publish_path_applied");
+            maybe_pause("publish_host_partially_applied");
         }
         let mut writes: Vec<&PublishChange> = self
             .changes
@@ -567,6 +569,7 @@ impl Publication {
             remove_path(&target)?;
             fs::rename(staged.join(&change.path), target)?;
             maybe_crash("private_publish_path_applied");
+            maybe_pause("publish_host_partially_applied");
         }
         if self.durable {
             sync_changes(project, &self.changes)?;
