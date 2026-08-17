@@ -20,12 +20,16 @@ use crate::snapshot::{
     clone_or_copy_file, diff_snapshots, load_snapshot, preserve_symlink_times, read_capped_file,
     save_snapshot,
 };
-use crate::worker::{is_excluded_dir, ScanEntry, ScanEntryKind};
+use crate::worker::{is_excluded_dir, ScanEntry, ScanEntryKind, ScanFingerprint};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -128,9 +132,11 @@ impl DurableSessionManager {
         if let Some(path) = &policy_path {
             Policy::load(path)?;
         }
+        let initial_scan = scan_tree(&self.project)?;
         copy_project_tree(&self.project, &store.join(ACCEPTED_DIR))?;
         copy_project_tree(&store.join(ACCEPTED_DIR), &store.join(WORKING_DIR))?;
-        self.refresh_indexes(&store)?;
+        save_snapshot(&store.join(ACCEPTED_SCAN_FILE), &initial_scan)?;
+        save_snapshot(&store.join(WORKING_SCAN_FILE), &initial_scan)?;
         CheckpointStore::open(&store, DEFAULT_CHECKPOINT_CAP)?;
         self.append_sync(
             &session_id,
@@ -418,7 +424,8 @@ impl DurableSessionManager {
             },
         )?;
         maybe_crash("commit_prepared");
-        let applied = apply_tree_delta(&accepted, &working, &self.project)?;
+        let applied =
+            apply_tree_delta_with_scans(&working, &self.project, &expected, &working_scan)?;
         self.set_transaction_phase(
             &store,
             &transaction_id,
@@ -428,7 +435,8 @@ impl DurableSessionManager {
         maybe_crash("commit_host_applied");
         copy_project_tree(&self.project, &accepted)?;
         copy_project_tree(&accepted, &working)?;
-        self.refresh_indexes(&store)?;
+        save_snapshot(&store.join(ACCEPTED_SCAN_FILE), &working_scan)?;
+        save_snapshot(&store.join(WORKING_SCAN_FILE), &working_scan)?;
         self.set_transaction_phase(
             &store,
             &transaction_id,
@@ -584,18 +592,17 @@ impl DurableSessionManager {
             let mut backend = make_direct_backend(self.worker_bin.clone());
             backend.start_session(session_id, &spec)?;
             let result = operation(backend.as_mut(), session_id);
-            let current = backend.scan(session_id);
             let stop = backend.stop_session(session_id);
             let value = result?;
-            let current = current?;
             stop?;
+            let current = scan_tree(candidate)?;
 
             let changed_paths: HashSet<String> = diff_snapshots(&before, &current)
                 .into_iter()
                 .map(|change| change.path)
                 .collect();
             validate_materialized_result(&policy, &accepted, &current, candidate, &changed_paths)?;
-            Ok(value)
+            Ok((value, current))
         })
     }
 
@@ -673,7 +680,7 @@ impl DurableSessionManager {
     fn update_working_copy_transaction<T>(
         &self,
         session_id: &str,
-        update: impl FnOnce(&Path) -> Result<T>,
+        update: impl FnOnce(&Path) -> Result<(T, Vec<ScanEntry>)>,
     ) -> Result<T> {
         let store = self.store_dir(session_id);
         let transaction_id = Uuid::new_v4().to_string();
@@ -715,7 +722,7 @@ impl DurableSessionManager {
             TransactionPhase::Executing,
         )?;
 
-        let value = match update(&working) {
+        let (value, scan) = match update(&working) {
             Ok(value) => value,
             Err(error) => {
                 remove_path(&working)?;
@@ -725,7 +732,6 @@ impl DurableSessionManager {
             }
         };
         maybe_crash("exec_candidate_complete");
-        let scan = scan_tree(&working)?;
         self.set_transaction_phase(
             &store,
             &transaction_id,
@@ -1019,7 +1025,9 @@ impl DurableSessionManager {
 
     fn load_or_scan(&self, index: &Path, tree: &Path) -> Result<Vec<ScanEntry>> {
         if let Some(snapshot) = load_snapshot(index)? {
-            return Ok(snapshot.entries);
+            if snapshot.has_current_fingerprints() {
+                return Ok(snapshot.entries);
+            }
         }
         let scan = scan_tree(tree)?;
         save_snapshot(index, &scan)?;
@@ -1263,6 +1271,7 @@ fn project_tree(src: &Path, dst: &Path, hardlink_files: bool) -> Result<usize> {
     }
     std::fs::create_dir_all(dst)?;
     let mut copied = 0;
+    let mut directories = Vec::new();
     let walker = walkdir::WalkDir::new(src)
         .follow_links(false)
         .into_iter()
@@ -1277,6 +1286,11 @@ fn project_tree(src: &Path, dst: &Path, hardlink_files: bool) -> Result<usize> {
             continue;
         }
         let target = dst.join(rel);
+        if entry.file_type().is_dir() {
+            ensure_directory(&target)?;
+            directories.push((entry.path().to_path_buf(), target));
+            continue;
+        }
         if hardlink_files && entry.file_type().is_file() {
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -1302,34 +1316,86 @@ fn project_tree(src: &Path, dst: &Path, hardlink_files: bool) -> Result<usize> {
                 ))
             })?;
         }
-        if !entry.file_type().is_dir() {
-            copied += 1;
-        }
+        copied += 1;
+    }
+    directories.sort_by_key(|(_, path)| std::cmp::Reverse(path.components().count()));
+    for (source, target) in directories {
+        copy_entry_metadata(&source, &target)?;
     }
     Ok(copied)
 }
 
 fn copy_entry(src: &Path, dst: &Path, file_type: std::fs::FileType) -> Result<()> {
     if file_type.is_dir() {
-        std::fs::create_dir_all(dst)?;
+        ensure_directory(dst)?;
     } else if file_type.is_symlink() {
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)?;
         }
         remove_path(dst)?;
         std::os::unix::fs::symlink(std::fs::read_link(src)?, dst)?;
-        preserve_symlink_times(src, dst)?;
     } else if file_type.is_file() {
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)?;
         }
         remove_path(dst)?;
         clone_or_copy_file(src, dst)?;
-        let target = File::options().write(true).open(dst)?;
-        target.set_modified(std::fs::metadata(src)?.modified()?)?;
-        std::fs::set_permissions(dst, std::fs::metadata(src)?.permissions())?;
+    } else {
+        return Err(Error::Backend(format!(
+            "unsupported project entry: {}",
+            src.display()
+        )));
+    }
+    copy_entry_metadata(src, dst)
+}
+
+fn ensure_directory(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => return Ok(()),
+        Ok(_) => remove_path(path)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    std::fs::create_dir_all(path)?;
+    Ok(())
+}
+
+fn copy_entry_metadata(src: &Path, dst: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(src)?;
+    if !metadata.file_type().is_symlink() {
+        std::fs::set_permissions(dst, metadata.permissions())?;
+    }
+    #[cfg(target_os = "macos")]
+    crate::macos_tree::copy_acl(src, dst)?;
+    copy_xattrs(src, dst)?;
+    preserve_symlink_times(src, dst)
+}
+
+fn copy_xattrs(src: &Path, dst: &Path) -> Result<()> {
+    let source_names: Vec<OsString> = xattr::list(src)?
+        .filter(|name| tracked_xattr(name))
+        .collect();
+    for name in xattr::list(dst)?.filter(|name| tracked_xattr(name)) {
+        if !source_names.contains(&name) {
+            xattr::remove(dst, &name)?;
+        }
+    }
+    for name in source_names {
+        if let Some(value) = xattr::get(src, &name)? {
+            if xattr::get(dst, &name)?.as_deref() != Some(value.as_slice()) {
+                xattr::set(dst, &name, &value)?;
+            }
+        }
     }
     Ok(())
+}
+
+fn tracked_xattr(name: &OsStr) -> bool {
+    #[cfg(target_os = "macos")]
+    if name.as_bytes() == b"com.apple.provenance" {
+        return false;
+    }
+    true
 }
 
 fn remove_path(path: &Path) -> Result<()> {
@@ -1353,16 +1419,17 @@ fn scan_tree(root: &Path) -> Result<Vec<ScanEntry>> {
     for entry in walker {
         let entry = entry.map_err(|e| Error::Io(std::io::Error::other(e)))?;
         let ft = entry.file_type();
-        if !(ft.is_file() || ft.is_symlink()) {
+        if !(ft.is_file() || ft.is_dir() || ft.is_symlink()) {
             continue;
         }
         let meta = std::fs::symlink_metadata(entry.path())?;
-        let mtime_ns = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_nanos() as i64)
-            .unwrap_or(0);
+        let kind = if ft.is_symlink() {
+            ScanEntryKind::Symlink
+        } else if ft.is_dir() {
+            ScanEntryKind::Directory
+        } else {
+            ScanEntryKind::File
+        };
         entries.push(ScanEntry {
             path: entry
                 .path()
@@ -1370,16 +1437,72 @@ fn scan_tree(root: &Path) -> Result<Vec<ScanEntry>> {
                 .map_err(|_| Error::Backend("scan escaped root".into()))?
                 .to_string_lossy()
                 .into_owned(),
-            size: meta.len(),
-            mtime_ns,
-            kind: if ft.is_symlink() {
-                ScanEntryKind::Symlink
-            } else {
-                ScanEntryKind::File
-            },
+            size: if ft.is_dir() { 0 } else { meta.len() },
+            mtime_ns: meta
+                .mtime()
+                .saturating_mul(1_000_000_000)
+                .saturating_add(meta.mtime_nsec()),
+            kind,
+            fingerprint: Some(scan_fingerprint(entry.path(), &meta, kind)?),
         });
     }
     Ok(entries)
+}
+
+fn scan_fingerprint(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+    kind: ScanEntryKind,
+) -> Result<ScanFingerprint> {
+    let mut hash = Sha256::new();
+    hash.update(b"deltabox-scan-v2\0");
+    hash.update([match kind {
+        ScanEntryKind::File => 1,
+        ScanEntryKind::Directory => 2,
+        ScanEntryKind::Symlink => 3,
+    }]);
+    hash.update((metadata.mode() & 0o7777).to_le_bytes());
+
+    let mut xattrs = Vec::new();
+    for name in xattr::list(path)?.filter(|name| tracked_xattr(name)) {
+        let value = xattr::get(path, &name)?.unwrap_or_default();
+        xattrs.push((name.as_bytes().to_vec(), value));
+    }
+    xattrs.sort();
+    hash.update((xattrs.len() as u64).to_le_bytes());
+    for (name, value) in xattrs {
+        hash_field(&mut hash, &name);
+        hash_field(&mut hash, &value);
+    }
+    #[cfg(target_os = "macos")]
+    hash_field(&mut hash, &crate::macos_tree::read_acl(path)?);
+
+    match kind {
+        ScanEntryKind::File => {
+            hash.update(metadata.len().to_le_bytes());
+            let mut file = File::open(path)?;
+            let mut buffer = [0_u8; 128 * 1024];
+            loop {
+                let read = file.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                hash.update(&buffer[..read]);
+            }
+        }
+        ScanEntryKind::Directory => hash.update(b"directory"),
+        ScanEntryKind::Symlink => {
+            hash_field(&mut hash, std::fs::read_link(path)?.as_os_str().as_bytes());
+        }
+    }
+    Ok(ScanFingerprint {
+        sha256: format!("{:x}", hash.finalize()),
+    })
+}
+
+fn hash_field(hash: &mut Sha256, value: &[u8]) {
+    hash.update((value.len() as u64).to_le_bytes());
+    hash.update(value);
 }
 
 fn validate_pending_scan(
@@ -1601,13 +1724,24 @@ fn replace_project_tree(src: &Path, dst: &Path) -> Result<()> {
             remove_path(&entry.path())?;
         }
     }
+    let mut directories = Vec::new();
     for entry in walkdir::WalkDir::new(src).min_depth(1).follow_links(false) {
         let entry = entry.map_err(|e| Error::Io(std::io::Error::other(e)))?;
         let rel = entry
             .path()
             .strip_prefix(src)
             .map_err(|_| Error::Backend("restore path escaped backup".into()))?;
-        copy_entry(entry.path(), &dst.join(rel), entry.file_type())?;
+        let target = dst.join(rel);
+        if entry.file_type().is_dir() {
+            ensure_directory(&target)?;
+            directories.push((entry.path().to_path_buf(), target));
+        } else {
+            copy_entry(entry.path(), &target, entry.file_type())?;
+        }
+    }
+    directories.sort_by_key(|(_, path)| std::cmp::Reverse(path.components().count()));
+    for (source, target) in directories {
+        copy_entry_metadata(&source, &target)?;
     }
     Ok(())
 }
@@ -1623,21 +1757,32 @@ fn maybe_crash(point: &str) {
     }
 }
 
-fn apply_tree_delta(from: &Path, to: &Path, dest: &Path) -> Result<usize> {
-    let diffs = diff_snapshots(&scan_tree(from)?, &scan_tree(to)?);
-    for diff in &diffs {
+fn apply_tree_delta_with_scans(
+    to: &Path,
+    dest: &Path,
+    from_scan: &[ScanEntry],
+    to_scan: &[ScanEntry],
+) -> Result<usize> {
+    let diffs = diff_snapshots(from_scan, to_scan);
+    for diff in diffs.iter().filter(|diff| diff.kind == ChangeKind::Deleted) {
+        remove_path(&dest.join(&diff.path))?;
+    }
+
+    let mut directories = Vec::new();
+    for diff in diffs.iter().filter(|diff| diff.kind != ChangeKind::Deleted) {
         let target = dest.join(&diff.path);
-        match diff.kind {
-            ChangeKind::Deleted => remove_path(&target)?,
-            ChangeKind::Added | ChangeKind::Modified => {
-                let source = to.join(&diff.path);
-                copy_entry(
-                    &source,
-                    &target,
-                    std::fs::symlink_metadata(&source)?.file_type(),
-                )?;
-            }
+        let source = to.join(&diff.path);
+        let file_type = std::fs::symlink_metadata(&source)?.file_type();
+        if file_type.is_dir() {
+            ensure_directory(&target)?;
+            directories.push((source, target));
+        } else {
+            copy_entry(&source, &target, file_type)?;
         }
+    }
+    directories.sort_by_key(|(_, path)| std::cmp::Reverse(path.components().count()));
+    for (source, target) in directories {
+        copy_entry_metadata(&source, &target)?;
     }
     Ok(diffs.len())
 }
@@ -1645,6 +1790,53 @@ fn apply_tree_delta(from: &Path, to: &Path, dest: &Path) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strong_scan_detects_same_size_same_mtime_content_change() {
+        let tree = tempfile::tempdir().unwrap();
+        let path = tree.path().join("a.txt");
+        std::fs::write(&path, "AAAA").unwrap();
+        let before = scan_tree(tree.path()).unwrap();
+        let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+        std::fs::write(&path, "BBBB").unwrap();
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+
+        let after = scan_tree(tree.path()).unwrap();
+        let diffs = diff_snapshots(&before, &after);
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].path, "a.txt");
+        assert_eq!(diffs[0].kind, ChangeKind::Modified);
+    }
+
+    #[test]
+    fn project_copy_preserves_strong_fingerprints_and_empty_directories() {
+        let source = tempfile::tempdir().unwrap();
+        std::fs::create_dir(source.path().join("empty")).unwrap();
+        std::fs::write(source.path().join("a.txt"), "content").unwrap();
+        std::os::unix::fs::symlink("a.txt", source.path().join("link")).unwrap();
+        let xattr_name = if cfg!(target_os = "linux") {
+            "user.deltabox.test"
+        } else {
+            "com.deltabox.test"
+        };
+        xattr::set(source.path().join("a.txt"), xattr_name, b"value").unwrap();
+        let expected = scan_tree(source.path()).unwrap();
+
+        let destination = tempfile::tempdir().unwrap();
+        copy_project_tree(source.path(), destination.path()).unwrap();
+        let actual = scan_tree(destination.path()).unwrap();
+
+        assert!(diff_snapshots(&expected, &actual).is_empty());
+        assert!(actual
+            .iter()
+            .any(|entry| entry.path == "empty" && entry.kind == ScanEntryKind::Directory));
+    }
 
     #[test]
     fn copy_and_delta_ignore_internal_state() {
