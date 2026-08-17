@@ -15,6 +15,7 @@ use crate::protocol::{
     FilesystemInfo, FsReadResult, ReviewBeginParams, SessionInfo, SessionSpec, SessionStatus,
 };
 use crate::session::{now_ms, SessionMeta, SessionRegistry};
+use crate::state_layout::{runtime_base, state_base, state_root};
 use base64::Engine;
 use deltafs_fuse::control::{self, Command as ControlCommand, ResultValue};
 use serde::{Deserialize, Serialize};
@@ -34,7 +35,6 @@ const MOUNT_RECORD: &str = "mount.json";
 const SESSION_META: &str = "session.json";
 const ACTIVE_REVIEW: &str = "active_review.json";
 const SESSION_LOCK: &str = "session.lock";
-const PROJECT_LEASE: &str = "active-cbcow";
 const DENY_PATHS: &str = "deny-paths.json";
 const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -71,7 +71,7 @@ pub struct Manager {
 impl Manager {
     pub fn new(project: &Path, helper_bin: PathBuf) -> Result<Self> {
         let project = project.canonicalize()?;
-        let root = project.join(".deltabox");
+        let root = state_root(&project)?;
         fs::create_dir_all(&root)?;
         Ok(Self {
             project,
@@ -87,8 +87,6 @@ impl Manager {
         durability: DurabilityMode,
         group_commit_ms: Option<u64>,
     ) -> Result<SessionInfo> {
-        let _project_lock = Lock::acquire(&self.root.join("cbcow.lock"))?;
-        self.require_available_project()?;
         let policy_path = resolve_policy(&self.project, policy_path)?;
         let policy = match &policy_path {
             Some(path) => Policy::load(path)?,
@@ -185,11 +183,6 @@ impl Manager {
                 durability == DurabilityMode::Strict,
             )?;
             self.save_meta(&meta)?;
-            write_file_with(
-                &self.root.join(PROJECT_LEASE),
-                format!("{session_id}\n").as_bytes(),
-                durability == DurabilityMode::Strict,
-            )?;
             self.append(&session_id, JournalKind::SessionStart, None)?;
             Ok(SessionInfo {
                 session_id: session_id.clone(),
@@ -275,11 +268,6 @@ impl Manager {
         meta.filesystem = filesystem_info(&record);
         meta.filesystem.helper_pid = None;
         self.save_meta(&meta)?;
-        if fs::read_to_string(self.root.join(PROJECT_LEASE))
-            .is_ok_and(|value| value.trim() == session_id)
-        {
-            let _ = fs::remove_file(self.root.join(PROJECT_LEASE));
-        }
         self.append(session_id, JournalKind::SessionStop, None)?;
         command_executor::cleanup_stopped(&command_endpoint(&record));
         Ok(SessionInfo {
@@ -919,13 +907,6 @@ impl Manager {
         wait_unmounted(&record.mountpoint)?;
         wait_helper_stopped(record)?;
 
-        let lease = self.root.join(PROJECT_LEASE);
-        match fs::read_to_string(&lease) {
-            Ok(value) if value.trim() == session_id => fs::remove_file(lease)?,
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
         let mut registry = SessionRegistry::load(&self.root)?;
         let old_len = registry.sessions.len();
         registry
@@ -955,20 +936,6 @@ impl Manager {
             Some(path) => Policy::load(path),
             None => Ok(Policy::default_agent()),
         }
-    }
-
-    fn require_available_project(&self) -> Result<()> {
-        let lease = self.root.join(PROJECT_LEASE);
-        if let Ok(session_id) = fs::read_to_string(&lease) {
-            if self
-                .load_meta(session_id.trim())
-                .is_ok_and(|meta| meta.status == SessionStatus::Running)
-            {
-                return Err(Error::SessionBusy(session_id.trim().into()));
-            }
-            fs::remove_file(lease)?;
-        }
-        Ok(())
     }
 
     fn running_meta(&self, session_id: &str) -> Result<SessionMeta> {
@@ -1112,26 +1079,6 @@ fn resolve_policy(project: &Path, policy: Option<&Path>) -> Result<Option<PathBu
         .transpose()
 }
 
-fn state_base() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("DELTABOX_STATE_DIR") {
-        return Ok(PathBuf::from(path));
-    }
-    if let Some(path) = std::env::var_os("XDG_STATE_HOME") {
-        return Ok(PathBuf::from(path).join("deltabox-lite"));
-    }
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| Error::Backend("HOME is unavailable".into()))?;
-    Ok(home.join(".local/state/deltabox-lite"))
-}
-
-fn runtime_base() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(format!("/tmp/deltabox-{}", unsafe { libc::geteuid() })))
-        .join("deltabox-lite")
-}
-
 fn save_json(path: &Path, value: &impl Serialize) -> Result<()> {
     save_json_with(path, value, false)
 }
@@ -1149,16 +1096,6 @@ fn save_json_with(path: &Path, value: &impl Serialize, durable: bool) -> Result<
     fs::rename(temporary, path)?;
     if durable {
         File::open(path.parent().expect("saved path has a parent"))?.sync_all()?;
-    }
-    Ok(())
-}
-
-fn write_file_with(path: &Path, bytes: &[u8], durable: bool) -> Result<()> {
-    let mut file = File::create(path)?;
-    file.write_all(bytes)?;
-    if durable {
-        file.sync_all()?;
-        File::open(path.parent().expect("written path has a parent"))?.sync_all()?;
     }
     Ok(())
 }

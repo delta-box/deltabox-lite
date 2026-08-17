@@ -26,6 +26,7 @@ mod private_publish;
 pub mod protocol;
 pub mod server;
 pub mod session;
+mod state_layout;
 pub mod snapshot;
 pub mod worker;
 

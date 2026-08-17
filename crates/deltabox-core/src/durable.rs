@@ -20,6 +20,7 @@ use crate::snapshot::{
     clone_or_copy_file, diff_snapshots, load_snapshot, preserve_symlink_times, read_capped_file,
     save_snapshot,
 };
+use crate::state_layout::state_root;
 use crate::worker::{is_excluded_dir, ScanEntry, ScanEntryKind};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -93,7 +94,7 @@ pub struct DurableSessionManager {
 impl DurableSessionManager {
     pub fn new(project: &Path, worker_bin: Option<PathBuf>) -> Result<Self> {
         let project = project.canonicalize()?;
-        let root = project.join(".deltabox");
+        let root = state_root(&project)?;
         std::fs::create_dir_all(&root)?;
         Ok(Self {
             project,

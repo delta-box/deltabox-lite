@@ -6,6 +6,7 @@ use crate::protocol::{
     FilesystemMode, FsReadResult, ReviewBeginParams, SessionInfo,
 };
 use crate::session::SessionMeta;
+use crate::state_layout::state_root;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -337,11 +338,7 @@ impl SessionCoordinator {
     }
 
     fn route(&self, session_id: &str) -> Result<Route<'_>> {
-        let path = self
-            .project
-            .join(".deltabox")
-            .join(session_id)
-            .join("session.json");
+        let path = state_root(&self.project)?.join(session_id).join("session.json");
         let meta: SessionMeta = serde_json::from_slice(&fs::read(&path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 Error::SessionNotFound(session_id.into())

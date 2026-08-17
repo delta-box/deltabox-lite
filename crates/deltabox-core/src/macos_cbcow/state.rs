@@ -18,7 +18,10 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
+const LEGACY_FORMAT_VERSION: u32 = 1;
+const MAX_INDEX_DELTAS: usize = 64;
+const MIN_INDEX_DELTA_COMPACTION_ENTRIES: usize = 1024;
 const MANIFEST_FILE: &str = "state.json";
 const TRANSACTION_FILE: &str = "transaction.json";
 const BASE_DIR: &str = "base";
@@ -46,6 +49,8 @@ struct Manifest {
     event_id: u64,
     device_uuid: String,
     index_generation: String,
+    #[serde(default)]
+    index_deltas: Vec<String>,
     durable: bool,
     tainted: bool,
     last_transaction: Option<String>,
@@ -62,6 +67,11 @@ struct Checkpoint {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct TreeIndex {
     entries: BTreeMap<String, Entry>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TreeIndexDelta {
+    entries: BTreeMap<String, Option<Entry>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -162,6 +172,7 @@ impl State {
             event_id,
             device_uuid,
             index_generation: String::new(),
+            index_deltas: Vec::new(),
             durable,
             tainted: false,
             last_transaction: None,
@@ -180,19 +191,24 @@ impl State {
 
     pub fn open(project: &Path, root: &Path) -> Result<Self> {
         recover_transaction(project, root)?;
-        let manifest: Manifest = read_json(&root.join(MANIFEST_FILE))?;
-        if manifest.version != FORMAT_VERSION {
+        let mut manifest: Manifest = read_json(&root.join(MANIFEST_FILE))?;
+        if manifest.version != LEGACY_FORMAT_VERSION && manifest.version != FORMAT_VERSION {
             return Err(Error::Backend(format!(
                 "unsupported macOS state format: {}",
                 manifest.version
             )));
         }
+        let migrated = manifest.version == LEGACY_FORMAT_VERSION;
+        manifest.version = FORMAT_VERSION;
         let state = Self {
             project: project.to_path_buf(),
             root: root.to_path_buf(),
             manifest,
             index: None,
         };
+        if migrated {
+            state.save_manifest()?;
+        }
         state.cleanup_orphans()?;
         Ok(state)
     }
@@ -264,56 +280,80 @@ impl State {
             return Ok(0);
         }
         self.load_index()?;
-        let before = self.index.as_ref().expect("index loaded").clone();
+        let replace_index = batch.must_scan || batch.root_changed;
         let mut paths = BTreeSet::new();
-        if batch.must_scan || batch.root_changed {
+        if replace_index {
             let next = TreeIndex::scan(&self.live())?;
-            paths.extend(changed_index_paths(&before, &next));
+            paths.extend(changed_index_paths(
+                self.index.as_ref().expect("index loaded"),
+                &next,
+            ));
             self.index = Some(next);
         } else {
-            let mut parents = BTreeSet::new();
-            for event in &batch.events {
-                let Ok(relative) = event.path.strip_prefix(&live) else {
-                    continue;
-                };
-                if relative.as_os_str().is_empty() || excluded(relative) {
-                    continue;
-                }
-                let path = relative_string(relative)?;
-                if event.flags & ITEM_CLONED != 0 && indexed_path_matches(&before, &live, &path)? {
-                    continue;
-                }
-                paths.insert(path.clone());
-                if event.flags & (ITEM_CREATED | ITEM_REMOVED | ITEM_RENAMED | ITEM_IS_HARDLINK)
-                    != 0
-                {
-                    parents.insert(parent_string(&path)?);
-                }
-                if event.flags & ITEM_IS_HARDLINK != 0 {
-                    for peer in before.hardlink_peers(&path) {
-                        paths.insert(peer.clone());
-                        parents.insert(parent_string(&peer)?);
+            {
+                let before = self.index.as_ref().expect("index loaded");
+                let mut parents = BTreeSet::new();
+                for event in &batch.events {
+                    let Ok(relative) = event.path.strip_prefix(&live) else {
+                        continue;
+                    };
+                    if relative.as_os_str().is_empty() || excluded(relative) {
+                        continue;
+                    }
+                    let path = relative_string(relative)?;
+                    if event.flags & ITEM_CLONED != 0 && indexed_path_matches(before, &live, &path)?
+                    {
+                        continue;
+                    }
+                    paths.insert(path.clone());
+                    if event.flags & (ITEM_CREATED | ITEM_REMOVED | ITEM_RENAMED | ITEM_IS_HARDLINK)
+                        != 0
+                    {
+                        parents.insert(parent_string(&path)?);
+                    }
+                    if event.flags & ITEM_IS_HARDLINK != 0 {
+                        for peer in before.hardlink_peers(&path) {
+                            paths.insert(peer.clone());
+                            parents.insert(parent_string(&peer)?);
+                        }
                     }
                 }
+                for parent in parents {
+                    paths.extend(before.children(&parent));
+                    paths.extend(current_children(&live, &parent)?);
+                }
+                expand_subtrees(before, &live, &mut paths)?;
             }
-            for parent in parents {
-                paths.extend(before.children(&parent));
-                paths.extend(current_children(&live, &parent)?);
-            }
-            expand_subtrees(&before, &live, &mut paths)?;
+
+            let before_entries = paths
+                .iter()
+                .map(|path| {
+                    (
+                        path.clone(),
+                        self.index
+                            .as_ref()
+                            .expect("index loaded")
+                            .entries
+                            .get(path)
+                            .cloned(),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
             self.index
                 .as_mut()
                 .expect("index loaded")
                 .refresh(&live, &paths)?;
-        }
 
-        // FSEvents paths are candidates, not proof that the current tree still
-        // differs. In particular, a long-lived stream can deliver events from
-        // an abort/commit after that manager operation has refreshed the
-        // persisted index. Drop those stale notifications, along with
-        // unchanged siblings introduced by parent expansion.
-        let after = self.index.as_ref().expect("index loaded");
-        paths.retain(|path| before.entries.get(path) != after.entries.get(path));
+            // FSEvents paths are candidates, not proof that the current tree still
+            // differs. In particular, a long-lived stream can deliver events from
+            // an abort/commit after that manager operation has refreshed the
+            // persisted index. Drop those stale notifications, along with
+            // unchanged siblings introduced by parent expansion.
+            let after = self.index.as_ref().expect("index loaded");
+            paths.retain(|path| {
+                before_entries.get(path).and_then(Option::as_ref) != after.entries.get(path)
+            });
+        }
 
         if historical && self.manifest.mode == Mode::Through && !paths.is_empty() {
             self.manifest.tainted = true;
@@ -328,8 +368,10 @@ impl State {
                 || self.manifest.tainted != was_tainted)
         {
             self.save_manifest()?;
-        } else if !paths.is_empty() {
+        } else if !paths.is_empty() && replace_index {
             self.save_with_index()?;
+        } else if !paths.is_empty() {
+            self.save_index_delta(&paths)?;
         }
         Ok(paths.len())
     }
@@ -349,8 +391,8 @@ impl State {
             .expect("index loaded")
             .refresh(&live, &paths)?;
         self.manifest.pending_paths.extend(paths.iter().cloned());
-        self.manifest.epoch_paths.extend(paths);
-        self.save_with_index()
+        self.manifest.epoch_paths.extend(paths.iter().cloned());
+        self.save_index_delta(&paths)
     }
 
     pub fn checkpoint(&mut self, label: Option<String>) -> Result<(u64, usize)> {
@@ -445,7 +487,7 @@ impl State {
             .as_mut()
             .expect("index loaded")
             .refresh(&live, &paths)?;
-        self.save_with_index()?;
+        self.save_index_delta(&paths)?;
         self.cleanup_orphans()?;
         Ok((target, paths.len()))
     }
@@ -513,7 +555,9 @@ impl State {
         self.manifest.epoch_paths.clear();
         self.manifest.tainted = false;
         self.manifest.last_transaction = Some(id.clone());
-        self.save_with_index()?;
+        // Commit changes the accepted/base trees, but the live tree and its
+        // already-persisted index are unchanged.
+        self.save_manifest()?;
         maybe_crash("macos_commit_state_updated");
         remove_path(&self.root.join(TRANSACTION_FILE))?;
         remove_path(&transaction_root)?;
@@ -587,6 +631,7 @@ impl State {
             return self.save_manifest();
         };
         let old = self.manifest.index_generation.clone();
+        let old_deltas = self.manifest.index_deltas.clone();
         let generation = Uuid::new_v4().to_string();
         save_binary(
             &self
@@ -596,22 +641,70 @@ impl State {
             index,
             self.manifest.durable,
         )?;
+        self.manifest.version = FORMAT_VERSION;
         self.manifest.index_generation = generation;
+        self.manifest.index_deltas.clear();
         self.save_manifest()?;
         if !old.is_empty() {
             remove_path(&self.root.join(INDEXES_DIR).join(format!("{old}.bin")))?;
         }
+        for delta in old_deltas {
+            remove_path(&self.root.join(INDEXES_DIR).join(format!("{delta}.delta")))?;
+        }
         Ok(())
+    }
+
+    fn save_index_delta(&mut self, paths: &BTreeSet<String>) -> Result<()> {
+        if paths.is_empty() {
+            return self.save_manifest();
+        }
+        let Some(index) = &self.index else {
+            return self.save_manifest();
+        };
+        let large_delta = paths.len() >= MIN_INDEX_DELTA_COMPACTION_ENTRIES
+            && paths.len().saturating_mul(2) >= index.entries.len();
+        if self.manifest.index_deltas.len() >= MAX_INDEX_DELTAS || large_delta {
+            return self.save_with_index();
+        }
+
+        let delta = TreeIndexDelta {
+            entries: paths
+                .iter()
+                .map(|path| (path.clone(), index.entries.get(path).cloned()))
+                .collect(),
+        };
+        let generation = Uuid::new_v4().to_string();
+        save_binary(
+            &self
+                .root
+                .join(INDEXES_DIR)
+                .join(format!("{generation}.delta")),
+            &delta,
+            self.manifest.durable,
+        )?;
+        self.manifest.version = FORMAT_VERSION;
+        self.manifest.index_deltas.push(generation);
+        self.save_manifest()
     }
 
     fn load_index(&mut self) -> Result<()> {
         if self.index.is_none() {
-            self.index = Some(read_binary(
+            let mut index: TreeIndex = read_binary(
                 &self
                     .root
                     .join(INDEXES_DIR)
                     .join(format!("{}.bin", self.manifest.index_generation)),
-            )?);
+            )?;
+            for generation in &self.manifest.index_deltas {
+                let delta: TreeIndexDelta = read_binary(
+                    &self
+                        .root
+                        .join(INDEXES_DIR)
+                        .join(format!("{generation}.delta")),
+                )?;
+                index.apply(delta);
+            }
+            self.index = Some(index);
         }
         Ok(())
     }
@@ -632,10 +725,14 @@ impl State {
             .map(|checkpoint| checkpoint.id.to_string())
             .collect();
         cleanup_children(&self.root.join(CHECKPOINTS_DIR), &checkpoints)?;
-        cleanup_children(
-            &self.root.join(INDEXES_DIR),
-            &BTreeSet::from([format!("{}.bin", self.manifest.index_generation)]),
-        )?;
+        let mut indexes = BTreeSet::from([format!("{}.bin", self.manifest.index_generation)]);
+        indexes.extend(
+            self.manifest
+                .index_deltas
+                .iter()
+                .map(|generation| format!("{generation}.delta")),
+        );
+        cleanup_children(&self.root.join(INDEXES_DIR), &indexes)?;
         let active = fs::read(self.root.join(TRANSACTION_FILE))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Transaction>(&bytes).ok())
@@ -658,32 +755,59 @@ impl TreeIndex {
         Ok(index)
     }
 
-    fn refresh(&mut self, root: &Path, paths: &BTreeSet<String>) -> Result<()> {
-        for path in paths {
-            self.entries
-                .retain(|candidate, _| candidate != path && !is_descendant(path, candidate));
-            let absolute = root.join(path);
-            if fs::symlink_metadata(&absolute).is_err() {
-                continue;
-            }
-            self.entries.insert(path.clone(), Entry::read(&absolute)?);
-            if fs::symlink_metadata(&absolute)?.is_dir() {
-                for entry in walk(&absolute)? {
-                    let relative = relative_string(
-                        entry.strip_prefix(root).expect("subtree stays below root"),
-                    )?;
-                    self.entries.insert(relative, Entry::read(&entry)?);
+    fn apply(&mut self, delta: TreeIndexDelta) {
+        for (path, entry) in delta.entries {
+            match entry {
+                Some(entry) => {
+                    self.entries.insert(path, entry);
                 }
+                None => {
+                    self.entries.remove(&path);
+                }
+            }
+        }
+    }
+
+    fn refresh(&mut self, root: &Path, paths: &BTreeSet<String>) -> Result<()> {
+        // Callers expand directory roots to their old and current descendants
+        // before refreshing. Updating exact keys avoids K full-map retain
+        // passes and repeated subtree walks for a K-path event batch.
+        for path in paths {
+            self.entries.remove(path);
+            let absolute = root.join(path);
+            match fs::symlink_metadata(&absolute) {
+                Ok(_) => {
+                    self.entries.insert(path.clone(), Entry::read(&absolute)?);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
             }
         }
         Ok(())
     }
 
     fn children(&self, parent: &str) -> BTreeSet<String> {
+        let prefix = if parent.is_empty() {
+            String::new()
+        } else {
+            format!("{parent}/")
+        };
         self.entries
-            .keys()
-            .filter(|path| parent_string(path).ok().as_deref() == Some(parent))
-            .cloned()
+            .range(prefix.clone()..)
+            .take_while(|(path, _)| path.starts_with(&prefix))
+            .filter_map(|(path, _)| {
+                let relative = path.strip_prefix(&prefix).expect("range shares prefix");
+                (!relative.contains('/')).then(|| path.clone())
+            })
+            .collect()
+    }
+
+    fn descendants(&self, parent: &str) -> Vec<String> {
+        let prefix = format!("{parent}/");
+        self.entries
+            .range(prefix.clone()..)
+            .take_while(|(path, _)| path.starts_with(&prefix))
+            .map(|(path, _)| path.clone())
             .collect()
     }
 
@@ -1000,13 +1124,7 @@ fn expand_subtrees(before: &TreeIndex, live: &Path, paths: &mut BTreeSet<String>
             .get(&root)
             .is_some_and(|entry| entry.kind == EntryKind::Directory)
         {
-            paths.extend(
-                before
-                    .entries
-                    .keys()
-                    .filter(|path| is_descendant(&root, path))
-                    .cloned(),
-            );
+            paths.extend(before.descendants(&root));
         }
         let absolute = live.join(&root);
         if fs::symlink_metadata(&absolute).is_ok_and(|metadata| metadata.is_dir()) {
@@ -1124,11 +1242,6 @@ fn excluded(path: &Path) -> bool {
         .is_some_and(|component| component.as_os_str() == ".deltabox")
 }
 
-fn is_descendant(parent: &str, path: &str) -> bool {
-    path.strip_prefix(parent)
-        .is_some_and(|suffix| suffix.starts_with('/'))
-}
-
 fn depth(path: &str) -> usize {
     Path::new(path).components().count()
 }
@@ -1225,6 +1338,93 @@ mod tests {
     fn command(program: &str, args: &[&str], path: &Path) {
         let status = Command::new(program).args(args).arg(path).status().unwrap();
         assert!(status.success(), "{program} failed for {}", path.display());
+    }
+
+    #[test]
+    fn incremental_index_delta_survives_reopen_and_commit_reuses_the_base() {
+        let (project, mut state) = state(Mode::Through);
+        let root = state.root.clone();
+        let base_generation = state.manifest.index_generation.clone();
+        fs::write(project.path().join("a.txt"), "pending").unwrap();
+        state.mark_paths(["a.txt".into()]).unwrap();
+
+        assert_eq!(state.manifest.index_generation, base_generation);
+        assert_eq!(state.manifest.index_deltas.len(), 1);
+        let delta_generation = state.manifest.index_deltas[0].clone();
+        assert!(root
+            .join(INDEXES_DIR)
+            .join(format!("{delta_generation}.delta"))
+            .is_file());
+
+        drop(state);
+        let mut reopened = State::open(project.path(), &root).unwrap();
+        reopened.load_index().unwrap();
+        assert_eq!(
+            reopened.index.as_ref().unwrap().entries.get("a.txt"),
+            Some(&Entry::read(&project.path().join("a.txt")).unwrap())
+        );
+        reopened.commit(None).unwrap();
+        assert_eq!(reopened.manifest.index_generation, base_generation);
+        assert_eq!(
+            reopened.manifest.index_deltas,
+            vec![delta_generation.clone()]
+        );
+
+        drop(reopened);
+        let mut reopened = State::open(project.path(), &root).unwrap();
+        reopened.load_index().unwrap();
+        assert_eq!(
+            reopened.index.as_ref().unwrap().entries.get("a.txt"),
+            Some(&Entry::read(&project.path().join("a.txt")).unwrap())
+        );
+    }
+
+    #[test]
+    fn full_scan_compacts_deltas_and_legacy_manifest_migrates() {
+        let (project, mut state) = state(Mode::Through);
+        let root = state.root.clone();
+        fs::write(project.path().join("a.txt"), "first").unwrap();
+        state.mark_paths(["a.txt".into()]).unwrap();
+        let old_base = state.manifest.index_generation.clone();
+        let old_delta = state.manifest.index_deltas[0].clone();
+
+        fs::write(project.path().join("a.txt"), "second").unwrap();
+        state
+            .reconcile(
+                &EventBatch {
+                    latest_id: 2,
+                    history_done: true,
+                    must_scan: true,
+                    ..EventBatch::default()
+                },
+                false,
+                "device".into(),
+            )
+            .unwrap();
+        assert_ne!(state.manifest.index_generation, old_base);
+        assert!(state.manifest.index_deltas.is_empty());
+        assert!(!root
+            .join(INDEXES_DIR)
+            .join(format!("{old_base}.bin"))
+            .exists());
+        assert!(!root
+            .join(INDEXES_DIR)
+            .join(format!("{old_delta}.delta"))
+            .exists());
+
+        let manifest_path = root.join(MANIFEST_FILE);
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        legacy["version"] = LEGACY_FORMAT_VERSION.into();
+        legacy.as_object_mut().unwrap().remove("index_deltas");
+        fs::write(&manifest_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+
+        drop(state);
+        let migrated = State::open(project.path(), &root).unwrap();
+        assert_eq!(migrated.manifest.version, FORMAT_VERSION);
+        assert!(migrated.manifest.index_deltas.is_empty());
+        let persisted: Manifest = read_json(&manifest_path).unwrap();
+        assert_eq!(persisted.version, FORMAT_VERSION);
     }
 
     #[test]
