@@ -10,6 +10,7 @@ use crate::protocol::{
     SessionStatus,
 };
 use crate::session::{now_ms, SessionMeta, SessionRegistry};
+use crate::state_layout;
 use base64::Engine;
 use deltafs_fuse::macos::{
     current_event_id, device_uuid, event_helper_barrier, event_helper_boundary, stop_event_helper,
@@ -57,7 +58,7 @@ enum EventTracker {
 impl Manager {
     pub fn new(project: &Path, helper_bin: PathBuf) -> Result<Self> {
         let project = project.canonicalize()?;
-        let root = project.join(".deltabox");
+        let root = state_layout::state_root(&project)?;
         fs::create_dir_all(&root)?;
         Ok(Self {
             project,
@@ -100,7 +101,14 @@ impl Manager {
         fs::create_dir_all(&store)?;
         fs::create_dir_all(&state_root)?;
         fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700))?;
-        probe_clonefile(&self.root, &state_root)?;
+        // The probe source must live on the project's volume: clonefile only
+        // works within one volume, and the session root now lives under the
+        // external state base, which may be a different volume. The in-project
+        // .deltabox directory is still required for the FSEvents barrier and
+        // is filtered from scans, so it doubles as the probe scratch area.
+        let probe_dir = self.project.join(".deltabox");
+        fs::create_dir_all(&probe_dir)?;
+        probe_clonefile(&probe_dir, &state_root)?;
         write_file(
             &state_root.join("command-token"),
             format!("{}{}\n", Uuid::new_v4(), Uuid::new_v4()).as_bytes(),

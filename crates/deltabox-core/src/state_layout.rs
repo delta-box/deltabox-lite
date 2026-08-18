@@ -25,15 +25,24 @@ fn state_root_with_override(project: &Path, override_dir: Option<&OsStr>) -> Res
 /// External base for engine state, keyed by session id at the top level.
 pub(crate) fn state_base() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("DELTABOX_STATE_DIR") {
-        return Ok(PathBuf::from(path));
+        return canonical_base(PathBuf::from(path));
     }
     if let Some(path) = std::env::var_os("XDG_STATE_HOME") {
-        return Ok(PathBuf::from(path).join("deltabox-lite"));
+        return canonical_base(PathBuf::from(path).join("deltabox-lite"));
     }
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| Error::Backend("HOME is unavailable".into()))?;
-    Ok(home.join(".local/state/deltabox-lite"))
+    canonical_base(home.join(".local/state/deltabox-lite"))
+}
+
+/// Sandboxed commands work inside trees under this base, and sandbox policies
+/// match on resolved paths, so the base must be symlink-free (for example a
+/// DELTABOX_STATE_DIR under macOS /var, which links to /private/var). Create
+/// it first: canonicalization requires the path to exist.
+fn canonical_base(path: PathBuf) -> Result<PathBuf> {
+    std::fs::create_dir_all(&path)?;
+    Ok(path.canonicalize()?)
 }
 
 /// External base for reconstructible runtime files, keyed by session id.
