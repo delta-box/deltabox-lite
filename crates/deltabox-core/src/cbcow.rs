@@ -1176,6 +1176,12 @@ fn default_record_mode() -> crate::protocol::FilesystemMode {
 }
 
 fn filesystem_info(record: &MountRecord) -> FilesystemInfo {
+    let mut info = filesystem_info_inner(record);
+    info.degraded_protections = crate::backend::linux_sandlock::degraded_protections();
+    return info;
+}
+
+fn filesystem_info_inner(record: &MountRecord) -> FilesystemInfo {
     let info = match record.mode {
         crate::protocol::FilesystemMode::CbcowThrough => FilesystemInfo::cbcow_through(
             record.mountpoint.clone(),

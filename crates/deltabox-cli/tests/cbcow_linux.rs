@@ -876,10 +876,13 @@ fn stop_reverts_pending_host_visible_changes() {
 }
 
 #[test]
-fn helper_start_failure_falls_back_only_after_cleanup() {
+fn state_dir_inside_the_project_is_refused() {
     if !available() {
         return;
     }
+    // A state base inside the project used to make copy-private fallback
+    // clone its own state dir recursively until ENAMETOOLONG; admission now
+    // refuses the layout outright, before any session artifacts exist.
     let project = tempfile::tempdir().unwrap();
     let state = project.path().join("state-inside-project");
     let output = Command::new(env!("CARGO_BIN_EXE_deltabox"))
@@ -888,62 +891,16 @@ fn helper_start_failure_falls_back_only_after_cleanup() {
         .current_dir(project.path())
         .output()
         .unwrap();
-    assert_ok(&output);
-    assert!(String::from_utf8_lossy(&output.stderr).contains("using copy-private"));
-    let session_id = String::from_utf8(output.stdout).unwrap();
-    let session_id = session_id.trim();
-    let status = run(
-        project.path(),
-        [
-            "session",
-            "status",
-            session_id,
-            "--project",
-            project.path().to_str().unwrap(),
-        ],
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("must live outside the project"),
+        "{output:?}"
     );
-    assert_ok(&status);
-    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
-    assert_eq!(status["requested_fs_mode"], "cbcow-through");
-    assert_eq!(status["resolved_fs_mode"], "copy-private");
-    assert!(std::fs::read_dir(&state).unwrap().next().is_none());
-
-    let stopped = run(
-        project.path(),
-        [
-            "session",
-            "stop",
-            session_id,
-            "--project",
-            project.path().to_str().unwrap(),
-        ],
+    assert!(
+        !state.exists() || std::fs::read_dir(&state).unwrap().next().is_none(),
+        "refusal must not leave session artifacts behind"
     );
-    assert_ok(&stopped);
-
-    let required_project = tempfile::tempdir().unwrap();
-    let required_state = required_project.path().join("state-inside-project");
-    let required = Command::new(env!("CARGO_BIN_EXE_deltabox"))
-        .args([
-            "session",
-            "start",
-            required_project.path().to_str().unwrap(),
-            "--fs-mode",
-            "cbcow-through",
-            "--require-fs-mode",
-        ])
-        .env("DELTABOX_STATE_DIR", &required_state)
-        .current_dir(required_project.path())
-        .output()
-        .unwrap();
-    assert!(!required.status.success());
-    assert!(!String::from_utf8_lossy(&required.stderr).contains("using copy-private"));
-    assert!(std::fs::read_dir(&required_state).unwrap().next().is_none());
 }
-
-// f2a59c6 removed the Linux project lease entirely, so this exclusivity
-// guarantee does not currently hold; the mode-aware lease split reinstates
-// it for through mode and this test is re-enabled with it.
-#[ignore = "project lease removed upstream; reinstated by the mode-aware lease split"]
 #[test]
 fn one_through_session_holds_the_project_lease() {
     if !available() {

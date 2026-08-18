@@ -15,9 +15,22 @@ pub(crate) fn state_root(project: &Path) -> Result<PathBuf> {
 
 fn state_root_with_override(project: &Path, override_dir: Option<&OsStr>) -> Result<PathBuf> {
     match override_dir {
-        Some(dir) => Ok(PathBuf::from(dir)
-            .join(PROJECTS_DIR)
-            .join(project_key(project))),
+        Some(dir) => {
+            let base = canonical_base(PathBuf::from(dir))?;
+            // The project-local `.deltabox` default is safe because every
+            // scanner and copier skips that name; an arbitrary override
+            // inside the project has no such exemption, so whole-tree copies
+            // would include their own output and recurse until
+            // ENAMETOOLONG. Refuse the layout up front.
+            if base.starts_with(project) {
+                return Err(Error::Backend(format!(
+                    "state directory {} must live outside the project {}",
+                    base.display(),
+                    project.display()
+                )));
+            }
+            Ok(base.join(PROJECTS_DIR).join(project_key(project)))
+        }
         None => Ok(project.join(".deltabox")),
     }
 }

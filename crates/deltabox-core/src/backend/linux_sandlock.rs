@@ -735,6 +735,37 @@ fn upper_branch_dir(upper: &Path) -> Option<PathBuf> {
     upper.parent().map(|p| p.to_path_buf())
 }
 
+/// Landlock ABI version of the running kernel (0 when unavailable). The
+/// syscall number is 444 on every architecture Linux supports.
+pub fn landlock_abi() -> i64 {
+    const LANDLOCK_CREATE_RULESET_VERSION: u32 = 1;
+    let abi = unsafe {
+        libc::syscall(
+            444,
+            std::ptr::null::<libc::c_void>(),
+            0usize,
+            LANDLOCK_CREATE_RULESET_VERSION,
+        )
+    };
+    abi.max(0)
+}
+
+/// Protections b15389a downgrades to best-effort, keyed by the ABI that
+/// first enforces them; anything the kernel cannot enforce is reported in
+/// SessionInfo instead of silently dropped.
+pub fn degraded_protections() -> Option<Vec<String>> {
+    let abi = landlock_abi();
+    let mut degraded = Vec::new();
+    if abi < 5 {
+        degraded.push("fs-ioctl-dev".to_string());
+    }
+    if abi < 6 {
+        degraded.push("signal-scope".to_string());
+        degraded.push("abstract-unix-socket-scope".to_string());
+    }
+    (!degraded.is_empty()).then_some(degraded)
+}
+
 fn build_sandbox(spec: &SessionSpec, worker_bin: &Path, direct_write: bool) -> Result<Sandbox> {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -787,11 +818,17 @@ fn build_sandbox(spec: &SessionSpec, worker_bin: &Path, direct_write: bool) -> R
     if let Some(parent) = worker_bin.parent() {
         builder = builder.fs_read(parent);
     }
+    // Landlock adds a rule by opening the ruled path, so one absent allowlist
+    // entry aborts confinement for every command. Absent entries grant
+    // nothing anyway (the default policy lists /lib64, which does not exist
+    // on arm64 Debian/Ubuntu), so skipping them only tightens confinement.
     for p in resolve_read_paths(&spec.policy, &spec.project) {
-        builder = builder.fs_read(&p);
+        builder = builder.fs_read_if_exists(&p);
     }
     for p in resolve_write_paths(&spec.policy, &spec.project) {
-        builder = builder.fs_write(&p);
+        if p.exists() {
+            builder = builder.fs_write(&p);
+        }
     }
     let deny_paths = match &spec.resolved_deny_paths {
         Some(paths) => paths.clone(),

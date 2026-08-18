@@ -246,6 +246,11 @@ pub struct FilesystemInfo {
     pub helper_restarts: u64,
     #[serde(default)]
     pub mount_namespace: bool,
+    /// Landlock protections the running kernel cannot enforce (Linux only).
+    /// Absent means full enforcement; consumers must not assume signal or
+    /// abstract-socket confinement when this lists the matching scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degraded_protections: Option<Vec<String>>,
 }
 
 impl Default for FilesystemInfo {
@@ -269,6 +274,16 @@ impl FilesystemInfo {
         self
     }
 
+    #[cfg(target_os = "linux")]
+    fn linux_degraded() -> Option<Vec<String>> {
+        crate::backend::linux_sandlock::degraded_protections()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn linux_degraded() -> Option<Vec<String>> {
+        None
+    }
+
     pub fn copy_private(requested: FilesystemMode, fallback_reason: Option<String>) -> Self {
         Self {
             requested_fs_mode: requested,
@@ -285,6 +300,7 @@ impl FilesystemInfo {
             helper_pid: None,
             helper_restarts: 0,
             mount_namespace: false,
+            degraded_protections: Self::linux_degraded(),
         }
     }
 
@@ -304,6 +320,7 @@ impl FilesystemInfo {
             helper_pid: Some(helper_pid),
             helper_restarts: restarts,
             mount_namespace: false,
+            degraded_protections: None,
         }
     }
 
@@ -323,6 +340,7 @@ impl FilesystemInfo {
             helper_pid: Some(helper_pid),
             helper_restarts: restarts,
             mount_namespace: false,
+            degraded_protections: None,
         }
     }
 
@@ -348,6 +366,7 @@ impl FilesystemInfo {
             helper_pid: None,
             helper_restarts: 0,
             mount_namespace: false,
+            degraded_protections: None,
         }
     }
 }
