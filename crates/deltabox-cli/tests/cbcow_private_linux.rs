@@ -277,6 +277,45 @@ fn namespace_changes_stay_private_and_older_checkpoint_commit_discards_future() 
 }
 
 #[test]
+fn conflicting_session_recovers_via_sync_and_lands() {
+    if !available() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let project = root.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(project.join("shared.txt"), "base").unwrap();
+    let a = Session::start(&project);
+    let b = Session::start(&project);
+
+    a.write("shared.txt", "a-version");
+    b.write("shared.txt", "b-version");
+    b.write("b-only.txt", "from-b");
+
+    let commit_a = a.commit();
+    assert_ok(&commit_a);
+    let rejected = b.commit();
+    assert!(!rejected.status.success());
+
+    let sync = b.command(["sync", &b.id]);
+    assert_ok(&sync);
+    let sync: Value = serde_json::from_slice(&sync.stdout).unwrap();
+    assert!(sync["folded_publications"].as_u64().unwrap() >= 1);
+    assert_eq!(sync["conflicts"][0]["path"], "shared.txt");
+
+    b.write("shared.txt", "merged");
+    let cleanup = b.exec_shell("rm shared.txt.deltabox-theirs");
+    assert_exec_ok(&cleanup);
+
+    let landed = b.commit();
+    assert_ok(&landed);
+    assert_eq!(
+        std::fs::read_to_string(project.join("shared.txt")).unwrap(),
+        "merged"
+    );
+}
+
+#[test]
 fn host_conflicts_preserve_external_and_private_states() {
     if !available() {
         return;
@@ -312,6 +351,22 @@ fn host_conflicts_preserve_external_and_private_states() {
             _ => unreachable!(),
         }
         let commit = session.commit();
+        if scenario == "parent" {
+            // Relaxed ancestor validation for concurrent sessions: an
+            // unrelated entry appearing in a shared parent directory no
+            // longer rejects the commit — the target's own fingerprint still
+            // guards real conflicts, and both states must survive.
+            assert!(commit.status.success(), "scenario parent was rejected");
+            assert_eq!(
+                std::fs::read_to_string(project.join("dir/base.txt")).unwrap(),
+                "private"
+            );
+            assert_eq!(
+                std::fs::read_to_string(project.join("dir/external.txt")).unwrap(),
+                "external"
+            );
+            continue;
+        }
         assert!(!commit.status.success(), "scenario {scenario} committed");
         assert!(String::from_utf8_lossy(&commit.stderr).contains("project changed outside"));
         let diff = session.command(["diff", &session.id, "--json"]);
@@ -330,10 +385,6 @@ fn host_conflicts_preserve_external_and_private_states() {
             "deleted" => assert!(!project.join("dir/base.txt").exists()),
             "created" => assert_eq!(
                 std::fs::read_to_string(project.join("dir/new.txt")).unwrap(),
-                "external"
-            ),
-            "parent" => assert_eq!(
-                std::fs::read_to_string(project.join("dir/external.txt")).unwrap(),
                 "external"
             ),
             "subtree" => assert_eq!(

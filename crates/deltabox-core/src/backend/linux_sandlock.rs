@@ -346,6 +346,7 @@ impl SandboxBackend for SandlockBackend {
         Ok(CommitResult {
             checkpoint_id: checkpoint_id.to_string(),
             applied,
+            folded_publications: None,
         })
     }
 

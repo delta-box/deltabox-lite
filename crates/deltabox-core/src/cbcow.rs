@@ -6,7 +6,7 @@ use crate::journal::{Journal, JournalEntry, JournalKind};
 use crate::pathmap::PathMapper;
 use crate::policy::Policy;
 use crate::private_publish::{
-    materialize_with_durability, retire_orphans, AcceptedIndex, Publication, PublicationPhase,
+    materialize_with_durability, retire_orphans, AcceptedIndex, Publication, PublicationPhase, PublishChange,
     ACCEPTED_INDEX, LIVE_DIR, PUBLISH_DIR, RETIRED_DIR,
 };
 use crate::protocol::{
@@ -15,14 +15,14 @@ use crate::protocol::{
     FilesystemInfo, FsReadResult, ReviewBeginParams, SessionInfo, SessionSpec, SessionStatus,
 };
 use crate::session::{now_ms, SessionMeta, SessionRegistry};
-use crate::state_layout::{runtime_base, state_base, state_root};
+use crate::locks::Lock;
+use crate::state_layout::{publish_lock_path, runtime_base, state_base, state_root};
 use base64::Engine;
 use deltafs_fuse::control::{self, Command as ControlCommand, ResultValue};
 use serde::{Deserialize, Serialize};
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
@@ -35,7 +35,6 @@ const MOUNT_RECORD: &str = "mount.json";
 const SESSION_META: &str = "session.json";
 const ACTIVE_REVIEW: &str = "active_review.json";
 const SESSION_LOCK: &str = "session.lock";
-const PROJECT_LEASE: &str = "active-cbcow";
 const DENY_PATHS: &str = "deny-paths.json";
 const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -88,8 +87,6 @@ impl Manager {
         durability: DurabilityMode,
         group_commit_ms: Option<u64>,
     ) -> Result<SessionInfo> {
-        let _project_lock = Lock::acquire(&self.root.join("cbcow.lock"))?;
-        self.require_available_project()?;
         let policy_path = resolve_policy(&self.project, policy_path)?;
         let policy = match &policy_path {
             Some(path) => Policy::load(path)?,
@@ -99,6 +96,43 @@ impl Manager {
         let quota_bytes = policy.limits.max_storage_bytes.unwrap_or(u64::MAX);
 
         let session_id = Uuid::new_v4().to_string();
+        {
+            // Mode-aware admission under the project flock: through stays
+            // exclusive because it mutates the host tree; private sessions
+            // coexist. f2a59c6 removed the old exclusive lease entirely,
+            // which left through-mode host writes unprotected.
+            let _admission = Lock::acquire(&self.root.join("cbcow.lock"))?;
+            crate::project_lease::acquire(
+                &crate::state_layout::leases_dir(&self.project)?,
+                &self.root.join("active-cbcow"),
+                mode,
+                &session_id,
+                |sid| {
+                    let path = self.root.join(sid).join(SESSION_META);
+                    fs::read(path)
+                        .ok()
+                        .and_then(|raw| serde_json::from_slice::<SessionMeta>(&raw).ok())
+                        .is_some_and(|meta| meta.status == SessionStatus::Running)
+                },
+            )?;
+            // The liveness witness must exist before the admission lock
+            // drops: materialization takes seconds, and a sibling's acquire
+            // would otherwise reclaim this lease as dead mid-start.
+            let store = self.store(&session_id);
+            fs::create_dir_all(&store)?;
+            save_json_with(
+                &store.join(SESSION_META),
+                &SessionMeta {
+                    session_id: session_id.clone(),
+                    project: self.project.clone(),
+                    policy_path: policy_path.clone(),
+                    started_at_ms: now_ms(),
+                    status: SessionStatus::Running,
+                    filesystem: crate::protocol::FilesystemInfo::default(),
+                },
+                false,
+            )?;
+        }
         let store = self.store(&session_id);
         fs::create_dir_all(&store)?;
         let source = match mode {
@@ -106,12 +140,21 @@ impl Manager {
             crate::protocol::FilesystemMode::CbcowPrivate => {
                 let live = store.join(LIVE_DIR);
                 let strict = durability == DurabilityMode::Strict;
+                // The baseline fingerprints must describe the same host state
+                // the clone was taken from: hold the publish lock so no
+                // sibling publication lands between clone and capture.
+                let publish = Lock::acquire(&publish_lock_path(&self.project)?)?;
                 let accepted = materialize_with_durability(&self.project, &live, strict)?;
                 AcceptedIndex::create_with_durability(
                     &store.join(ACCEPTED_INDEX),
                     accepted,
                     strict,
                 )?;
+                fs::write(
+                    store.join("publog.seq"),
+                    format!("{}\n", crate::publog::head_seq(&self.project)?),
+                )?;
+                drop(publish);
                 live
             }
             crate::protocol::FilesystemMode::CopyPrivate => {
@@ -186,11 +229,6 @@ impl Manager {
                 durability == DurabilityMode::Strict,
             )?;
             self.save_meta(&meta)?;
-            write_file_with(
-                &self.root.join(PROJECT_LEASE),
-                format!("{session_id}\n").as_bytes(),
-                durability == DurabilityMode::Strict,
-            )?;
             self.append(&session_id, JournalKind::SessionStart, None)?;
             Ok(SessionInfo {
                 session_id: session_id.clone(),
@@ -276,11 +314,11 @@ impl Manager {
         meta.filesystem = filesystem_info(&record);
         meta.filesystem.helper_pid = None;
         self.save_meta(&meta)?;
-        if fs::read_to_string(self.root.join(PROJECT_LEASE))
-            .is_ok_and(|value| value.trim() == session_id)
-        {
-            let _ = fs::remove_file(self.root.join(PROJECT_LEASE));
-        }
+        crate::project_lease::release(
+            &crate::state_layout::leases_dir(&self.project)?,
+            &self.root.join("active-cbcow"),
+            session_id,
+        );
         self.append(session_id, JournalKind::SessionStop, None)?;
         command_executor::cleanup_stopped(&command_endpoint(&record));
         Ok(SessionInfo {
@@ -301,9 +339,7 @@ impl Manager {
             return Err(Error::SessionBusy(session_id.into()));
         }
         let record = self.load_record(session_id)?;
-        let mut registry = SessionRegistry::load(&self.root)?;
-        registry.remove(session_id);
-        registry.save(&self.root)?;
+        SessionRegistry::update(&self.root, |registry| registry.remove(session_id))?;
         drop(lock);
 
         let state_root = record
@@ -562,6 +598,7 @@ impl Manager {
         Ok(CommitResult {
             checkpoint_id: checkpoint.id.to_string(),
             applied,
+            folded_publications: None,
         })
     }
 
@@ -585,11 +622,45 @@ impl Manager {
             return Ok(CommitResult {
                 checkpoint_id: checkpoint.id.to_string(),
                 applied: 0,
+                folded_publications: None,
             });
         }
         let strict = record.durability == DurabilityMode::Strict;
+        // Publication window: validation, host application, and retirement
+        // must be atomic against sibling publications and recoveries.
+        let _publish = Lock::acquire(&publish_lock_path(&self.project)?)?;
+        crate::test_hooks::maybe_pause("publish_lock_held");
         let mut accepted =
             AcceptedIndex::open_with_durability(&store.join(ACCEPTED_INDEX), strict)?;
+        // Fast-forward the baseline over sibling publications for every path
+        // this commit does not touch: their host changes are accepted state,
+        // not drift. Contested paths stay stale so validation still rejects.
+        let sibling_entries =
+            crate::publog::entries_since(&self.project, self.publog_seen(&params.session_id))?;
+        let folded = sibling_entries.len() as u64;
+        if folded > 0 {
+            let mine: std::collections::BTreeSet<&str> =
+                changes.iter().map(|change| change.path.as_str()).collect();
+            let mut seen_paths = std::collections::BTreeSet::new();
+            let mut forward = Vec::new();
+            for entry in sibling_entries.iter().rev() {
+                for change in &entry.changes {
+                    if !mine.contains(change.path.as_str())
+                        && seen_paths.insert(change.path.clone())
+                    {
+                        forward.push(crate::private_publish::PublishChange {
+                            path: change.path.clone(),
+                            kind: engine_kind(change.kind),
+                            existed: change.existed,
+                            namespace_changed: change.namespace_changed,
+                        });
+                    }
+                }
+            }
+            if !forward.is_empty() {
+                accepted.refresh(&self.project, &forward)?;
+            }
+        }
         let status = self.engine_status(record)?;
         let mut publication = Publication::prepare(
             &store,
@@ -617,11 +688,111 @@ impl Manager {
         maybe_crash("private_publish_state_updated");
         let applied = publication.changes.len();
         self.finish_publication(&store, record, &publication)?;
+        let mut digests = std::collections::BTreeMap::new();
+        let mut published = Vec::new();
+        for change in &publication.changes {
+            published.push(crate::publog::PublogChange {
+                path: change.path.clone(),
+                kind: publog_kind(&change.kind),
+                existed: change.existed,
+                namespace_changed: change.namespace_changed,
+            });
+            let host_path = self.project.join(&change.path);
+            if change.kind != deltafs_fuse::engine::ChangeKind::Deleted && host_path.is_file() {
+                digests.insert(change.path.clone(), crate::publog::file_digest(&host_path)?);
+            }
+        }
+        let seq = crate::publog::append(&self.project, &params.session_id, &published, digests)?;
+        fs::write(store.join("publog.seq"), format!("{seq}\n"))?;
         self.save_review(&params.session_id, None)?;
         self.append(&params.session_id, JournalKind::Commit, None)?;
         Ok(CommitResult {
             checkpoint_id: checkpoint.id.to_string(),
             applied,
+            folded_publications: (folded > 0).then_some(folded),
+        })
+    }
+
+    pub fn sync(&self, session_id: &str) -> Result<crate::protocol::SyncResult> {
+        let _lock = self.lock(session_id)?;
+        let record = self.ensure_helper(session_id)?;
+        let empty = crate::protocol::SyncResult {
+            folded_publications: 0,
+            stale_paths: Vec::new(),
+            conflicts: Vec::new(),
+        };
+        if record.mode != crate::protocol::FilesystemMode::CbcowPrivate {
+            // Through mode has no private baseline: its view is the host.
+            return Ok(empty);
+        }
+        let store = self.store(session_id);
+        let _publish = Lock::acquire(&publish_lock_path(&self.project)?)?;
+        let entries =
+            crate::publog::entries_since(&self.project, self.publog_seen(session_id))?;
+        if entries.is_empty() {
+            return Ok(empty);
+        }
+        let mine: std::collections::BTreeSet<String> = self
+            .engine_changes(&record, None)?
+            .iter()
+            .map(|change| change.path.clone())
+            .collect();
+        let mut latest: std::collections::BTreeMap<String, crate::publog::PublogChange> =
+            std::collections::BTreeMap::new();
+        for entry in &entries {
+            for change in &entry.changes {
+                latest.insert(change.path.clone(), change.clone());
+            }
+        }
+        let strict = record.durability == DurabilityMode::Strict;
+        let mut accepted =
+            AcceptedIndex::open_with_durability(&store.join(ACCEPTED_INDEX), strict)?;
+        let mut stale_paths = Vec::new();
+        let mut conflicts = Vec::new();
+        let mut forward = Vec::new();
+        for (path, change) in &latest {
+            if !mine.contains(path) {
+                stale_paths.push(path.clone());
+                continue;
+            }
+            let host_path = self.project.join(path);
+            // Materialize "theirs" through the mounted view so the copy is a
+            // routed, undo-tracked write like any other session edit.
+            let theirs = if host_path.is_file() {
+                let theirs_rel = format!("{path}.deltabox-theirs");
+                let target = record.mountpoint.join(&theirs_rel);
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(target, fs::read(&host_path)?)?;
+                Some(theirs_rel)
+            } else {
+                None
+            };
+            conflicts.push(crate::protocol::SyncConflict {
+                path: path.clone(),
+                host_kind: change.kind,
+                theirs,
+            });
+            forward.push(PublishChange {
+                path: path.clone(),
+                kind: engine_kind(change.kind),
+                existed: change.existed,
+                namespace_changed: change.namespace_changed,
+            });
+        }
+        // Contested paths adopt the current host as their baseline: the agent
+        // merges against exactly this state, so the next commit validates
+        // against it instead of the pre-conflict past.
+        if !forward.is_empty() {
+            accepted.refresh(&self.project, &forward)?;
+        }
+        let head = crate::publog::head_seq(&self.project)?;
+        fs::write(store.join("publog.seq"), format!("{head}\n"))?;
+        Ok(crate::protocol::SyncResult {
+            folded_publications: entries.len() as u64,
+            stale_paths,
+            conflicts,
         })
     }
 
@@ -855,6 +1026,24 @@ impl Manager {
             return Ok(());
         }
         let store = self.store(session_id);
+        // Lock-free fast path: almost every operation has nothing to recover.
+        // The state is re-read under the lock, so a racing publisher is safe.
+        // retired/ persists after normal commits; only unretired entries or
+        // an unreclaimed retired backlog mean there is work for recovery.
+        let publish_dir_busy = std::fs::read_dir(store.join(PUBLISH_DIR))
+            .map(|entries| {
+                entries.flatten().any(|entry| {
+                    entry.file_name() != RETIRED_DIR
+                        || std::fs::read_dir(entry.path())
+                            .map(|mut children| children.next().is_some())
+                            .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        if Publication::load(&store)?.is_none() && !publish_dir_busy {
+            return Ok(());
+        }
+        let _publish = Lock::acquire(&publish_lock_path(&self.project)?)?;
         let strict = record.durability == DurabilityMode::Strict;
         let Some(mut publication) = Publication::load(&store)? else {
             if retire_orphans(&store)? {
@@ -914,27 +1103,22 @@ impl Manager {
     }
 
     fn cleanup_start(&self, session_id: &str, record: &MountRecord) -> Result<()> {
+        crate::project_lease::release(
+            &crate::state_layout::leases_dir(&self.project)?,
+            &self.root.join("active-cbcow"),
+            session_id,
+        );
         let _ = command_executor::shutdown(&command_endpoint(record));
         self.stop_helper(record);
         detach_mount(&record.mountpoint)?;
         wait_unmounted(&record.mountpoint)?;
         wait_helper_stopped(record)?;
 
-        let lease = self.root.join(PROJECT_LEASE);
-        match fs::read_to_string(&lease) {
-            Ok(value) if value.trim() == session_id => fs::remove_file(lease)?,
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        let mut registry = SessionRegistry::load(&self.root)?;
-        let old_len = registry.sessions.len();
-        registry
-            .sessions
-            .retain(|session| session.session_id != session_id);
-        if registry.sessions.len() != old_len {
-            registry.save(&self.root)?;
-        }
+        SessionRegistry::update(&self.root, |registry| {
+            registry
+                .sessions
+                .retain(|session| session.session_id != session_id);
+        })?;
 
         let store = self.store(session_id);
         let state_root = record
@@ -956,20 +1140,6 @@ impl Manager {
             Some(path) => Policy::load(path),
             None => Ok(Policy::default_agent()),
         }
-    }
-
-    fn require_available_project(&self) -> Result<()> {
-        let lease = self.root.join(PROJECT_LEASE);
-        if let Ok(session_id) = fs::read_to_string(&lease) {
-            if self
-                .load_meta(session_id.trim())
-                .is_ok_and(|meta| meta.status == SessionStatus::Running)
-            {
-                return Err(Error::SessionBusy(session_id.trim().into()));
-            }
-            fs::remove_file(lease)?;
-        }
-        Ok(())
     }
 
     fn running_meta(&self, session_id: &str) -> Result<SessionMeta> {
@@ -996,10 +1166,7 @@ impl Manager {
             meta,
             meta.filesystem.durability == "strict",
         )?;
-        let mut registry = SessionRegistry::load(&self.root)?;
-        crate::test_hooks::maybe_pause("registry_loaded");
-        registry.upsert(meta.clone());
-        registry.save(&self.root)
+        SessionRegistry::update(&self.root, |registry| registry.upsert(meta.clone()))
     }
 
     fn load_record(&self, session_id: &str) -> Result<MountRecord> {
@@ -1046,6 +1213,13 @@ impl Manager {
         })
     }
 
+    fn publog_seen(&self, session_id: &str) -> u64 {
+        fs::read_to_string(self.store(session_id).join("publog.seq"))
+            .ok()
+            .and_then(|raw| raw.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
     fn store(&self, session_id: &str) -> PathBuf {
         self.root.join(session_id)
     }
@@ -1073,30 +1247,24 @@ struct SessionOperationLock {
     _session: Lock,
 }
 
-struct Lock(File);
-
-impl Lock {
-    fn acquire(path: &Path) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(path)?;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(Error::Io(std::io::Error::last_os_error()));
-        }
-        Ok(Self(file))
+/// The engine and the changeset layer each define a ChangeKind; the publog
+/// speaks the changeset one. Metadata-only engine changes publish as
+/// modifications.
+fn publog_kind(kind: &deltafs_fuse::engine::ChangeKind) -> crate::changeset::ChangeKind {
+    use deltafs_fuse::engine::ChangeKind as EngineKind;
+    match kind {
+        EngineKind::Added => crate::changeset::ChangeKind::Added,
+        EngineKind::Deleted => crate::changeset::ChangeKind::Deleted,
+        EngineKind::Modified | EngineKind::Metadata => crate::changeset::ChangeKind::Modified,
     }
 }
 
-impl Drop for Lock {
-    fn drop(&mut self) {
-        unsafe {
-            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
-        }
+fn engine_kind(kind: crate::changeset::ChangeKind) -> deltafs_fuse::engine::ChangeKind {
+    use deltafs_fuse::engine::ChangeKind as EngineKind;
+    match kind {
+        crate::changeset::ChangeKind::Added => EngineKind::Added,
+        crate::changeset::ChangeKind::Deleted => EngineKind::Deleted,
+        crate::changeset::ChangeKind::Modified => EngineKind::Modified,
     }
 }
 
@@ -1131,16 +1299,6 @@ fn save_json_with(path: &Path, value: &impl Serialize, durable: bool) -> Result<
     fs::rename(temporary, path)?;
     if durable {
         File::open(path.parent().expect("saved path has a parent"))?.sync_all()?;
-    }
-    Ok(())
-}
-
-fn write_file_with(path: &Path, bytes: &[u8], durable: bool) -> Result<()> {
-    let mut file = File::create(path)?;
-    file.write_all(bytes)?;
-    if durable {
-        file.sync_all()?;
-        File::open(path.parent().expect("written path has a parent"))?.sync_all()?;
     }
     Ok(())
 }
@@ -1323,38 +1481,5 @@ fn is_mounted(mountpoint: &Path) -> bool {
 fn maybe_crash(point: &str) {
     if cfg!(debug_assertions) && std::env::var("DELTABOX_TEST_CRASH_AT").as_deref() == Ok(point) {
         std::process::abort();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn project_lease_blocks_second_running_session() {
-        let project = tempfile::tempdir().unwrap();
-        let manager = Manager::new(project.path(), std::env::current_exe().unwrap()).unwrap();
-        let session_id = "fake-session";
-        let store = manager.store(session_id);
-        fs::create_dir_all(&store).unwrap();
-        let meta = SessionMeta {
-            session_id: session_id.into(),
-            project: manager.project.clone(),
-            policy_path: None,
-            started_at_ms: now_ms(),
-            status: SessionStatus::Running,
-            filesystem: Default::default(),
-        };
-        save_json(&store.join(SESSION_META), &meta).unwrap();
-        fs::write(manager.root.join(PROJECT_LEASE), format!("{session_id}\n")).unwrap();
-
-        let error = manager.require_available_project().unwrap_err();
-        assert!(matches!(error, Error::SessionBusy(_)));
-
-        let mut stopped = meta;
-        stopped.status = SessionStatus::Stopped;
-        save_json(&store.join(SESSION_META), &stopped).unwrap();
-        manager.require_available_project().unwrap();
-        assert!(!manager.root.join(PROJECT_LEASE).exists());
     }
 }

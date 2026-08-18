@@ -33,6 +33,8 @@ pub enum Method {
     ChangesCommit(CommitParams),
     #[serde(rename = "changes.abort")]
     ChangesAbort(AbortParams),
+    #[serde(rename = "session.sync")]
+    SessionSync(SyncParams),
     #[serde(rename = "review.begin")]
     ReviewBegin(ReviewBeginParams),
     #[serde(rename = "review.status")]
@@ -175,6 +177,11 @@ pub struct Response {
 pub struct ProtocolError {
     pub code: i32,
     pub message: String,
+    /// Structured error payload; today only commit conflicts populate it
+    /// (`{"type":"project-conflict", ...ConflictReport}`). Absent otherwise so
+    /// pre-existing consumers see byte-identical errors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -425,9 +432,41 @@ pub struct DiffResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncParams {
+    pub session_id: String,
+}
+
+/// One path where this session's pending work collides with a sibling's
+/// publication. `theirs` names the materialized copy of the current host
+/// content inside the session view (absent when the sibling deleted it).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncConflict {
+    pub path: String,
+    pub host_kind: crate::changeset::ChangeKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theirs: Option<String>,
+}
+
+/// Result of session.sync: the loser's one-command path back into the game.
+/// Baseline advances over sibling publications; contested paths get their
+/// `theirs` material; `stale_paths` are sibling-changed paths this session
+/// never touched (its view of them is outdated but nothing blocks commit).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncResult {
+    pub folded_publications: u64,
+    pub stale_paths: Vec<String>,
+    pub conflicts: Vec<SyncConflict>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitResult {
     pub checkpoint_id: String,
     pub applied: usize,
+    /// How many sibling publications this commit's baseline was fast-forwarded
+    /// over. Non-zero means the host moved legitimately since this session's
+    /// baseline: orchestrators must re-verify (build/test) after integration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folded_publications: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -532,6 +571,7 @@ mod tests {
             id: 2,
             result: None,
             error: Some(ProtocolError {
+                data: None,
                 code: -32000,
                 message: "boom".into(),
             }),

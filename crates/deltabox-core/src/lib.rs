@@ -23,6 +23,9 @@ pub mod pathmap;
 pub mod policy;
 #[cfg(target_os = "linux")]
 mod private_publish;
+pub(crate) mod locks;
+pub(crate) mod project_lease;
+pub(crate) mod publog;
 pub mod protocol;
 pub(crate) mod test_hooks;
 pub mod server;

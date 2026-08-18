@@ -26,14 +26,26 @@ impl Server {
                 result: Some(value),
                 error: None,
             },
-            Err(e) => Response {
-                id: request.id,
-                result: None,
-                error: Some(ProtocolError {
-                    code: -32000,
-                    message: e.to_string(),
-                }),
-            },
+            Err(e) => {
+                let data = match &e {
+                    crate::error::Error::ProjectConflict(report) => {
+                        serde_json::to_value(report).ok().map(|mut value| {
+                            value["type"] = "project-conflict".into();
+                            value
+                        })
+                    }
+                    _ => None,
+                };
+                Response {
+                    id: request.id,
+                    result: None,
+                    error: Some(ProtocolError {
+                        code: -32000,
+                        message: e.to_string(),
+                        data,
+                    }),
+                }
+            }
         }
     }
 
@@ -76,6 +88,9 @@ impl Server {
             Method::DiffList(p) => serde_json::to_value(self.manager.diff(p)?)?,
             Method::ChangesCommit(p) => serde_json::to_value(self.manager.commit(p)?)?,
             Method::ChangesAbort(p) => serde_json::to_value(self.manager.abort(p)?)?,
+            Method::SessionSync(p) => {
+                serde_json::to_value(self.manager.sync(&p.session_id)?)?
+            }
             Method::ReviewBegin(p) => serde_json::to_value(self.manager.begin_review(p)?)?,
             Method::ReviewStatus(p) => {
                 serde_json::to_value(self.manager.review_status(&p.session_id)?)?

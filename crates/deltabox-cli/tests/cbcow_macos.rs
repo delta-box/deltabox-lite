@@ -216,20 +216,208 @@ impl SharedProject {
     }
 }
 
-// Today's admission rule is one CB-CoW session per project regardless of
-// mode. The planned lease split will let N private sessions coexist; this
-// guard pins the current behavior and is expected to flip then.
+fn sid_of(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+// Mode-aware admission: private sessions coexist; through, which writes the
+// host tree directly, excludes everything and is excluded by anything live.
 #[test]
-fn private_sessions_are_still_exclusive_per_project() {
+fn private_sessions_coexist_and_through_stays_exclusive() {
     let env = SharedProject::new();
-    let first = env.try_start("cbcow-private");
-    assert_ok(&first);
-    let second = env.try_start("cbcow-private");
-    assert!(!second.status.success());
+    let a = env.try_start("cbcow-private");
+    assert_ok(&a);
+    let b = env.try_start("cbcow-private");
+    assert_ok(&b);
+    let through = env.try_start("cbcow-through");
+    assert!(!through.status.success());
     assert!(
-        String::from_utf8_lossy(&second.stderr).contains("session busy"),
-        "expected SessionBusy, got: {}",
-        String::from_utf8_lossy(&second.stderr)
+        String::from_utf8_lossy(&through.stderr).contains("session busy"),
+        "{through:?}"
+    );
+}
+
+#[test]
+fn through_session_excludes_everyone() {
+    let env = SharedProject::new();
+    assert_ok(&env.try_start("cbcow-through"));
+    let second = env.try_start("cbcow-through");
+    assert!(!second.status.success());
+    let private = env.try_start("cbcow-private");
+    assert!(!private.status.success());
+}
+
+// Deterministic lock proof: while one commit holds the publish lock, a
+// sibling's commit must block instead of interleaving host mutations.
+#[test]
+fn racing_commits_serialize_under_publish_lock() {
+    let env = SharedProject::new();
+    let a = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let b = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let project = env.project.path().to_str().unwrap().to_string();
+    for (sid, path) in [(&a, "race-a.txt"), (&b, "race-b.txt")] {
+        let out = command(
+            env.project.path(),
+            env.state.path(),
+            ["write", sid, path, "--content", "x", "--project", &project],
+        );
+        assert_ok(&out);
+    }
+
+    let pause = tempfile::tempdir().unwrap();
+    let mut commit_a = std::process::Command::new(bin());
+    commit_a
+        .env("DELTABOX_STATE_DIR", env.state.path())
+        .env("DELTABOX_TEST_PAUSE_AT", "publish_lock_held")
+        .env("DELTABOX_TEST_PAUSE_DIR", pause.path())
+        .args(["commit", &a, "--project", &project]);
+    let mut commit_a = commit_a.spawn().unwrap();
+    let arrived = pause.path().join("publish_lock_held.arrived");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !arrived.exists() {
+        assert!(std::time::Instant::now() < deadline, "commit A never took the lock");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let mut commit_b = std::process::Command::new(bin());
+    commit_b
+        .env("DELTABOX_STATE_DIR", env.state.path())
+        .args(["commit", &b, "--project", &project]);
+    let mut commit_b = commit_b.spawn().unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(
+        commit_b.try_wait().unwrap().is_none(),
+        "commit B finished while A held the publish lock"
+    );
+
+    std::fs::write(pause.path().join("publish_lock_held.release"), b"").unwrap();
+    assert!(commit_a.wait().unwrap().success());
+    assert!(commit_b.wait().unwrap().success());
+    assert!(env.project.path().join("race-a.txt").exists());
+    assert!(env.project.path().join("race-b.txt").exists());
+}
+
+// Stage-3 north star: the losing session recovers with one sync — merges
+// against the materialized theirs copy and lands on the second attempt.
+#[test]
+fn conflicting_session_recovers_via_sync_and_lands() {
+    let env = SharedProject::new();
+    let a = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let b = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let project = env.project.path().to_str().unwrap().to_string();
+    let run = |args: Vec<&str>| command(env.project.path(), env.state.path(), args);
+
+    assert_ok(&run(vec!["write", &a, "shared.txt", "--content", "a-version", "--project", &project]));
+    assert_ok(&run(vec!["write", &b, "shared.txt", "--content", "b-version", "--project", &project]));
+    assert_ok(&run(vec!["write", &b, "b-only.txt", "--content", "from-b", "--project", &project]));
+
+    assert_ok(&run(vec!["commit", &a, "--project", &project]));
+    let rejected = run(vec!["commit", &b, "--project", &project]);
+    assert!(!rejected.status.success());
+
+    let sync = run(vec!["sync", &b, "--project", &project]);
+    assert_ok(&sync);
+    let sync: Value = serde_json::from_slice(&sync.stdout).unwrap();
+    assert!(sync["folded_publications"].as_u64().unwrap() >= 1);
+    assert_eq!(sync["conflicts"][0]["path"], "shared.txt");
+    assert_eq!(sync["conflicts"][0]["theirs"], "shared.txt.deltabox-theirs");
+
+    let theirs = run(vec!["read", &b, "shared.txt.deltabox-theirs", "--project", &project]);
+    assert_ok(&theirs);
+
+    assert_ok(&run(vec!["write", &b, "shared.txt", "--content", "merged: a-version + b-version", "--project", &project]));
+    let cleanup = run(vec!["exec", &b, "--project", &project, "--", "rm", "shared.txt.deltabox-theirs"]);
+    assert_ok(&cleanup);
+
+    assert_ok(&run(vec!["commit", &b, "--project", &project]));
+    assert_eq!(
+        std::fs::read_to_string(env.project.path().join("shared.txt")).unwrap(),
+        "merged: a-version + b-version"
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.project.path().join("b-only.txt")).unwrap(),
+        "from-b"
+    );
+    assert!(!env.project.path().join("shared.txt.deltabox-theirs").exists());
+}
+
+// The multi-agent north star: disjoint private commits both land; an
+// overlapping commit is rejected whole with a structured conflict listing.
+#[test]
+fn disjoint_private_commits_land_and_overlap_conflicts() {
+    let env = SharedProject::new();
+    let a = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let b = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let project = env.project.path().to_str().unwrap().to_string();
+    let write = |sid: &str, path: &str, content: &str| {
+        let out = command(
+            env.project.path(),
+            env.state.path(),
+            ["write", sid, path, "--content", content, "--project", &project],
+        );
+        assert_ok(&out);
+    };
+    write(&a, "a-only.txt", "from-a");
+    write(&a, "shared.txt", "a-version");
+    write(&b, "b-only.txt", "from-b");
+    write(&b, "shared.txt", "b-version");
+
+    let commit_a = command(
+        env.project.path(),
+        env.state.path(),
+        ["commit", &a, "--project", &project],
+    );
+    assert_ok(&commit_a);
+
+    let commit_b = command(
+        env.project.path(),
+        env.state.path(),
+        ["commit", &b, "--project", &project],
+    );
+    assert!(!commit_b.status.success());
+    let stderr = String::from_utf8_lossy(&commit_b.stderr);
+    assert!(stderr.contains("commit blocked"), "{stderr}");
+    assert!(stderr.contains("shared.txt"), "{stderr}");
+
+    assert_eq!(
+        std::fs::read_to_string(env.project.path().join("a-only.txt")).unwrap(),
+        "from-a"
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.project.path().join("shared.txt")).unwrap(),
+        "a-version"
+    );
+    assert!(
+        !env.project.path().join("b-only.txt").exists(),
+        "a rejected commit must publish nothing"
     );
 }
 

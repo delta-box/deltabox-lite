@@ -43,6 +43,9 @@ enum Command {
     Diff(DiffArgs),
     /// Commit pending changes to the real project.
     Commit(CommitArgs),
+    /// Fold sibling publications into the session: refresh the baseline and
+    /// materialize `.deltabox-theirs` copies for conflicting paths.
+    Sync(SyncArgs),
     /// Abort pending changes back to a checkpoint.
     Abort(AbortArgs),
     /// Manage a persistent task/tool review scope.
@@ -320,6 +323,33 @@ struct FsHelperArgs {
     reclaim_dir: Option<PathBuf>,
 }
 
+
+/// On a structured commit conflict, list every conflicting path on stderr so
+/// callers (humans and agents) see the whole reconciliation surface at once.
+#[derive(clap::Args)]
+struct SyncArgs {
+    session: String,
+    #[arg(long, default_value = ".")]
+    project: std::path::PathBuf,
+}
+
+fn render_conflict(error: &deltabox_core::error::Error) {
+    if let deltabox_core::error::Error::ProjectConflict(report) = error {
+        eprintln!("deltabox: commit blocked: project changed outside deltabox");
+        for conflict in &report.conflicts {
+            let mark = match conflict.host_change {
+                deltabox_core::changeset::ChangeKind::Added => "A",
+                deltabox_core::changeset::ChangeKind::Modified => "M",
+                deltabox_core::changeset::ChangeKind::Deleted => "D",
+            };
+            eprintln!("  {mark} {} (changed on the host)", conflict.path);
+        }
+        let n = report.conflicts.len();
+        let suffix = if report.truncated { ", list truncated" } else { "" };
+        eprintln!("deltabox: {n} conflicting path(s){suffix}; nothing was committed.");
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -431,10 +461,17 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Commit(args) => {
             let manager = SessionCoordinator::new(&args.project, None)?;
-            let result = manager.commit(CommitParams {
-                session_id: args.session,
-                checkpoint: args.checkpoint,
-            })?;
+            let result = manager
+                .commit(CommitParams {
+                    session_id: args.session,
+                    checkpoint: args.checkpoint,
+                })
+                .inspect_err(|error| render_conflict(error))?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::Sync(args) => {
+            let manager = SessionCoordinator::new(&args.project, None)?;
+            let result = manager.sync(&args.session)?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Command::Abort(args) => {
