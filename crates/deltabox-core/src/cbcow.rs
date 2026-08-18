@@ -35,6 +35,7 @@ const MOUNT_RECORD: &str = "mount.json";
 const SESSION_META: &str = "session.json";
 const ACTIVE_REVIEW: &str = "active_review.json";
 const SESSION_LOCK: &str = "session.lock";
+const PROJECT_LEASE: &str = "active-cbcow";
 const DENY_PATHS: &str = "deny-paths.json";
 const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -87,6 +88,8 @@ impl Manager {
         durability: DurabilityMode,
         group_commit_ms: Option<u64>,
     ) -> Result<SessionInfo> {
+        let _project_lock = Lock::acquire(&self.root.join("cbcow.lock"))?;
+        self.require_available_project()?;
         let policy_path = resolve_policy(&self.project, policy_path)?;
         let policy = match &policy_path {
             Some(path) => Policy::load(path)?,
@@ -183,6 +186,11 @@ impl Manager {
                 durability == DurabilityMode::Strict,
             )?;
             self.save_meta(&meta)?;
+            write_file_with(
+                &self.root.join(PROJECT_LEASE),
+                format!("{session_id}\n").as_bytes(),
+                durability == DurabilityMode::Strict,
+            )?;
             self.append(&session_id, JournalKind::SessionStart, None)?;
             Ok(SessionInfo {
                 session_id: session_id.clone(),
@@ -268,6 +276,11 @@ impl Manager {
         meta.filesystem = filesystem_info(&record);
         meta.filesystem.helper_pid = None;
         self.save_meta(&meta)?;
+        if fs::read_to_string(self.root.join(PROJECT_LEASE))
+            .is_ok_and(|value| value.trim() == session_id)
+        {
+            let _ = fs::remove_file(self.root.join(PROJECT_LEASE));
+        }
         self.append(session_id, JournalKind::SessionStop, None)?;
         command_executor::cleanup_stopped(&command_endpoint(&record));
         Ok(SessionInfo {
@@ -907,6 +920,13 @@ impl Manager {
         wait_unmounted(&record.mountpoint)?;
         wait_helper_stopped(record)?;
 
+        let lease = self.root.join(PROJECT_LEASE);
+        match fs::read_to_string(&lease) {
+            Ok(value) if value.trim() == session_id => fs::remove_file(lease)?,
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
         let mut registry = SessionRegistry::load(&self.root)?;
         let old_len = registry.sessions.len();
         registry
@@ -936,6 +956,20 @@ impl Manager {
             Some(path) => Policy::load(path),
             None => Ok(Policy::default_agent()),
         }
+    }
+
+    fn require_available_project(&self) -> Result<()> {
+        let lease = self.root.join(PROJECT_LEASE);
+        if let Ok(session_id) = fs::read_to_string(&lease) {
+            if self
+                .load_meta(session_id.trim())
+                .is_ok_and(|meta| meta.status == SessionStatus::Running)
+            {
+                return Err(Error::SessionBusy(session_id.trim().into()));
+            }
+            fs::remove_file(lease)?;
+        }
+        Ok(())
     }
 
     fn running_meta(&self, session_id: &str) -> Result<SessionMeta> {
@@ -1096,6 +1130,16 @@ fn save_json_with(path: &Path, value: &impl Serialize, durable: bool) -> Result<
     fs::rename(temporary, path)?;
     if durable {
         File::open(path.parent().expect("saved path has a parent"))?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn write_file_with(path: &Path, bytes: &[u8], durable: bool) -> Result<()> {
+    let mut file = File::create(path)?;
+    file.write_all(bytes)?;
+    if durable {
+        file.sync_all()?;
+        File::open(path.parent().expect("written path has a parent"))?.sync_all()?;
     }
     Ok(())
 }
@@ -1272,5 +1316,38 @@ fn is_mounted(mountpoint: &Path) -> bool {
 fn maybe_crash(point: &str) {
     if cfg!(debug_assertions) && std::env::var("DELTABOX_TEST_CRASH_AT").as_deref() == Ok(point) {
         std::process::abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_lease_blocks_second_running_session() {
+        let project = tempfile::tempdir().unwrap();
+        let manager = Manager::new(project.path(), std::env::current_exe().unwrap()).unwrap();
+        let session_id = "fake-session";
+        let store = manager.store(session_id);
+        fs::create_dir_all(&store).unwrap();
+        let meta = SessionMeta {
+            session_id: session_id.into(),
+            project: manager.project.clone(),
+            policy_path: None,
+            started_at_ms: now_ms(),
+            status: SessionStatus::Running,
+            filesystem: Default::default(),
+        };
+        save_json(&store.join(SESSION_META), &meta).unwrap();
+        fs::write(manager.root.join(PROJECT_LEASE), format!("{session_id}\n")).unwrap();
+
+        let error = manager.require_available_project().unwrap_err();
+        assert!(matches!(error, Error::SessionBusy(_)));
+
+        let mut stopped = meta;
+        stopped.status = SessionStatus::Stopped;
+        save_json(&store.join(SESSION_META), &stopped).unwrap();
+        manager.require_available_project().unwrap();
+        assert!(!manager.root.join(PROJECT_LEASE).exists());
     }
 }

@@ -117,6 +117,10 @@ deltabox commit "$session_id"
 deltabox session stop "$session_id"
 ```
 
+Session records live in `<project>/.deltabox` by default, so each project stays
+self-contained. Set `DELTABOX_STATE_DIR=/path/to/state` to relocate session
+records and engine state to an arbitrary path instead.
+
 ### Shell command syntax
 
 `deltabox exec` and `deltabox run` execute the argv after `--` directly. Commands
