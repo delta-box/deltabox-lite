@@ -15,10 +15,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const targets = {
-  "aarch64-apple-darwin": ["deltabox-lite-darwin-arm64", "darwin", "arm64"],
-  "x86_64-apple-darwin": ["deltabox-lite-darwin-x64", "darwin", "x64"],
-  "aarch64-unknown-linux-gnu": ["deltabox-lite-linux-arm64", "linux", "arm64"],
-  "x86_64-unknown-linux-gnu": ["deltabox-lite-linux-x64", "linux", "x64"],
+  "aarch64-apple-darwin": ["deltabox-lite-darwin-arm64", "darwin", "arm64", "libdeltabox_node.dylib"],
+  "x86_64-apple-darwin": ["deltabox-lite-darwin-x64", "darwin", "x64", "libdeltabox_node.dylib"],
+  "aarch64-unknown-linux-gnu": ["deltabox-lite-linux-arm64", "linux", "arm64", "libdeltabox_node.so"],
+  "x86_64-unknown-linux-gnu": ["deltabox-lite-linux-x64", "linux", "x64", "libdeltabox_node.so"],
 };
 
 const target = process.argv[2];
@@ -36,18 +36,26 @@ if (!version) throw new Error("workspace package version is missing");
 const cargo = process.env.CARGO ?? "cargo";
 const build = spawnSync(
   cargo,
-  ["build", "--release", "--locked", "--target", target, "-p", "deltabox"],
+  [
+    "build", "--release", "--locked", "--target", target,
+    "-p", "deltabox", "-p", "deltabox-node",
+  ],
   { cwd: root, stdio: "inherit" },
 );
 if (build.status !== 0) process.exit(build.status ?? 1);
 
-const [name, os, cpu] = platform;
+const [name, os, cpu, nativeLibrary] = platform;
 const stage = mkdtempSync(join(tmpdir(), `${name}-`));
 try {
   mkdirSync(join(stage, "bin"));
   const binary = join(stage, "bin", "deltabox");
   copyFileSync(join(root, "target", target, "release", "deltabox"), binary);
   chmodSync(binary, 0o755);
+  mkdirSync(join(stage, "native"));
+  copyFileSync(
+    join(root, "target", target, "release", nativeLibrary),
+    join(stage, "native", "deltabox.node"),
+  );
   copyFileSync(join(root, "LICENSE"), join(stage, "LICENSE"));
   writeFileSync(
     join(stage, "README.md"),
@@ -63,13 +71,14 @@ try {
       repository: "https://github.com/Ddnirvana/deltabox-lite",
       os: [os],
       cpu: [cpu],
-      files: ["bin", "README.md", "LICENSE"],
+      files: ["bin", "native", "README.md", "LICENSE"],
       bin: { deltabox: "bin/deltabox" },
     }, null, 2)}\n`,
   );
   mkdirSync(output, { recursive: true });
   const packed = spawnSync("npm", ["pack", stage, "--pack-destination", output], {
     cwd: root,
+    env: { ...process.env, npm_config_cache: join(stage, ".npm-cache") },
     stdio: "inherit",
   });
   if (packed.status !== 0) process.exit(packed.status ?? 1);

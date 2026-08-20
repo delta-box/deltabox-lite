@@ -27,6 +27,7 @@ pub mod protocol;
 pub mod server;
 pub mod session;
 pub mod snapshot;
+pub mod trusted;
 pub mod worker;
 
 pub use error::{Error, Result};

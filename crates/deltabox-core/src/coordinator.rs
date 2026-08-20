@@ -9,6 +9,27 @@ use crate::session::SessionMeta;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Command execution behavior selected once when a coordinator is embedded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CommandExecutionMode {
+    /// Preserve the existing per-platform sandbox helper path.
+    #[default]
+    Sandboxed,
+    /// Spawn commands directly with the embedding process environment.
+    Trusted,
+}
+
+/// Immutable coordinator configuration, safe to share across worker tasks.
+#[derive(Debug, Clone, Default)]
+pub struct CoordinatorOptions {
+    pub helper_bin: Option<PathBuf>,
+    pub command_execution: CommandExecutionMode,
+    /// Explicit engine state base for embedded callers.
+    pub state_dir: Option<PathBuf>,
+    /// Explicit ephemeral runtime base for embedded callers.
+    pub runtime_dir: Option<PathBuf>,
+}
+
 pub struct SessionCoordinator {
     project: PathBuf,
     copy_private: DurableSessionManager,
@@ -20,15 +41,37 @@ pub struct SessionCoordinator {
 
 impl SessionCoordinator {
     pub fn new(project: &Path, worker_bin: Option<PathBuf>) -> Result<Self> {
+        Self::new_with_options(
+            project,
+            CoordinatorOptions {
+                helper_bin: worker_bin,
+                ..CoordinatorOptions::default()
+            },
+        )
+    }
+
+    pub fn new_with_options(project: &Path, options: CoordinatorOptions) -> Result<Self> {
         let project = project.canonicalize()?;
-        let copy_private = DurableSessionManager::new(&project, worker_bin.clone())?;
-        #[cfg(target_os = "linux")]
-        let cbcow =
-            crate::cbcow::Manager::new(&project, worker_bin.unwrap_or(std::env::current_exe()?))?;
-        #[cfg(target_os = "macos")]
-        let macos_cbcow = crate::macos_cbcow::Manager::new(
+        let helper_bin = options.helper_bin.unwrap_or(std::env::current_exe()?);
+        let copy_private = DurableSessionManager::new_with_execution_mode(
             &project,
-            worker_bin.unwrap_or(std::env::current_exe()?),
+            Some(helper_bin.clone()),
+            options.command_execution,
+        )?;
+        #[cfg(target_os = "linux")]
+        let cbcow = crate::cbcow::Manager::new_with_execution_mode(
+            &project,
+            helper_bin.clone(),
+            options.command_execution,
+            options.state_dir.clone(),
+            options.runtime_dir.clone(),
+        )?;
+        #[cfg(target_os = "macos")]
+        let macos_cbcow = crate::macos_cbcow::Manager::new_with_execution_mode(
+            &project,
+            helper_bin,
+            options.command_execution,
+            options.state_dir,
         )?;
         Ok(Self {
             project,
@@ -141,6 +184,17 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.read_file(session_id, path),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.read_file(session_id, path),
+        }
+    }
+
+    /// Read raw bytes without the JSON/Base64 compatibility layer.
+    pub fn read_file_bytes(&self, session_id: &str, path: &Path) -> Result<Vec<u8>> {
+        match self.route(session_id)? {
+            Route::CopyPrivate(manager) => manager.read_file_bytes(session_id, path),
+            #[cfg(target_os = "linux")]
+            Route::Cbcow(manager) => manager.read_file_bytes(session_id, path),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.read_file_bytes(session_id, path),
         }
     }
 

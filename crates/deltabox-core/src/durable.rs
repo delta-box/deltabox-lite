@@ -7,8 +7,10 @@
 use crate::backend::SandboxBackend;
 use crate::changeset::{Change, ChangeKind};
 use crate::checkpoint::{CheckpointStore, DEFAULT_CHECKPOINT_CAP};
+use crate::coordinator::CommandExecutionMode;
 use crate::error::{Error, Result};
 use crate::journal::{Journal, JournalEntry, JournalKind};
+use crate::pathmap::PathMapper;
 use crate::policy::Policy;
 use crate::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
@@ -92,10 +94,19 @@ pub struct DurableSessionManager {
     project: PathBuf,
     root: PathBuf,
     worker_bin: Option<PathBuf>,
+    execution_mode: CommandExecutionMode,
 }
 
 impl DurableSessionManager {
     pub fn new(project: &Path, worker_bin: Option<PathBuf>) -> Result<Self> {
+        Self::new_with_execution_mode(project, worker_bin, CommandExecutionMode::Sandboxed)
+    }
+
+    pub fn new_with_execution_mode(
+        project: &Path,
+        worker_bin: Option<PathBuf>,
+        execution_mode: CommandExecutionMode,
+    ) -> Result<Self> {
         let project = project.canonicalize()?;
         let root = project.join(".deltabox");
         std::fs::create_dir_all(&root)?;
@@ -103,6 +114,7 @@ impl DurableSessionManager {
             project,
             root,
             worker_bin,
+            execution_mode,
         })
     }
 
@@ -223,9 +235,15 @@ impl DurableSessionManager {
             cwd,
             env: params.env,
         };
-        let result = self.run_and_materialize(&params.session_id, |backend, sid| {
-            backend.exec(sid, request)
-        })?;
+        let result = match self.execution_mode {
+            CommandExecutionMode::Sandboxed => self
+                .run_and_materialize(&params.session_id, |backend, sid| {
+                    backend.exec(sid, request)
+                })?,
+            CommandExecutionMode::Trusted => {
+                self.run_trusted_and_materialize(&params.session_id, request)?
+            }
+        };
         self.append(
             &params.session_id,
             JournalKind::Exec,
@@ -235,6 +253,14 @@ impl DurableSessionManager {
     }
 
     pub fn read_file(&self, session_id: &str, path: &Path) -> Result<FsReadResult> {
+        let bytes = self.read_file_bytes(session_id, path)?;
+        Ok(FsReadResult {
+            content_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+            size: bytes.len(),
+        })
+    }
+
+    pub fn read_file_bytes(&self, session_id: &str, path: &Path) -> Result<Vec<u8>> {
         let _lock = self.lock_running(session_id)?;
         let policy = self.policy(session_id)?;
         let rel = relative_project_path(&self.project, path)?;
@@ -257,10 +283,7 @@ impl DurableSessionManager {
             }
             None => Vec::new(),
         };
-        Ok(FsReadResult {
-            content_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
-            size: bytes.len(),
-        })
+        Ok(bytes)
     }
 
     pub fn write_file(&self, session_id: &str, path: &Path, content: Vec<u8>) -> Result<()> {
@@ -603,6 +626,53 @@ impl DurableSessionManager {
                 .collect();
             validate_materialized_result(&policy, &accepted, &current, candidate, &changed_paths)?;
             Ok((value, current))
+        })
+    }
+
+    fn run_trusted_and_materialize(
+        &self,
+        session_id: &str,
+        request: ExecRequest,
+    ) -> Result<ExecResult> {
+        let store = self.store_dir(session_id);
+        let before = self.working_scan(&store)?;
+        let accepted = self.accepted_scan(&store)?;
+        let policy = self.policy(session_id)?;
+        self.update_working_copy_transaction(session_id, |candidate| {
+            let mapper = PathMapper::new(&self.project, candidate);
+            let request = ExecRequest {
+                argv: request
+                    .argv
+                    .into_iter()
+                    .map(|value| mapper.map_arg(&value))
+                    .collect(),
+                cwd: Some(
+                    request
+                        .cwd
+                        .as_deref()
+                        .map(|path| mapper.map_path(path))
+                        .unwrap_or_else(|| candidate.to_path_buf()),
+                ),
+                env: request
+                    .env
+                    .map(|values| {
+                        values
+                            .into_iter()
+                            .map(|(key, value)| {
+                                mapper.map_env(&key, &value).map(|value| (key, value))
+                            })
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .transpose()?,
+            };
+            let result = crate::trusted::exec(request)?;
+            let current = scan_tree(candidate)?;
+            let changed_paths: HashSet<String> = diff_snapshots(&before, &current)
+                .into_iter()
+                .map(|change| change.path)
+                .collect();
+            validate_materialized_result(&policy, &accepted, &current, candidate, &changed_paths)?;
+            Ok((result, current))
         })
     }
 
