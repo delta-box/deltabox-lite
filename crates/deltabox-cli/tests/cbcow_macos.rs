@@ -1,5 +1,9 @@
 #![cfg(target_os = "macos")]
 
+use deltabox_core::coordinator::{CommandExecutionMode, CoordinatorOptions, SessionCoordinator};
+use deltabox_core::protocol::{
+    DurabilityMode, ExecParams, FilesystemMode, ReviewBeginParams, ReviewKind,
+};
 use serde_json::Value;
 use std::ffi::OsStr;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -164,6 +168,89 @@ max_storage_bytes = 4
     assert_ok(&abort);
     assert_eq!(session.status()["pending_changes"], 0);
     session.stop();
+}
+
+#[test]
+fn embedded_fast_path_reuses_bash_and_tracks_direct_writes() {
+    let project = tempfile::Builder::new()
+        .prefix("deltabox-embedded-project-")
+        .tempdir_in("/private/tmp")
+        .unwrap();
+    let state = tempfile::Builder::new()
+        .prefix("deltabox-embedded-state-")
+        .tempdir_in("/private/tmp")
+        .unwrap();
+    let policy = project.path().join("policy.toml");
+    std::fs::write(
+        &policy,
+        r#"[filesystem]
+read = ["."]
+write = ["."]
+deny = []
+
+[network]
+mode = "deny_all"
+"#,
+    )
+    .unwrap();
+    let coordinator = SessionCoordinator::new_with_options(
+        project.path(),
+        CoordinatorOptions {
+            helper_bin: Some(PathBuf::from(bin())),
+            command_execution: CommandExecutionMode::Trusted,
+            state_dir: Some(state.path().join("native")),
+            embedded_fast: true,
+            ..CoordinatorOptions::default()
+        },
+    )
+    .unwrap();
+    let session = coordinator
+        .start_with_durability(
+            Some(&policy),
+            Some(FilesystemMode::CbcowThrough),
+            true,
+            DurabilityMode::Fast,
+            None,
+        )
+        .unwrap();
+    coordinator
+        .begin_review(ReviewBeginParams {
+            session_id: session.session_id.clone(),
+            kind: ReviewKind::Task,
+            label: Some("embedded fast path".into()),
+        })
+        .unwrap();
+
+    let direct = project.path().join("direct.txt");
+    std::fs::write(&direct, "changed").unwrap();
+    coordinator
+        .record_file_changes(&session.session_id, std::slice::from_ref(&direct))
+        .unwrap();
+    let run = || {
+        coordinator
+            .exec(ExecParams {
+                session_id: session.session_id.clone(),
+                argv: vec!["bash".into(), "-c".into(), "printf %s $$".into()],
+                cwd: Some(project.path().to_path_buf()),
+                env: None,
+                label: None,
+            })
+            .unwrap()
+    };
+    let first = run();
+    let second = run();
+    assert_eq!(first.exit_code, Some(0));
+    assert_eq!(first.stdout, second.stdout);
+    assert_eq!(
+        coordinator
+            .review_diff(&session.session_id)
+            .unwrap()
+            .pending_changes,
+        1
+    );
+    coordinator.review_abort(&session.session_id).unwrap();
+    assert!(!direct.exists());
+    coordinator.stop(&session.session_id).unwrap();
 }
 
 fn command<I, S>(project: &Path, state: &Path, args: I) -> Output

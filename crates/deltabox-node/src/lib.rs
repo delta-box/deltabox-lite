@@ -7,7 +7,6 @@ use deltabox_core::protocol::{
     FilesystemMode, ReviewBeginParams, ReviewKind, SessionInfo,
 };
 use napi::bindgen_prelude::*;
-use napi::{Env, Task};
 use napi_derive::napi;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,53 +15,15 @@ fn native_error(error: impl std::fmt::Display) -> napi::Error {
     napi::Error::from_reason(error.to_string())
 }
 
-pub struct NativeTask<T> {
-    operation: Option<Box<dyn FnOnce() -> napi::Result<T> + Send>>,
-}
-
-impl<T> NativeTask<T> {
-    fn new(operation: impl FnOnce() -> napi::Result<T> + Send + 'static) -> Self {
-        Self {
-            operation: Some(Box::new(operation)),
-        }
-    }
-}
-
-impl<T> Task for NativeTask<T>
+async fn run_blocking<T>(
+    operation: impl FnOnce() -> napi::Result<T> + Send + 'static,
+) -> napi::Result<T>
 where
-    T: ToNapiValue + TypeName + Send + 'static,
+    T: Send + 'static,
 {
-    type Output = T;
-    type JsValue = T;
-
-    fn compute(&mut self) -> napi::Result<Self::Output> {
-        self.operation.take().expect("native task is computed once")()
-    }
-
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-        Ok(output)
-    }
-}
-
-pub struct ReadFileTask {
-    coordinator: Arc<SessionCoordinator>,
-    session_id: String,
-    path: String,
-}
-
-impl Task for ReadFileTask {
-    type Output = Vec<u8>;
-    type JsValue = Buffer;
-
-    fn compute(&mut self) -> napi::Result<Self::Output> {
-        self.coordinator
-            .read_file_bytes(&self.session_id, Path::new(&self.path))
-            .map_err(native_error)
-    }
-
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-        Ok(output.into())
-    }
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(native_error)?
 }
 
 #[napi(object)]
@@ -73,8 +34,10 @@ pub struct NativeEnvironmentEntry {
 
 #[napi(object)]
 pub struct NativeSessionInfo {
+    #[napi(js_name = "session_id")]
     pub session_id: String,
     pub project: String,
+    #[napi(js_name = "resolved_fs_mode")]
     pub resolved_fs_mode: String,
     pub durability: String,
     pub mountpoint: Option<String>,
@@ -82,18 +45,22 @@ pub struct NativeSessionInfo {
 
 #[napi(object)]
 pub struct NativeExecResult {
-    pub exit_code: Option<i32>,
+    #[napi(js_name = "exit_code")]
+    pub exit_code: Either<i32, Null>,
     pub stdout: String,
     pub stderr: String,
+    #[napi(js_name = "duration_ms")]
     pub duration_ms: f64,
     pub truncated: bool,
 }
 
 #[napi(object)]
 pub struct NativeActiveReview {
+    #[napi(js_name = "checkpoint_id")]
     pub checkpoint_id: String,
     pub kind: String,
-    pub label: Option<String>,
+    pub label: Either<String, Null>,
+    #[napi(js_name = "started_at_ms")]
     pub started_at_ms: f64,
 }
 
@@ -101,30 +68,39 @@ pub struct NativeActiveReview {
 pub struct NativeChange {
     pub path: String,
     pub kind: String,
-    pub old_size: Option<f64>,
-    pub new_size: Option<f64>,
+    #[napi(js_name = "old_size")]
+    pub old_size: Either<f64, Null>,
+    #[napi(js_name = "new_size")]
+    pub new_size: Either<f64, Null>,
+    #[napi(js_name = "is_binary")]
     pub is_binary: bool,
+    #[napi(js_name = "added_lines")]
     pub added_lines: f64,
+    #[napi(js_name = "removed_lines")]
     pub removed_lines: f64,
+    #[napi(js_name = "text_diff")]
     pub text_diff: Option<String>,
 }
 
 #[napi(object)]
 pub struct NativeDiffResult {
-    pub from: Option<String>,
-    pub to: Option<String>,
+    pub from: Either<String, Null>,
+    pub to: Either<String, Null>,
+    #[napi(js_name = "pending_changes")]
     pub pending_changes: f64,
     pub changes: Vec<NativeChange>,
 }
 
 #[napi(object)]
 pub struct NativeCommitResult {
+    #[napi(js_name = "checkpoint_id")]
     pub checkpoint_id: String,
     pub applied: f64,
 }
 
 #[napi(object)]
 pub struct NativeAbortResult {
+    #[napi(js_name = "checkpoint_id")]
     pub checkpoint_id: String,
     pub restored: f64,
 }
@@ -156,6 +132,7 @@ impl NativeDeltabox {
                 command_execution,
                 state_dir: state_dir.map(PathBuf::from),
                 runtime_dir: runtime_dir.map(PathBuf::from),
+                embedded_fast: true,
             },
         )
         .map_err(native_error)?;
@@ -165,16 +142,16 @@ impl NativeDeltabox {
     }
 
     #[napi]
-    pub fn start_session(
+    pub async fn start_session(
         &self,
         policy: Option<String>,
         durability: Option<String>,
         group_commit_ms: Option<f64>,
-    ) -> napi::Result<AsyncTask<NativeTask<NativeSessionInfo>>> {
+    ) -> napi::Result<NativeSessionInfo> {
         let coordinator = Arc::clone(&self.coordinator);
         let durability = parse_durability(durability.as_deref())?;
         let group_commit_ms = parse_nonnegative_integer("groupCommitMs", group_commit_ms)?;
-        Ok(AsyncTask::new(NativeTask::new(move || {
+        run_blocking(move || {
             coordinator
                 .start_with_durability(
                     policy.as_deref().map(Path::new),
@@ -185,31 +162,33 @@ impl NativeDeltabox {
                 )
                 .map(session_info)
                 .map_err(native_error)
-        })))
+        })
+        .await
     }
 
     #[napi]
-    pub fn stop_session(&self, session_id: String) -> AsyncTask<NativeTask<NativeSessionInfo>> {
+    pub async fn stop_session(&self, session_id: String) -> napi::Result<NativeSessionInfo> {
         let coordinator = Arc::clone(&self.coordinator);
-        AsyncTask::new(NativeTask::new(move || {
+        run_blocking(move || {
             coordinator
                 .stop(&session_id)
                 .map(session_info)
                 .map_err(native_error)
-        }))
+        })
+        .await
     }
 
     #[napi]
-    pub fn exec(
+    pub async fn exec(
         &self,
         session_id: String,
         argv: Vec<String>,
         cwd: Option<String>,
         environment: Option<Vec<NativeEnvironmentEntry>>,
         label: Option<String>,
-    ) -> AsyncTask<NativeTask<NativeExecResult>> {
+    ) -> napi::Result<NativeExecResult> {
         let coordinator = Arc::clone(&self.coordinator);
-        AsyncTask::new(NativeTask::new(move || {
+        run_blocking(move || {
             coordinator
                 .exec(ExecParams {
                     session_id,
@@ -225,44 +204,64 @@ impl NativeDeltabox {
                 })
                 .map(exec_result)
                 .map_err(native_error)
-        }))
-    }
-
-    #[napi]
-    pub fn read_file(&self, session_id: String, path: String) -> AsyncTask<ReadFileTask> {
-        AsyncTask::new(ReadFileTask {
-            coordinator: Arc::clone(&self.coordinator),
-            session_id,
-            path,
         })
+        .await
     }
 
     #[napi]
-    pub fn write_file(
+    pub async fn read_file(&self, session_id: String, path: String) -> napi::Result<Buffer> {
+        let coordinator = Arc::clone(&self.coordinator);
+        let output = run_blocking(move || {
+            coordinator
+                .read_file_bytes(&session_id, Path::new(&path))
+                .map_err(native_error)
+        })
+        .await?;
+        Ok(output.into())
+    }
+
+    #[napi]
+    pub async fn write_file(
         &self,
         session_id: String,
         path: String,
         content: Buffer,
-    ) -> AsyncTask<NativeTask<()>> {
+    ) -> napi::Result<()> {
         let coordinator = Arc::clone(&self.coordinator);
-        let content = content.to_vec();
-        AsyncTask::new(NativeTask::new(move || {
+        run_blocking(move || {
             coordinator
-                .write_file(&session_id, Path::new(&path), content)
+                .write_file_bytes(&session_id, Path::new(&path), &content)
                 .map_err(native_error)
-        }))
+        })
+        .await
     }
 
     #[napi]
-    pub fn begin_review(
+    pub async fn record_file_changes(
+        &self,
+        session_id: String,
+        paths: Vec<String>,
+    ) -> napi::Result<()> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            let paths = paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
+            coordinator
+                .record_file_changes(&session_id, &paths)
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn begin_review(
         &self,
         session_id: String,
         kind: String,
         label: Option<String>,
-    ) -> napi::Result<AsyncTask<NativeTask<NativeActiveReview>>> {
+    ) -> napi::Result<NativeActiveReview> {
         let coordinator = Arc::clone(&self.coordinator);
         let kind = parse_review_kind(&kind)?;
-        Ok(AsyncTask::new(NativeTask::new(move || {
+        run_blocking(move || {
             coordinator
                 .begin_review(ReviewBeginParams {
                     session_id,
@@ -271,40 +270,44 @@ impl NativeDeltabox {
                 })
                 .map(active_review)
                 .map_err(native_error)
-        })))
+        })
+        .await
     }
 
     #[napi]
-    pub fn review_diff(&self, session_id: String) -> AsyncTask<NativeTask<NativeDiffResult>> {
+    pub async fn review_diff(&self, session_id: String) -> napi::Result<NativeDiffResult> {
         let coordinator = Arc::clone(&self.coordinator);
-        AsyncTask::new(NativeTask::new(move || {
+        run_blocking(move || {
             coordinator
                 .review_diff(&session_id)
                 .map(diff_result)
                 .map_err(native_error)
-        }))
+        })
+        .await
     }
 
     #[napi]
-    pub fn review_commit(&self, session_id: String) -> AsyncTask<NativeTask<NativeCommitResult>> {
+    pub async fn review_commit(&self, session_id: String) -> napi::Result<NativeCommitResult> {
         let coordinator = Arc::clone(&self.coordinator);
-        AsyncTask::new(NativeTask::new(move || {
+        run_blocking(move || {
             coordinator
                 .review_commit(&session_id)
                 .map(commit_result)
                 .map_err(native_error)
-        }))
+        })
+        .await
     }
 
     #[napi]
-    pub fn review_abort(&self, session_id: String) -> AsyncTask<NativeTask<NativeAbortResult>> {
+    pub async fn review_abort(&self, session_id: String) -> napi::Result<NativeAbortResult> {
         let coordinator = Arc::clone(&self.coordinator);
-        AsyncTask::new(NativeTask::new(move || {
+        run_blocking(move || {
             coordinator
                 .review_abort(&session_id)
                 .map(abort_result)
                 .map_err(native_error)
-        }))
+        })
+        .await
     }
 }
 
@@ -367,7 +370,7 @@ fn session_info(value: SessionInfo) -> NativeSessionInfo {
 
 fn exec_result(value: ExecResult) -> NativeExecResult {
     NativeExecResult {
-        exit_code: value.exit_code,
+        exit_code: nullable(value.exit_code),
         stdout: value.stdout,
         stderr: value.stderr,
         duration_ms: value.duration_ms as f64,
@@ -388,7 +391,7 @@ fn active_review(value: ActiveReview) -> NativeActiveReview {
     NativeActiveReview {
         checkpoint_id: value.checkpoint_id,
         kind: review_kind(value.kind),
-        label: value.label,
+        label: nullable(value.label),
         started_at_ms: value.started_at_ms as f64,
     }
 }
@@ -406,8 +409,8 @@ fn change(value: Change) -> NativeChange {
     NativeChange {
         path: value.path,
         kind: change_kind(value.kind),
-        old_size: value.old_size.map(|size| size as f64),
-        new_size: value.new_size.map(|size| size as f64),
+        old_size: nullable(value.old_size.map(|size| size as f64)),
+        new_size: nullable(value.new_size.map(|size| size as f64)),
         is_binary: value.is_binary,
         added_lines: value.added_lines as f64,
         removed_lines: value.removed_lines as f64,
@@ -417,11 +420,15 @@ fn change(value: Change) -> NativeChange {
 
 fn diff_result(value: DiffResult) -> NativeDiffResult {
     NativeDiffResult {
-        from: value.from,
-        to: value.to,
+        from: nullable(value.from),
+        to: nullable(value.to),
         pending_changes: value.pending_changes as f64,
         changes: value.changes.into_iter().map(change).collect(),
     }
+}
+
+fn nullable<T>(value: Option<T>) -> Either<T, Null> {
+    value.map_or(Either::B(Null), Either::A)
 }
 
 fn commit_result(value: CommitResult) -> NativeCommitResult {

@@ -1,4 +1,4 @@
-use super::state::{Mode, State};
+use super::state::{relative_string, Mode, State};
 use crate::command_executor::{self, Endpoint as CommandEndpoint};
 use crate::coordinator::CommandExecutionMode;
 use crate::error::{Error, Result};
@@ -18,6 +18,7 @@ use deltafs_fuse::macos::{
     EventBatch, EventStream,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
@@ -27,6 +28,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -51,6 +53,18 @@ pub struct Manager {
     helper_bin: PathBuf,
     execution_mode: CommandExecutionMode,
     state_base: PathBuf,
+    embedded_fast: bool,
+    fast_sessions: Mutex<HashMap<String, Arc<Mutex<FastSession>>>>,
+}
+
+struct FastSession {
+    record: Record,
+    meta: SessionMeta,
+    policy: Policy,
+    state: State,
+    review: Option<ActiveReview>,
+    journal: Journal,
+    shell: Option<crate::trusted::PersistentBash>,
 }
 
 enum EventTracker {
@@ -60,7 +74,13 @@ enum EventTracker {
 
 impl Manager {
     pub fn new(project: &Path, helper_bin: PathBuf) -> Result<Self> {
-        Self::new_with_execution_mode(project, helper_bin, CommandExecutionMode::Sandboxed, None)
+        Self::new_with_execution_mode(
+            project,
+            helper_bin,
+            CommandExecutionMode::Sandboxed,
+            None,
+            false,
+        )
     }
 
     pub fn new_with_execution_mode(
@@ -68,6 +88,7 @@ impl Manager {
         helper_bin: PathBuf,
         execution_mode: CommandExecutionMode,
         state_base_override: Option<PathBuf>,
+        embedded_fast: bool,
     ) -> Result<Self> {
         let project = project.canonicalize()?;
         let root = project.join(".deltabox");
@@ -81,6 +102,8 @@ impl Manager {
             helper_bin,
             execution_mode,
             state_base,
+            embedded_fast,
+            fast_sessions: Mutex::new(HashMap::new()),
         })
     }
 
@@ -106,11 +129,11 @@ impl Manager {
         let _project_lock = Lock::acquire(&self.root.join("cbcow.lock"))?;
         self.require_available_project()?;
         let policy_path = resolve_policy(&self.project, policy_path)?;
-        match &policy_path {
+        let policy = match &policy_path {
             Some(path) => Policy::load(path)?,
             None => Policy::default_agent(),
-        }
-        .validate()?;
+        };
+        policy.validate()?;
 
         let session_id = Uuid::new_v4().to_string();
         let store = self.store(&session_id);
@@ -159,19 +182,63 @@ impl Manager {
             format!("{session_id}\n").as_bytes(),
             durable,
         )?;
-        self.append(&record, &session_id, JournalKind::SessionStart, None)?;
-        Ok(SessionInfo {
-            session_id,
+        let info = SessionInfo {
+            session_id: session_id.clone(),
             project: self.project.clone(),
             started_at_ms: meta.started_at_ms,
             status: SessionStatus::Running,
             checkpoint_count: 0,
             pending_changes: 0,
             filesystem,
-        })
+        };
+        if self.embedded_fast && self.execution_mode == CommandExecutionMode::Trusted {
+            let mut journal = Journal::open(&store.join("journal.jsonl"))?;
+            append_journal(
+                &mut journal,
+                &record,
+                &session_id,
+                JournalKind::SessionStart,
+                None,
+            )?;
+            self.fast_sessions
+                .lock()
+                .expect("embedded session map poisoned")
+                .insert(
+                    session_id,
+                    Arc::new(Mutex::new(FastSession {
+                        record,
+                        meta,
+                        policy,
+                        state,
+                        review: None,
+                        journal,
+                        shell: None,
+                    })),
+                );
+        } else {
+            self.append(&record, &session_id, JournalKind::SessionStart, None)?;
+        }
+        Ok(info)
     }
 
     pub fn status(&self, session_id: &str) -> Result<SessionInfo> {
+        if let Some(fast) = self.fast_session(session_id) {
+            let session = fast.lock().expect("embedded session poisoned");
+            if session.meta.status == SessionStatus::Stopped {
+                return Ok(info_from_stopped(session.meta.clone()));
+            }
+            self.enforce_fast_storage_limit(&session)?;
+            let status = session.state.status();
+            return Ok(SessionInfo {
+                session_id: session.meta.session_id.clone(),
+                project: session.meta.project.clone(),
+                started_at_ms: session.meta.started_at_ms,
+                status: session.meta.status.clone(),
+                checkpoint_count: status.checkpoints,
+                pending_changes: status.pending,
+                filesystem: filesystem_info(status.mode, &session.state, session.record.durability),
+            });
+        }
         let _lock = self.lock(session_id)?;
         let mut meta = self.load_meta(session_id)?;
         if meta.status == SessionStatus::Stopped {
@@ -199,6 +266,46 @@ impl Manager {
     }
 
     pub fn stop(&self, session_id: &str) -> Result<SessionInfo> {
+        if let Some(fast) = self.fast_session(session_id) {
+            let info = {
+                let mut session = fast.lock().expect("embedded session poisoned");
+                self.require_fast_running(&session)?;
+                if session.state.status().pending != 0 {
+                    session.state.abort(None)?;
+                    session.append(session_id, JournalKind::Abort, None)?;
+                }
+                let _ = command_executor::shutdown(&command_endpoint(&session.record));
+                let _ = stop_event_helper(&session.state.event_socket());
+                session.review = None;
+                self.save_review(session_id, None)?;
+                session.meta.status = SessionStatus::Stopped;
+                session.meta.filesystem = filesystem_info(
+                    session.state.status().mode,
+                    &session.state,
+                    session.record.durability,
+                );
+                self.save_meta(&session.meta)?;
+                if fs::read_to_string(self.root.join(PROJECT_LEASE))
+                    .is_ok_and(|value| value.trim() == session_id)
+                {
+                    fs::remove_file(self.root.join(PROJECT_LEASE))?;
+                }
+                session.append(session_id, JournalKind::SessionStop, None)?;
+                info_from_stopped(session.meta.clone())
+            };
+            let mut sessions = self
+                .fast_sessions
+                .lock()
+                .expect("embedded session map poisoned");
+            if sessions
+                .get(session_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &fast))
+            {
+                sessions.remove(session_id);
+            }
+            command_executor::cleanup_stopped(&command_endpoint(&self.record(session_id)?));
+            return Ok(info);
+        }
         let _lock = self.lock(session_id)?;
         let mut meta = self.running_meta(session_id)?;
         let record = self.record(session_id)?;
@@ -257,6 +364,9 @@ impl Manager {
             env,
             label,
         } = params;
+        if let Some(fast) = self.fast_session(&session_id) {
+            return self.exec_fast(fast, session_id, argv, cwd, env, label);
+        }
         let _lock = self.exec_lock(&session_id)?;
         let meta = self.running_meta(&session_id)?;
         let record = self.record(&session_id)?;
@@ -366,6 +476,22 @@ impl Manager {
     }
 
     pub fn read_file_bytes(&self, session_id: &str, path: &Path) -> Result<Vec<u8>> {
+        if let Some(fast) = self.fast_session(session_id) {
+            let session = fast.lock().expect("embedded session poisoned");
+            self.require_fast_running(&session)?;
+            let relative = relative_path(&self.project, path)?;
+            if session.policy.path_is_denied(&relative) {
+                return Err(Error::Backend("path denied by policy".into()));
+            }
+            let target = checked_path(&session.state.live(), &relative)?;
+            let metadata = fs::metadata(&target)?;
+            if !metadata.is_file() || metadata.len() > MAX_READ_BYTES {
+                return Err(Error::Backend(
+                    "fs.read target is unavailable or too large".into(),
+                ));
+            }
+            return Ok(fs::read(target)?);
+        }
         let _lock = self.lock(session_id)?;
         let meta = self.running_meta(session_id)?;
         let record = self.record(session_id)?;
@@ -386,6 +512,29 @@ impl Manager {
     }
 
     pub fn write_file(&self, session_id: &str, path: &Path, content: Vec<u8>) -> Result<()> {
+        self.write_file_bytes(session_id, path, &content)
+    }
+
+    pub fn write_file_bytes(&self, session_id: &str, path: &Path, content: &[u8]) -> Result<()> {
+        if let Some(fast) = self.fast_session(session_id) {
+            let mut session = fast.lock().expect("embedded session poisoned");
+            self.require_fast_running(&session)?;
+            let relative = relative_path(&self.project, path)?;
+            self.validate_fast_write(&session, &relative, content.len())?;
+            let target = checked_path(&session.state.live(), &relative)?;
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(target, content)?;
+            session.state.mark_paths([relative_string(&relative)?])?;
+            self.enforce_fast_storage_limit(&session)?;
+            session.append(
+                session_id,
+                JournalKind::Write,
+                Some(serde_json::json!({"path": relative})),
+            )?;
+            return Ok(());
+        }
         let _lock = self.lock(session_id)?;
         let meta = self.running_meta(session_id)?;
         let record = self.record(session_id)?;
@@ -418,7 +567,49 @@ impl Manager {
         )
     }
 
+    /// Register exact paths already written through the trusted mountpoint.
+    pub fn record_file_changes(&self, session_id: &str, paths: &[PathBuf]) -> Result<()> {
+        let fast = self.fast_session(session_id).ok_or_else(|| {
+            Error::Backend("direct mount tracking requires embedded trusted mode".into())
+        })?;
+        let mut session = fast.lock().expect("embedded session poisoned");
+        self.require_fast_running(&session)?;
+        let mut relative = Vec::with_capacity(paths.len());
+        let mut denied = false;
+        for path in paths {
+            let path = relative_path(&self.project, path)?;
+            if session.policy.path_is_denied(&path) {
+                denied = true;
+            }
+            checked_path(&session.state.live(), &path)?;
+            relative.push(path);
+        }
+        session.state.mark_paths(
+            relative
+                .iter()
+                .map(|path| relative_string(path))
+                .collect::<Result<Vec<_>>>()?,
+        )?;
+        self.enforce_fast_storage_limit(&session)?;
+        session.append(
+            session_id,
+            JournalKind::Write,
+            Some(serde_json::json!({"paths": relative})),
+        )?;
+        if denied {
+            // The direct writer has already mutated the live tree. Keep the
+            // path tracked so review.abort can still restore it before
+            // surfacing the policy error to the caller.
+            return Err(Error::Backend("path denied by policy".into()));
+        }
+        Ok(())
+    }
+
     pub fn checkpoint(&self, params: CheckpointParams) -> Result<CheckpointInfo> {
+        if let Some(fast) = self.fast_session(&params.session_id) {
+            let mut session = fast.lock().expect("embedded session poisoned");
+            return self.checkpoint_fast_locked(&mut session, params);
+        }
         let _lock = self.lock(&params.session_id)?;
         self.checkpoint_locked(params)
     }
@@ -444,6 +635,10 @@ impl Manager {
     }
 
     pub fn diff(&self, params: DiffParams) -> Result<DiffResult> {
+        if let Some(fast) = self.fast_session(&params.session_id) {
+            let mut session = fast.lock().expect("embedded session poisoned");
+            return self.diff_fast_locked(&mut session, params);
+        }
         let _lock = self.lock(&params.session_id)?;
         self.diff_locked(params)
     }
@@ -467,6 +662,10 @@ impl Manager {
     }
 
     pub fn commit(&self, params: CommitParams) -> Result<CommitResult> {
+        if let Some(fast) = self.fast_session(&params.session_id) {
+            let mut session = fast.lock().expect("embedded session poisoned");
+            return self.commit_fast_locked(&mut session, params);
+        }
         let _lock = self.lock(&params.session_id)?;
         self.commit_locked(params)
     }
@@ -490,6 +689,10 @@ impl Manager {
     }
 
     pub fn abort(&self, params: AbortParams) -> Result<AbortResult> {
+        if let Some(fast) = self.fast_session(&params.session_id) {
+            let mut session = fast.lock().expect("embedded session poisoned");
+            return self.abort_fast_locked(&mut session, params);
+        }
         let _lock = self.lock(&params.session_id)?;
         self.abort_locked(params)
     }
@@ -513,6 +716,30 @@ impl Manager {
     }
 
     pub fn begin_review(&self, params: ReviewBeginParams) -> Result<ActiveReview> {
+        if let Some(fast) = self.fast_session(&params.session_id) {
+            let mut session = fast.lock().expect("embedded session poisoned");
+            self.require_fast_running(&session)?;
+            if let Some(active) = &session.review {
+                return Ok(active.clone());
+            }
+            let checkpoint = self.checkpoint_fast_locked(
+                &mut session,
+                CheckpointParams {
+                    session_id: params.session_id.clone(),
+                    label: params.label.clone(),
+                },
+            )?;
+            let active = ActiveReview {
+                checkpoint_id: checkpoint.id,
+                kind: params.kind,
+                label: params.label,
+                started_at_ms: now_ms(),
+            };
+            session.review = Some(active.clone());
+            self.save_review(&params.session_id, Some(&active))?;
+            session.append(&params.session_id, JournalKind::ReviewBegin, None)?;
+            return Ok(active);
+        }
         let _lock = self.lock(&params.session_id)?;
         self.running_meta(&params.session_id)?;
         if let Some(active) = self.review(&params.session_id)? {
@@ -539,12 +766,33 @@ impl Manager {
     }
 
     pub fn review_status(&self, session_id: &str) -> Result<Option<ActiveReview>> {
+        if let Some(fast) = self.fast_session(session_id) {
+            let session = fast.lock().expect("embedded session poisoned");
+            self.require_fast_running(&session)?;
+            return Ok(session.review.clone());
+        }
         let _lock = self.lock(session_id)?;
         self.running_meta(session_id)?;
         self.review(session_id)
     }
 
     pub fn review_diff(&self, session_id: &str) -> Result<DiffResult> {
+        if let Some(fast) = self.fast_session(session_id) {
+            let mut session = fast.lock().expect("embedded session poisoned");
+            self.require_fast_running(&session)?;
+            let active = session
+                .review
+                .clone()
+                .ok_or_else(|| Error::ReviewNotActive(session_id.into()))?;
+            return self.diff_fast_locked(
+                &mut session,
+                DiffParams {
+                    session_id: session_id.into(),
+                    from: Some(active.checkpoint_id),
+                    to: None,
+                },
+            );
+        }
         let _lock = self.lock(session_id)?;
         self.running_meta(session_id)?;
         let active = self.require_review(session_id)?;
@@ -556,6 +804,20 @@ impl Manager {
     }
 
     pub fn review_commit(&self, session_id: &str) -> Result<CommitResult> {
+        if let Some(fast) = self.fast_session(session_id) {
+            let mut session = fast.lock().expect("embedded session poisoned");
+            self.require_fast_running(&session)?;
+            if session.review.is_none() {
+                return Err(Error::ReviewNotActive(session_id.into()));
+            }
+            return self.commit_fast_locked(
+                &mut session,
+                CommitParams {
+                    session_id: session_id.into(),
+                    checkpoint: None,
+                },
+            );
+        }
         let _lock = self.lock(session_id)?;
         self.running_meta(session_id)?;
         self.require_review(session_id)?;
@@ -566,6 +828,24 @@ impl Manager {
     }
 
     pub fn review_abort(&self, session_id: &str) -> Result<AbortResult> {
+        if let Some(fast) = self.fast_session(session_id) {
+            let mut session = fast.lock().expect("embedded session poisoned");
+            self.require_fast_running(&session)?;
+            let active = session
+                .review
+                .clone()
+                .ok_or_else(|| Error::ReviewNotActive(session_id.into()))?;
+            let result = self.abort_fast_locked(
+                &mut session,
+                AbortParams {
+                    session_id: session_id.into(),
+                    checkpoint: Some(active.checkpoint_id),
+                },
+            )?;
+            session.review = None;
+            self.save_review(session_id, None)?;
+            return Ok(result);
+        }
         let _lock = self.lock(session_id)?;
         self.running_meta(session_id)?;
         let active = self.require_review(session_id)?;
@@ -578,6 +858,16 @@ impl Manager {
     }
 
     pub fn review_skip(&self, session_id: &str) -> Result<ActiveReview> {
+        if let Some(fast) = self.fast_session(session_id) {
+            let mut session = fast.lock().expect("embedded session poisoned");
+            self.require_fast_running(&session)?;
+            let active = session
+                .review
+                .clone()
+                .ok_or_else(|| Error::ReviewNotActive(session_id.into()))?;
+            session.append(session_id, JournalKind::ReviewSkip, None)?;
+            return Ok(active);
+        }
         let _lock = self.lock(session_id)?;
         self.running_meta(session_id)?;
         let active = self.require_review(session_id)?;
@@ -588,6 +878,181 @@ impl Manager {
             None,
         )?;
         Ok(active)
+    }
+
+    fn fast_session(&self, session_id: &str) -> Option<Arc<Mutex<FastSession>>> {
+        self.fast_sessions
+            .lock()
+            .expect("embedded session map poisoned")
+            .get(session_id)
+            .cloned()
+    }
+
+    fn require_fast_running(&self, session: &FastSession) -> Result<()> {
+        if session.meta.status == SessionStatus::Running {
+            Ok(())
+        } else {
+            Err(Error::SessionStopped(session.meta.session_id.clone()))
+        }
+    }
+
+    fn validate_fast_write(
+        &self,
+        session: &FastSession,
+        relative: &Path,
+        content_len: usize,
+    ) -> Result<()> {
+        if session.policy.path_is_denied(relative) {
+            return Err(Error::Backend("path denied by policy".into()));
+        }
+        if session
+            .policy
+            .limits
+            .max_write_bytes
+            .is_some_and(|limit| content_len as u64 > limit)
+        {
+            return Err(Error::Backend("fs.write exceeds max_write_bytes".into()));
+        }
+        Ok(())
+    }
+
+    fn enforce_fast_storage_limit(&self, session: &FastSession) -> Result<()> {
+        let Some(limit) = session.policy.limits.max_storage_bytes else {
+            return Ok(());
+        };
+        let used = session
+            .state
+            .diff(None, None)?
+            .iter()
+            .filter_map(|change| change.new_size)
+            .sum::<u64>();
+        if used > limit {
+            return Err(Error::Backend(format!(
+                "pending changes use {used} bytes, exceeding max_storage_bytes"
+            )));
+        }
+        Ok(())
+    }
+
+    fn exec_fast(
+        &self,
+        fast: Arc<Mutex<FastSession>>,
+        session_id: String,
+        argv: Vec<String>,
+        cwd: Option<PathBuf>,
+        env: Option<Vec<(String, String)>>,
+        label: Option<String>,
+    ) -> Result<ExecResult> {
+        let mut session = fast.lock().expect("embedded session poisoned");
+        self.require_fast_running(&session)?;
+        let live = session.state.live();
+        let mapper = PathMapper::new(&self.project, &live);
+        let result = crate::trusted::exec_reusing_bash(
+            &mut session.shell,
+            ExecRequest {
+                argv: argv
+                    .into_iter()
+                    .map(|value| mapper.map_arg(&value))
+                    .collect(),
+                cwd: Some(
+                    cwd.as_deref()
+                        .map(|path| mapper.map_path(path))
+                        .unwrap_or(live),
+                ),
+                env: env
+                    .map(|values| {
+                        values
+                            .into_iter()
+                            .map(|(key, value)| {
+                                mapper.map_env(&key, &value).map(|value| (key, value))
+                            })
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .transpose()?,
+            },
+        );
+        // The helper's boundary request performs FSEventStreamFlushSync. Since
+        // the child has already exited, one post-command boundary captures all
+        // of its mutations without creating a marker file or a second roundtrip.
+        let tracked = self.prepare_events(&mut session.state, false).map(|_| ());
+        let result = result?;
+        tracked?;
+        self.enforce_fast_storage_limit(&session)?;
+        session.append(
+            &session_id,
+            JournalKind::Exec,
+            Some(serde_json::json!({"label": label, "result": &result})),
+        )?;
+        Ok(result)
+    }
+
+    fn checkpoint_fast_locked(
+        &self,
+        session: &mut FastSession,
+        params: CheckpointParams,
+    ) -> Result<CheckpointInfo> {
+        self.require_fast_running(session)?;
+        let (id, changed) = session.state.checkpoint(params.label.clone())?;
+        session.append(&params.session_id, JournalKind::Checkpoint, None)?;
+        Ok(CheckpointInfo {
+            id: id.to_string(),
+            label: params.label,
+            created_at_ms: now_ms(),
+            change_count: changed,
+            committed: false,
+        })
+    }
+
+    fn diff_fast_locked(
+        &self,
+        session: &mut FastSession,
+        params: DiffParams,
+    ) -> Result<DiffResult> {
+        self.require_fast_running(session)?;
+        self.enforce_fast_storage_limit(session)?;
+        let from = parse_checkpoint(params.from.as_deref())?;
+        let to = parse_checkpoint(params.to.as_deref())?;
+        let changes = session.state.diff(from, to)?;
+        session.append(&params.session_id, JournalKind::Diff, None)?;
+        Ok(DiffResult {
+            from: params.from,
+            to: params.to,
+            pending_changes: changes.len(),
+            changes,
+        })
+    }
+
+    fn commit_fast_locked(
+        &self,
+        session: &mut FastSession,
+        params: CommitParams,
+    ) -> Result<CommitResult> {
+        self.require_fast_running(session)?;
+        self.enforce_fast_storage_limit(session)?;
+        let target = parse_checkpoint(params.checkpoint.as_deref())?;
+        let (id, applied) = session.state.commit(target)?;
+        session.review = None;
+        self.save_review(&params.session_id, None)?;
+        session.append(&params.session_id, JournalKind::Commit, None)?;
+        Ok(CommitResult {
+            checkpoint_id: id.to_string(),
+            applied,
+        })
+    }
+
+    fn abort_fast_locked(
+        &self,
+        session: &mut FastSession,
+        params: AbortParams,
+    ) -> Result<AbortResult> {
+        self.require_fast_running(session)?;
+        let target = parse_checkpoint(params.checkpoint.as_deref())?;
+        let (id, restored) = session.state.abort(target)?;
+        session.append(&params.session_id, JournalKind::Abort, None)?;
+        Ok(AbortResult {
+            checkpoint_id: id.to_string(),
+            restored,
+        })
     }
 
     fn prepare_events(&self, state: &mut State, complete: bool) -> Result<EventTracker> {
@@ -822,16 +1287,7 @@ impl Manager {
         data: Option<serde_json::Value>,
     ) -> Result<()> {
         let mut journal = Journal::open(&self.store(session_id).join("journal.jsonl"))?;
-        journal.append(JournalEntry {
-            ts_ms: now_ms(),
-            session_id: session_id.into(),
-            kind,
-            data,
-        })?;
-        if record.durability == DurabilityMode::Strict {
-            journal.flush_sync()?;
-        }
-        Ok(())
+        append_journal(&mut journal, record, session_id, kind, data)
     }
 
     fn store(&self, session_id: &str) -> PathBuf {
@@ -854,6 +1310,36 @@ impl Manager {
     fn exec_lock(&self, session_id: &str) -> Result<Lock> {
         Lock::acquire(&self.store(session_id).join(SESSION_LOCK))
     }
+}
+
+impl FastSession {
+    fn append(
+        &mut self,
+        session_id: &str,
+        kind: JournalKind,
+        data: Option<serde_json::Value>,
+    ) -> Result<()> {
+        append_journal(&mut self.journal, &self.record, session_id, kind, data)
+    }
+}
+
+fn append_journal(
+    journal: &mut Journal,
+    record: &Record,
+    session_id: &str,
+    kind: JournalKind,
+    data: Option<serde_json::Value>,
+) -> Result<()> {
+    journal.append(JournalEntry {
+        ts_ms: now_ms(),
+        session_id: session_id.into(),
+        kind,
+        data,
+    })?;
+    if record.durability == DurabilityMode::Strict {
+        journal.flush_sync()?;
+    }
+    Ok(())
 }
 
 struct SessionOperationLock {

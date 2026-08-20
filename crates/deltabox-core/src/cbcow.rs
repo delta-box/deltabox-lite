@@ -19,6 +19,7 @@ use crate::session::{now_ms, SessionMeta, SessionRegistry};
 use base64::Engine;
 use deltafs_fuse::control::{self, Command as ControlCommand, ResultValue};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -27,6 +28,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -70,6 +72,8 @@ pub struct Manager {
     execution_mode: CommandExecutionMode,
     state_base: PathBuf,
     runtime_base: PathBuf,
+    embedded_fast: bool,
+    trusted_shells: Mutex<HashMap<String, Arc<Mutex<Option<crate::trusted::PersistentBash>>>>>,
 }
 
 impl Manager {
@@ -80,6 +84,7 @@ impl Manager {
             CommandExecutionMode::Sandboxed,
             None,
             None,
+            false,
         )
     }
 
@@ -89,6 +94,7 @@ impl Manager {
         execution_mode: CommandExecutionMode,
         state_base_override: Option<PathBuf>,
         runtime_base_override: Option<PathBuf>,
+        embedded_fast: bool,
     ) -> Result<Self> {
         let project = project.canonicalize()?;
         let root = project.join(".deltabox");
@@ -102,6 +108,8 @@ impl Manager {
             execution_mode,
             state_base,
             runtime_base,
+            embedded_fast,
+            trusted_shells: Mutex::new(HashMap::new()),
         })
     }
 
@@ -227,7 +235,15 @@ impl Manager {
             })
         })();
         match result {
-            Ok(info) => Ok(info),
+            Ok(info) => {
+                if self.embedded_fast && self.execution_mode == CommandExecutionMode::Trusted {
+                    self.trusted_shells
+                        .lock()
+                        .expect("trusted shell map poisoned")
+                        .insert(session_id, Arc::new(Mutex::new(None)));
+                }
+                Ok(info)
+            }
             Err(error) => match self.cleanup_start(&session_id, &record) {
                 Ok(()) => Err(error),
                 Err(cleanup) => Err(Error::Backend(format!(
@@ -277,6 +293,10 @@ impl Manager {
     }
 
     pub fn stop(&self, session_id: &str) -> Result<SessionInfo> {
+        self.trusted_shells
+            .lock()
+            .expect("trusted shell map poisoned")
+            .remove(session_id);
         let _lock = self.lock(session_id)?;
         let mut meta = self.running_meta(session_id)?;
         let record = self.ensure_helper(session_id)?;
@@ -375,7 +395,20 @@ impl Manager {
                         })
                         .transpose()?,
                 };
-                crate::trusted::exec(request)?
+                if let Some(shell) = self
+                    .trusted_shells
+                    .lock()
+                    .expect("trusted shell map poisoned")
+                    .get(&session_id)
+                    .cloned()
+                {
+                    crate::trusted::exec_reusing_bash(
+                        &mut shell.lock().expect("trusted shell poisoned"),
+                        request,
+                    )?
+                } else {
+                    crate::trusted::exec(request)?
+                }
             }
             CommandExecutionMode::Sandboxed => {
                 let initial_record = self.load_record(&session_id)?;
@@ -506,6 +539,10 @@ impl Manager {
     }
 
     pub fn write_file(&self, session_id: &str, path: &Path, content: Vec<u8>) -> Result<()> {
+        self.write_file_bytes(session_id, path, &content)
+    }
+
+    pub fn write_file_bytes(&self, session_id: &str, path: &Path, content: &[u8]) -> Result<()> {
         let _lock = self.lock(session_id)?;
         let meta = self.running_meta(session_id)?;
         let record = self.ensure_helper(session_id)?;
@@ -531,6 +568,17 @@ impl Manager {
             JournalKind::Write,
             Some(serde_json::json!({"path": relative})),
         )
+    }
+
+    /// Linux mount writes are synchronously captured by the FUSE engine, so
+    /// the trusted direct-I/O notification is intentionally a no-op.
+    pub fn record_file_changes(&self, _session_id: &str, _paths: &[PathBuf]) -> Result<()> {
+        if !self.embedded_fast || self.execution_mode != CommandExecutionMode::Trusted {
+            return Err(Error::Backend(
+                "direct mount tracking requires embedded trusted mode".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub fn checkpoint(&self, params: CheckpointParams) -> Result<CheckpointInfo> {

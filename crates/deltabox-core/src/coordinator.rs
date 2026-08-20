@@ -6,8 +6,10 @@ use crate::protocol::{
     FilesystemMode, FsReadResult, ReviewBeginParams, SessionInfo,
 };
 use crate::session::SessionMeta;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 /// Command execution behavior selected once when a coordinator is embedded.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -28,10 +30,13 @@ pub struct CoordinatorOptions {
     pub state_dir: Option<PathBuf>,
     /// Explicit ephemeral runtime base for embedded callers.
     pub runtime_dir: Option<PathBuf>,
+    /// Keep routing and backend session state resident for an in-process host.
+    pub embedded_fast: bool,
 }
 
 pub struct SessionCoordinator {
     project: PathBuf,
+    routes: RwLock<HashMap<String, FilesystemMode>>,
     copy_private: DurableSessionManager,
     #[cfg(target_os = "linux")]
     cbcow: crate::cbcow::Manager,
@@ -65,6 +70,7 @@ impl SessionCoordinator {
             options.command_execution,
             options.state_dir.clone(),
             options.runtime_dir.clone(),
+            options.embedded_fast,
         )?;
         #[cfg(target_os = "macos")]
         let macos_cbcow = crate::macos_cbcow::Manager::new_with_execution_mode(
@@ -72,9 +78,11 @@ impl SessionCoordinator {
             helper_bin,
             options.command_execution,
             options.state_dir,
+            options.embedded_fast,
         )?;
         Ok(Self {
             project,
+            routes: RwLock::new(HashMap::new()),
             copy_private,
             #[cfg(target_os = "linux")]
             cbcow,
@@ -117,7 +125,7 @@ impl SessionCoordinator {
             ));
         }
         let requested = requested.unwrap_or(default_mode());
-        match requested {
+        let info = match requested {
             FilesystemMode::CopyPrivate => {
                 if durability == DurabilityMode::Strict {
                     return Err(Error::InvalidDurability(
@@ -134,7 +142,12 @@ impl SessionCoordinator {
                 durability,
                 group_commit_ms,
             ),
-        }
+        }?;
+        self.routes
+            .write()
+            .expect("coordinator route cache poisoned")
+            .insert(info.session_id.clone(), info.filesystem.resolved_fs_mode);
+        Ok(info)
     }
 
     pub fn status(&self, session_id: &str) -> Result<SessionInfo> {
@@ -148,13 +161,18 @@ impl SessionCoordinator {
     }
 
     pub fn stop(&self, session_id: &str) -> Result<SessionInfo> {
-        match self.route(session_id)? {
+        let info = match self.route(session_id)? {
             Route::CopyPrivate(manager) => manager.stop(session_id),
             #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.stop(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.stop(session_id),
-        }
+        }?;
+        self.routes
+            .write()
+            .expect("coordinator route cache poisoned")
+            .remove(session_id);
+        Ok(info)
     }
 
     pub fn remove_stopped(&self, session_id: &str) -> Result<()> {
@@ -199,12 +217,30 @@ impl SessionCoordinator {
     }
 
     pub fn write_file(&self, session_id: &str, path: &Path, content: Vec<u8>) -> Result<()> {
+        self.write_file_bytes(session_id, path, &content)
+    }
+
+    /// Write borrowed bytes, avoiding a JS Buffer copy for native callers.
+    pub fn write_file_bytes(&self, session_id: &str, path: &Path, content: &[u8]) -> Result<()> {
         match self.route(session_id)? {
-            Route::CopyPrivate(manager) => manager.write_file(session_id, path, content),
+            Route::CopyPrivate(manager) => manager.write_file(session_id, path, content.to_vec()),
             #[cfg(target_os = "linux")]
-            Route::Cbcow(manager) => manager.write_file(session_id, path, content),
+            Route::Cbcow(manager) => manager.write_file_bytes(session_id, path, content),
             #[cfg(target_os = "macos")]
-            Route::MacosCbcow(manager) => manager.write_file(session_id, path, content),
+            Route::MacosCbcow(manager) => manager.write_file_bytes(session_id, path, content),
+        }
+    }
+
+    /// Register exact paths mutated directly through an embedded mountpoint.
+    pub fn record_file_changes(&self, session_id: &str, paths: &[PathBuf]) -> Result<()> {
+        match self.route(session_id)? {
+            Route::CopyPrivate(_) => Err(Error::Unsupported(
+                "direct mount tracking requires a CB-CoW filesystem mode".into(),
+            )),
+            #[cfg(target_os = "linux")]
+            Route::Cbcow(manager) => manager.record_file_changes(session_id, paths),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.record_file_changes(session_id, paths),
         }
     }
 
@@ -391,6 +427,15 @@ impl SessionCoordinator {
     }
 
     fn route(&self, session_id: &str) -> Result<Route<'_>> {
+        if let Some(mode) = self
+            .routes
+            .read()
+            .expect("coordinator route cache poisoned")
+            .get(session_id)
+            .copied()
+        {
+            return self.route_mode(mode);
+        }
         let path = self
             .project
             .join(".deltabox")
@@ -403,7 +448,16 @@ impl SessionCoordinator {
                 Error::Io(error)
             }
         })?)?;
-        match meta.filesystem.resolved_fs_mode {
+        let mode = meta.filesystem.resolved_fs_mode;
+        self.routes
+            .write()
+            .expect("coordinator route cache poisoned")
+            .insert(session_id.into(), mode);
+        self.route_mode(mode)
+    }
+
+    fn route_mode(&self, mode: FilesystemMode) -> Result<Route<'_>> {
+        match mode {
             FilesystemMode::CopyPrivate => Ok(Route::CopyPrivate(&self.copy_private)),
             #[cfg(target_os = "linux")]
             FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate => {
