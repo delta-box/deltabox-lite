@@ -117,6 +117,9 @@ impl Manager {
             crate::protocol::FilesystemMode::CopyPrivate => {
                 return Err(Error::Backend("invalid CB-CoW mode".into()))
             }
+            crate::protocol::FilesystemMode::Git => {
+                return Err(Error::Backend("invalid CB-CoW mode".into()))
+            }
         };
         save_json(&store.join(DENY_PATHS), &deny_paths)?;
         let state_root = state_base()?.join(&session_id);
@@ -178,6 +181,7 @@ impl Manager {
             started_at_ms: now_ms(),
             status: SessionStatus::Running,
             filesystem: filesystem.clone(),
+            isolation: None,
         };
         let result = (|| {
             save_json_with(
@@ -1187,6 +1191,7 @@ fn filesystem_info(record: &MountRecord) -> FilesystemInfo {
             record.restarts,
         ),
         crate::protocol::FilesystemMode::CopyPrivate => unreachable!("CB-CoW mount record mode"),
+        crate::protocol::FilesystemMode::Git => unreachable!("CB-CoW mount record mode"),
     };
     info.with_durability(record.durability, record.group_commit_ms)
 }
@@ -1337,6 +1342,7 @@ mod tests {
             started_at_ms: now_ms(),
             status: SessionStatus::Running,
             filesystem: Default::default(),
+            isolation: None,
         };
         save_json(&store.join(SESSION_META), &meta).unwrap();
         fs::write(manager.root.join(PROJECT_LEASE), format!("{session_id}\n")).unwrap();

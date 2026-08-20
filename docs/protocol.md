@@ -21,7 +21,7 @@ each response is one JSON object per line.
 
 | Method | Params | Result |
 |---|---|---|
-| `session.start` | `{project, policy?, fs_mode?, require_fs_mode?, durability?, group_commit_ms?}` | `SessionInfo` |
+| `session.start` | `{project, policy?, fs_mode?, require_fs_mode?, isolation?, durability?, group_commit_ms?}` | `SessionInfo` |
 | `session.stop` | `{session_id}` | `SessionInfo` |
 | `session.status` | `{session_id}` | `SessionInfo` |
 | `session.exec` | `{session_id, argv, cwd?, env?, label?}` | `ExecResult` |
@@ -36,9 +36,18 @@ each response is one JSON object per line.
 | `review.abort` | `{session_id}` | `AbortResult` |
 | `review.skip` | `{session_id}` | `ActiveReview` |
 
-`fs_mode` accepts `cbcow-through`, `cbcow-private`, or `copy-private`. On Linux
-and macOS, omitting it requests `cbcow-through`; a clean CB-CoW startup failure
-may resolve to `copy-private`. Set `require_fs_mode: true` to reject fallback.
+`fs_mode` accepts `cbcow-through`, `cbcow-private`, `copy-private`, or `git`.
+On Linux and macOS, omitting it requests `cbcow-through`; a clean CB-CoW
+startup failure may resolve to `copy-private`. Set `require_fs_mode: true` to
+reject fallback.
+
+`git` is the zero-FUSE mode: commands run under `bubblewrap` directly against
+the real project tree and rollback is byte-for-byte via a private git side
+repo (`state_provider: "git-ghost"`). It is Linux-only, never falls back, and
+rejects strict durability. `isolation` is an optional provider hint that v1
+accepts only as `bubblewrap`; omitting it defaults to the platform default
+(bubblewrap on Linux), and passing it with any non-git `fs_mode` is an error.
+See `docs/providers-architecture.md` for the full contract.
 
 `durability` accepts `fast` (the default) or `strict`. Strict operations wait
 for ordered storage barriers. `group_commit_ms` is optional in strict mode and
@@ -61,7 +70,10 @@ original session-ID stdout format for shell compatibility.
 `SessionInfo` = `{session_id, project, started_at_ms, status, checkpoint_count,
 pending_changes, requested_fs_mode, resolved_fs_mode, host_visibility,
 durability, group_commit_ms?, isolation, state_provider, fallback_reason, rollback_guarantee,
-tainted, mountpoint?, helper_pid?, helper_restarts, mount_namespace}`.
+tainted, mountpoint?, helper_pid?, helper_restarts, mount_namespace}`. A git
+session reports `requested_fs_mode`/`resolved_fs_mode` = `git`, `isolation` =
+`bubblewrap`, `state_provider` = `git-ghost`, `rollback_guarantee` =
+`byte-for-byte-restore`, and omits `mountpoint`/`helper_pid`.
 
 For `cbcow-through`, `host_visibility` is `immediate`: commit accepts the
 current host-visible state and abort reverts it. `cbcow-private` and

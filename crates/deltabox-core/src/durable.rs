@@ -145,6 +145,7 @@ impl DurableSessionManager {
             started_at_ms: now_ms(),
             status: SessionStatus::Running,
             filesystem,
+            isolation: None,
         };
         save_session_meta(&store, &meta)?;
         let mut registry = SessionRegistry::load(&self.root)?;

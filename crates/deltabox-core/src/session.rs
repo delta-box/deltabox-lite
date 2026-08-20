@@ -50,6 +50,9 @@ pub struct SessionMeta {
     pub status: SessionStatus,
     #[serde(default)]
     pub filesystem: crate::protocol::FilesystemInfo,
+    /// Isolation provider recorded by the git session engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -175,6 +178,7 @@ impl SessionManager {
             started_at_ms: now_ms(),
             status: SessionStatus::Running,
             filesystem: crate::protocol::FilesystemInfo::default(),
+            isolation: None,
         };
         self.registry.upsert(meta);
         self.registry.save(&self.root)?;

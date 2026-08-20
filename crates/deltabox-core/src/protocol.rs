@@ -56,6 +56,10 @@ pub struct SessionStartParams {
     pub fs_mode: Option<FilesystemMode>,
     #[serde(default)]
     pub require_fs_mode: bool,
+    /// Isolation provider; defaults to the platform default. v1 accepts
+    /// `bubblewrap` (used with `fs_mode: "git"`).
+    #[serde(default)]
+    pub isolation: Option<String>,
     #[serde(default)]
     pub durability: DurabilityMode,
     #[serde(default)]
@@ -214,6 +218,9 @@ pub enum FilesystemMode {
     CbcowPrivate,
     #[default]
     CopyPrivate,
+    /// Zero-FUSE git-backed mode: commands run under bubblewrap against the
+    /// real project tree and rollback is byte-for-byte via the git side repo.
+    Git,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -362,9 +369,10 @@ fn platform_isolation() -> &'static str {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
+    #[default]
     Running,
     Stopped,
 }
@@ -430,6 +438,7 @@ mod tests {
                 policy: None,
                 fs_mode: None,
                 require_fs_mode: false,
+                isolation: None,
                 durability: DurabilityMode::Fast,
                 group_commit_ms: None,
             }),
@@ -473,9 +482,34 @@ mod tests {
             Method::SessionStart(params) => {
                 assert_eq!(params.fs_mode, None);
                 assert!(!params.require_fs_mode);
+                assert_eq!(params.isolation, None);
             }
             other => panic!("unexpected method: {other:?}"),
         }
+    }
+
+    #[test]
+    fn start_request_accepts_git_mode_with_isolation() {
+        let parsed: Request = serde_json::from_str(
+            r#"{"id":1,"method":"session.start","params":{"project":"/tmp/proj","fs_mode":"git","isolation":"bubblewrap"}}"#,
+        )
+        .unwrap();
+        match parsed.method {
+            Method::SessionStart(params) => {
+                assert_eq!(params.fs_mode, Some(FilesystemMode::Git));
+                assert_eq!(params.isolation.as_deref(), Some("bubblewrap"));
+            }
+            other => panic!("unexpected method: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn git_filesystem_mode_uses_stable_name() {
+        assert_eq!(serde_json::to_value(FilesystemMode::Git).unwrap(), "git");
+        let parsed: FilesystemMode = serde_json::from_str("\"git\"").unwrap();
+        assert_eq!(parsed, FilesystemMode::Git);
+        // The default stays on CopyPrivate so legacy records keep resolving.
+        assert_eq!(FilesystemMode::default(), FilesystemMode::CopyPrivate);
     }
 
     #[test]

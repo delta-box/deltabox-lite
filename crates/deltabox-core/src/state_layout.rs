@@ -36,6 +36,16 @@ pub(crate) fn state_base() -> Result<PathBuf> {
     Ok(home.join(".local/state/deltabox-lite"))
 }
 
+/// External base for git session state, always outside the project so the
+/// side repo is never bind-mounted into the sandbox and snapshots never
+/// include session metadata. Honors `DELTABOX_STATE_DIR` when set.
+pub(crate) fn git_session_base() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("DELTABOX_STATE_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
+    state_base()
+}
+
 /// External base for reconstructible runtime files, keyed by session id.
 pub(crate) fn runtime_base() -> PathBuf {
     if let Some(path) = std::env::var_os("DELTABOX_RUNTIME_DIR") {

@@ -15,6 +15,7 @@ host visibility, rollback guarantee, helper state, and any fallback reason.
 | `cbcow-through` | Pending changes are visible immediately | Accepts the current state and retires undo history | Replays undo records into the host-visible tree |
 | `cbcow-private` | The host project remains unchanged | Conflict-checks and publishes touched paths from private `LIVE`, then retires undo history | Replays undo records into private `LIVE` |
 | `copy-private` | The host project remains unchanged | Validates and publishes the private working diff | Restores the private working view |
+| `git` | Changes are visible immediately (agent writes the real tree) | Accepts the current state and re-baselines | Rewinds byte-for-byte from the git side repo |
 
 Linux requests `cbcow-through` by default when DeltaFS FUSE is mount-ready.
 macOS requests the native APFS/FSEvents `cbcow-through` provider. If startup
