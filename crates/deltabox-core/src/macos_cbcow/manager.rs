@@ -1,7 +1,9 @@
 use super::state::{Mode, State};
 use crate::command_executor::{self, Endpoint as CommandEndpoint};
+use crate::coordinator::CommandExecutionMode;
 use crate::error::{Error, Result};
 use crate::journal::{Journal, JournalEntry, JournalKind};
+use crate::pathmap::PathMapper;
 use crate::policy::Policy;
 use crate::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
@@ -48,6 +50,8 @@ pub struct Manager {
     project: PathBuf,
     root: PathBuf,
     helper_bin: PathBuf,
+    execution_mode: CommandExecutionMode,
+    state_base: PathBuf,
 }
 
 enum EventTracker {
@@ -57,13 +61,27 @@ enum EventTracker {
 
 impl Manager {
     pub fn new(project: &Path, helper_bin: PathBuf) -> Result<Self> {
+        Self::new_with_execution_mode(project, helper_bin, CommandExecutionMode::Sandboxed, None)
+    }
+
+    pub fn new_with_execution_mode(
+        project: &Path,
+        helper_bin: PathBuf,
+        execution_mode: CommandExecutionMode,
+        state_base_override: Option<PathBuf>,
+    ) -> Result<Self> {
         let project = project.canonicalize()?;
         let root = state_layout::state_root(&project)?;
         fs::create_dir_all(&root)?;
+        let state_base = state_base_override
+            .map(|path| path.join("macos-native"))
+            .map_or_else(|| state_base(&project), Ok)?;
         Ok(Self {
             project,
             root,
             helper_bin,
+            execution_mode,
+            state_base,
         })
     }
 
@@ -354,10 +372,22 @@ impl Manager {
     }
 
     pub fn exec(&self, params: ExecParams) -> Result<ExecResult> {
-        let _lock = self.exec_lock(&params.session_id)?;
-        let meta = self.running_meta(&params.session_id)?;
-        let record = self.record(&params.session_id)?;
-        let operation = command_executor::lock_operations(&command_endpoint(&record))?;
+        let ExecParams {
+            session_id,
+            argv,
+            cwd,
+            env,
+            label,
+        } = params;
+        let _lock = self.exec_lock(&session_id)?;
+        let meta = self.running_meta(&session_id)?;
+        let record = self.record(&session_id)?;
+        let mut operation = match self.execution_mode {
+            CommandExecutionMode::Sandboxed => Some(command_executor::lock_operations(
+                &command_endpoint(&record),
+            )?),
+            CommandExecutionMode::Trusted => None,
+        };
         let mut state = self.open_state(&record)?;
         let tracker = if state.durable() {
             Some(self.prepare_events(&mut state, false)?)
@@ -367,43 +397,71 @@ impl Manager {
         if state.durable() {
             self.enforce_storage_limit(&meta, &state)?;
         }
-        let mut policy = self.policy(&meta)?;
-        if !policy
-            .filesystem
-            .deny
-            .iter()
-            .any(|value| value == ".deltabox/")
-        {
-            policy.filesystem.deny.push(".deltabox/".into());
-        }
-        let live = state.live();
-        let spec = SessionSpec {
-            project: live,
-            host_project: Some(self.project.clone()),
-            store_dir: record.state_root.join("runtime"),
-            policy,
-            resolved_deny_paths: None,
+        let result = match self.execution_mode {
+            CommandExecutionMode::Trusted => {
+                let live = state.live();
+                let mapper = PathMapper::new(&self.project, &live);
+                crate::trusted::exec(ExecRequest {
+                    argv: argv
+                        .into_iter()
+                        .map(|value| mapper.map_arg(&value))
+                        .collect(),
+                    cwd: Some(
+                        cwd.as_deref()
+                            .map(|path| mapper.map_path(path))
+                            .unwrap_or(live),
+                    ),
+                    env: env
+                        .map(|values| {
+                            values
+                                .into_iter()
+                                .map(|(key, value)| {
+                                    mapper.map_env(&key, &value).map(|value| (key, value))
+                                })
+                                .collect::<Result<Vec<_>>>()
+                        })
+                        .transpose()?,
+                })
+            }
+            CommandExecutionMode::Sandboxed => {
+                let mut policy = self.policy(&meta)?;
+                if !policy
+                    .filesystem
+                    .deny
+                    .iter()
+                    .any(|value| value == ".deltabox/")
+                {
+                    policy.filesystem.deny.push(".deltabox/".into());
+                }
+                let spec = SessionSpec {
+                    project: state.live(),
+                    host_project: Some(self.project.clone()),
+                    store_dir: record.state_root.join("runtime"),
+                    policy,
+                    resolved_deny_paths: None,
+                };
+                let request = ExecRequest {
+                    argv,
+                    cwd,
+                    env: command_executor::capture_environment(env),
+                };
+                let endpoint = command_endpoint(&record);
+                if !endpoint.token_file.exists() {
+                    write_file(
+                        &endpoint.token_file,
+                        format!("{}{}\n", Uuid::new_v4(), Uuid::new_v4()).as_bytes(),
+                        record.durability == DurabilityMode::Strict,
+                    )?;
+                }
+                command_executor::ensure_running(
+                    &endpoint,
+                    &self.helper_bin,
+                    &record.state_root.join("command-helper.log"),
+                )?;
+                drop(operation.take());
+                command_executor::exec(&endpoint, &session_id, 0, spec, request)
+            }
         };
-        let request = ExecRequest {
-            argv: params.argv,
-            cwd: params.cwd,
-            env: command_executor::capture_environment(params.env),
-        };
-        let endpoint = command_endpoint(&record);
-        if !endpoint.token_file.exists() {
-            write_file(
-                &endpoint.token_file,
-                format!("{}{}\n", Uuid::new_v4(), Uuid::new_v4()).as_bytes(),
-                record.durability == DurabilityMode::Strict,
-            )?;
-        }
-        command_executor::ensure_running(
-            &endpoint,
-            &self.helper_bin,
-            &record.state_root.join("command-helper.log"),
-        )?;
-        drop(operation);
-        let result = command_executor::exec(&endpoint, &params.session_id, 0, spec, request);
         let tracked = tracker.as_ref().map_or(Ok(()), |tracker| {
             self.finish_events(&mut state, tracker, true)
         });
@@ -414,14 +472,22 @@ impl Manager {
         }
         self.append(
             &record,
-            &params.session_id,
+            &session_id,
             JournalKind::Exec,
-            Some(serde_json::json!({"label": params.label, "result": result})),
+            Some(serde_json::json!({"label": label, "result": result})),
         )?;
         Ok(result)
     }
 
     pub fn read_file(&self, session_id: &str, path: &Path) -> Result<FsReadResult> {
+        let bytes = self.read_file_bytes(session_id, path)?;
+        Ok(FsReadResult {
+            content_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+            size: bytes.len(),
+        })
+    }
+
+    pub fn read_file_bytes(&self, session_id: &str, path: &Path) -> Result<Vec<u8>> {
         let _lock = self.lock(session_id)?;
         let meta = self.running_meta(session_id)?;
         let record = self.record(session_id)?;
@@ -438,11 +504,7 @@ impl Manager {
                 "fs.read target is unavailable or too large".into(),
             ));
         }
-        let bytes = fs::read(target)?;
-        Ok(FsReadResult {
-            content_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
-            size: bytes.len(),
-        })
+        Ok(fs::read(target)?)
     }
 
     pub fn write_file(&self, session_id: &str, path: &Path, content: Vec<u8>) -> Result<()> {
@@ -1111,6 +1173,7 @@ fn filesystem_info(mode: Mode, state: &State, durability: DurabilityMode) -> Fil
         Mode::Private => FilesystemMode::CbcowPrivate,
     });
     info.tainted = state.status().tainted;
+    info.mountpoint = Some(state.live());
     info.with_durability(durability, None)
 }
 

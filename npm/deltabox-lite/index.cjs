@@ -7,10 +7,22 @@ const packages = {
   "linux-x64": "deltabox-lite-linux-x64",
 };
 
-function binaryPath() {
+function platformPackageRoot() {
   const name = packages[`${process.platform}-${process.arch}`];
   if (!name) throw new Error(`deltabox-lite does not support ${process.platform}/${process.arch}`);
-  return join(dirname(require.resolve(`${name}/package.json`)), "bin", "deltabox");
+  return dirname(require.resolve(`${name}/package.json`));
 }
 
-module.exports = { binaryPath };
+function binaryPath() {
+  return join(platformPackageRoot(), "bin", "deltabox");
+}
+
+function nativePath() {
+  return join(platformPackageRoot(), "native", "deltabox.node");
+}
+
+function loadNative() {
+  return require(nativePath());
+}
+
+module.exports = { binaryPath, nativePath, loadNative };

@@ -68,8 +68,10 @@ Release builds are also packaged for npm on Linux and macOS, x64 and arm64:
 npm install --global deltabox-lite
 ```
 
-The npm package exposes the platform prebuild directly. Pi integrations resolve
-the same native binary, so commands do not start an extra Node process.
+The npm package exposes both the native executable and a Node-API addon.
+Integrations can call `loadNative()` to keep session coordination, configuration,
+and byte I/O inside the Node host process; only the requested commands and the
+platform filesystem helper remain child processes.
 
 For a first transaction, create a project with one ordinary file and discard a
 command's changes. No package manifest or policy file is needed:
