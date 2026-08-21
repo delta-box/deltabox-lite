@@ -525,29 +525,22 @@ impl Manager {
             .and_then(|raw| raw.trim().parse().ok())
             .unwrap_or(0);
         let folded = crate::publog::entries_since(&self.project, seen)?.len() as u64;
-        let published_paths = state.pending_set();
         let result = state.commit(target, seen)?;
         self.finish_events(&mut state, &tracker, false)?;
-        let (id, applied) = result;
+        let (id, published) = result;
+        let applied = published.len();
         if applied > 0 {
             let mut digests = std::collections::BTreeMap::new();
-            let mut published = Vec::new();
-            for path in &published_paths {
-                let host_path = self.project.join(path);
-                let kind = if host_path.exists() {
-                    crate::changeset::ChangeKind::Modified
-                } else {
-                    crate::changeset::ChangeKind::Deleted
-                };
-                published.push(crate::publog::PublogChange {
-                    path: path.clone(),
-                    kind,
-                    existed: true,
-                    namespace_changed: false,
-                });
+            for change in &published {
+                if change.kind == crate::changeset::ChangeKind::Deleted {
+                    continue;
+                }
+                let host_path = self.project.join(&change.path);
                 if host_path.is_file() {
-                    digests
-                        .insert(path.clone(), crate::publog::file_digest(&host_path)?);
+                    digests.insert(
+                        change.path.clone(),
+                        crate::publog::file_digest(&host_path)?,
+                    );
                 }
             }
             let seq = crate::publog::append(

@@ -689,3 +689,57 @@ fn sync_rejects_through_sessions() {
     );
     session.stop();
 }
+
+// Publog entries must describe what a commit actually published: a fresh
+// file is `added` with existed=false, a pre-existing one `modified` with
+// existed=true -- not post-commit guesswork that labels every path as an
+// existing modification.
+#[test]
+fn commit_publog_records_real_change_kinds() {
+    let session = Session::start("cbcow-private");
+    let project = session.project.path().to_str().unwrap().to_string();
+    assert_ok(&session.run([
+        "write",
+        &session.id,
+        "fresh.txt",
+        "--content",
+        "new",
+        "--project",
+        &project,
+    ]));
+    assert_ok(&session.run([
+        "write",
+        &session.id,
+        "a.txt",
+        "--content",
+        "changed",
+        "--project",
+        &project,
+    ]));
+    assert_ok(&session.commit());
+
+    let projects = session.state.path().join("projects");
+    let store = std::fs::read_dir(&projects)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let log = std::fs::read_to_string(store.join("publog.jsonl")).unwrap();
+    let entry: Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+    let changes = entry["changes"].as_array().unwrap().clone();
+    let lookup = |path: &str| {
+        changes
+            .iter()
+            .find(|change| change["path"] == path)
+            .unwrap()
+            .clone()
+    };
+    let fresh = lookup("fresh.txt");
+    assert_eq!(fresh["kind"], "added");
+    assert_eq!(fresh["existed"], false);
+    let existing = lookup("a.txt");
+    assert_eq!(existing["kind"], "modified");
+    assert_eq!(existing["existed"], true);
+    session.stop();
+}

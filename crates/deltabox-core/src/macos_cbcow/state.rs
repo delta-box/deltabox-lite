@@ -498,7 +498,11 @@ impl State {
         Ok((target, paths.len()))
     }
 
-    pub fn commit(&mut self, target: Option<u64>, endorsed_until: u64) -> Result<(u64, usize)> {
+    pub fn commit(
+        &mut self,
+        target: Option<u64>,
+        endorsed_until: u64,
+    ) -> Result<(u64, Vec<crate::publog::PublogChange>)> {
         if let Some(target) = target {
             self.abort(Some(target))?;
         }
@@ -510,6 +514,38 @@ impl State {
                 &paths,
                 endorsed_until,
             )?;
+        }
+        // Describe what this commit publishes while the trees are still
+        // pre-apply: staged-vs-base presence yields the change kind, and the
+        // pre-apply host (base for through mode, whose host already carries
+        // the live view) yields `existed`. Sampling after apply would misread
+        // additions as modifications and cannot see checkpoint-target aborts.
+        let live_root = self.live();
+        let base_root = self.root.join(BASE_DIR);
+        let mut published = Vec::new();
+        for path in &paths {
+            let staged = fs::symlink_metadata(live_root.join(path)).ok();
+            let base = fs::symlink_metadata(base_root.join(path)).ok();
+            let host = if self.manifest.mode == Mode::Private {
+                fs::symlink_metadata(self.project.join(path)).ok()
+            } else {
+                base.clone()
+            };
+            let kind = match (&staged, &base) {
+                (Some(_), None) => crate::changeset::ChangeKind::Added,
+                (Some(_), Some(_)) => crate::changeset::ChangeKind::Modified,
+                (None, _) => crate::changeset::ChangeKind::Deleted,
+            };
+            let namespace_changed = matches!(
+                (&staged, &base),
+                (Some(staged), Some(base)) if staged.file_type() != base.file_type()
+            );
+            published.push(crate::publog::PublogChange {
+                path: path.clone(),
+                kind,
+                existed: host.is_some(),
+                namespace_changed,
+            });
         }
         let id = Uuid::new_v4().to_string();
         let transaction_root = self.root.join(TRANSACTIONS_DIR).join(&id);
@@ -574,7 +610,7 @@ impl State {
         remove_path(&self.root.join(TRANSACTION_FILE))?;
         remove_path(&transaction_root)?;
         self.cleanup_orphans()?;
-        Ok((checkpoint_id, paths.len()))
+        Ok((checkpoint_id, published))
     }
 
     fn require_checkpoint(&self, id: u64) -> Result<()> {
