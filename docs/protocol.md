@@ -89,7 +89,8 @@ the session never touched (`stale_paths`), and for each contested path
 materializes a `<path>.deltabox-theirs` copy of the current host content
 inside the session view (`SyncResult` = `{folded_publications, stale_paths,
 conflicts: [{path, host_kind, theirs?}]}`). Merge, remove the theirs file,
-and commit again. Requires `cbcow-private`.
+and commit again. Requires `cbcow-private`: through and copy-private
+sessions are rejected with an unsupported-operation error.
 
 A commit rejected because the host moved returns error `data` =
 `{"type": "project-conflict", message, conflicts: [{path, host_change}],

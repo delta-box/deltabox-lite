@@ -723,7 +723,11 @@ impl Manager {
         };
         if record.mode != crate::protocol::FilesystemMode::CbcowPrivate {
             // Through mode has no private baseline: its view is the host.
-            return Ok(empty);
+            // docs/protocol.md declares sync cbcow-private only, so reject
+            // loudly instead of masking misdirected client calls.
+            return Err(Error::Unsupported(
+                "session.sync requires a cbcow-private session".into(),
+            ));
         }
         let store = self.store(session_id);
         let _publish = Lock::acquire(&publish_lock_path(&self.project)?)?;

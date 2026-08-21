@@ -387,7 +387,12 @@ impl Manager {
             conflicts: Vec::new(),
         };
         if state.status().mode != Mode::Private {
-            return Ok(empty);
+            // Through mode has no private baseline: its view is the host.
+            // docs/protocol.md declares sync cbcow-private only, so reject
+            // loudly instead of masking misdirected client calls.
+            return Err(Error::Unsupported(
+                "session.sync requires a cbcow-private session".into(),
+            ));
         }
         let _publish =
             Lock::acquire(&crate::state_layout::publish_lock_path(&self.project)?)?;

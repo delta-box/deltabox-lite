@@ -965,3 +965,22 @@ fn kill_helper(status: &Value) {
     let pid = status["helper_pid"].as_u64().unwrap() as i32;
     assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
 }
+
+// docs/protocol.md: session.sync requires cbcow-private. A through session
+// must be rejected outright -- a silent empty result would mask client bugs.
+#[test]
+fn sync_rejects_through_sessions() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    let session = Session::start(project.path());
+    let sync = session.command(["sync", &session.id]);
+    assert!(!sync.status.success());
+    assert!(
+        String::from_utf8_lossy(&sync.stderr).contains("requires a cbcow-private session"),
+        "{sync:?}"
+    );
+    let stop = session.command(["session", "stop", &session.id]);
+    assert!(stop.status.success());
+}

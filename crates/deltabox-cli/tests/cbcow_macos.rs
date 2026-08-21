@@ -670,3 +670,22 @@ fn private_commit_recovers_process_crash_boundaries() {
         session.stop();
     }
 }
+
+// docs/protocol.md: session.sync requires cbcow-private. A through session
+// must be rejected outright -- a silent empty result would mask client bugs.
+#[test]
+fn sync_rejects_through_sessions() {
+    let session = Session::start("cbcow-through");
+    let sync = session.run([
+        "sync",
+        &session.id,
+        "--project",
+        session.project.path().to_str().unwrap(),
+    ]);
+    assert!(!sync.status.success());
+    assert!(
+        String::from_utf8_lossy(&sync.stderr).contains("requires a cbcow-private session"),
+        "{sync:?}"
+    );
+    session.stop();
+}
