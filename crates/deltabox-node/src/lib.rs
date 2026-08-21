@@ -3,8 +3,9 @@
 use deltabox_core::changeset::{Change, ChangeKind};
 use deltabox_core::coordinator::{CommandExecutionMode, CoordinatorOptions, SessionCoordinator};
 use deltabox_core::protocol::{
-    AbortResult, ActiveReview, CommitResult, DiffResult, DurabilityMode, ExecParams, ExecResult,
-    FilesystemMode, ReviewBeginParams, ReviewKind, SessionInfo,
+    AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
+    CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecResult, FilesystemMode,
+    ReviewBeginParams, ReviewKind, SessionInfo, SessionStatus,
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -37,9 +38,30 @@ pub struct NativeSessionInfo {
     #[napi(js_name = "session_id")]
     pub session_id: String,
     pub project: String,
+    #[napi(js_name = "started_at_ms")]
+    pub started_at_ms: f64,
+    pub status: String,
+    #[napi(js_name = "checkpoint_count")]
+    pub checkpoint_count: f64,
+    #[napi(js_name = "pending_changes")]
+    pub pending_changes: f64,
+    #[napi(js_name = "requested_fs_mode")]
+    pub requested_fs_mode: String,
     #[napi(js_name = "resolved_fs_mode")]
     pub resolved_fs_mode: String,
+    #[napi(js_name = "host_visibility")]
+    pub host_visibility: String,
     pub durability: String,
+    #[napi(js_name = "group_commit_ms")]
+    pub group_commit_ms: Option<f64>,
+    pub isolation: String,
+    #[napi(js_name = "state_provider")]
+    pub state_provider: Either<String, Null>,
+    #[napi(js_name = "fallback_reason")]
+    pub fallback_reason: Either<String, Null>,
+    #[napi(js_name = "rollback_guarantee")]
+    pub rollback_guarantee: String,
+    pub tainted: bool,
     pub mountpoint: Option<String>,
 }
 
@@ -62,6 +84,17 @@ pub struct NativeActiveReview {
     pub label: Either<String, Null>,
     #[napi(js_name = "started_at_ms")]
     pub started_at_ms: f64,
+}
+
+#[napi(object)]
+pub struct NativeCheckpointInfo {
+    pub id: String,
+    pub label: Either<String, Null>,
+    #[napi(js_name = "created_at_ms")]
+    pub created_at_ms: f64,
+    #[napi(js_name = "change_count")]
+    pub change_count: f64,
+    pub committed: bool,
 }
 
 #[napi(object)]
@@ -147,16 +180,20 @@ impl NativeDeltabox {
         policy: Option<String>,
         durability: Option<String>,
         group_commit_ms: Option<f64>,
+        filesystem_mode: Option<String>,
+        require_filesystem_mode: Option<bool>,
     ) -> napi::Result<NativeSessionInfo> {
         let coordinator = Arc::clone(&self.coordinator);
         let durability = parse_durability(durability.as_deref())?;
         let group_commit_ms = parse_nonnegative_integer("groupCommitMs", group_commit_ms)?;
+        let (filesystem_mode, require_filesystem_mode) =
+            parse_filesystem_request(filesystem_mode.as_deref(), require_filesystem_mode)?;
         run_blocking(move || {
             coordinator
                 .start_with_durability(
                     policy.as_deref().map(Path::new),
-                    Some(FilesystemMode::CbcowThrough),
-                    true,
+                    filesystem_mode,
+                    require_filesystem_mode,
                     durability,
                     group_commit_ms,
                 )
@@ -172,6 +209,18 @@ impl NativeDeltabox {
         run_blocking(move || {
             coordinator
                 .stop(&session_id)
+                .map(session_info)
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn session_status(&self, session_id: String) -> napi::Result<NativeSessionInfo> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .status(&session_id)
                 .map(session_info)
                 .map_err(native_error)
         })
@@ -253,6 +302,81 @@ impl NativeDeltabox {
     }
 
     #[napi]
+    pub async fn checkpoint(
+        &self,
+        session_id: String,
+        label: Option<String>,
+    ) -> napi::Result<NativeCheckpointInfo> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .checkpoint(CheckpointParams { session_id, label })
+                .map(checkpoint_info)
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn diff(
+        &self,
+        session_id: String,
+        from: Option<String>,
+        to: Option<String>,
+    ) -> napi::Result<NativeDiffResult> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .diff(DiffParams {
+                    session_id,
+                    from,
+                    to,
+                })
+                .map(diff_result)
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn commit(
+        &self,
+        session_id: String,
+        checkpoint: Option<String>,
+    ) -> napi::Result<NativeCommitResult> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .commit(CommitParams {
+                    session_id,
+                    checkpoint,
+                })
+                .map(commit_result)
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn abort(
+        &self,
+        session_id: String,
+        checkpoint: Option<String>,
+    ) -> napi::Result<NativeAbortResult> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .abort(AbortParams {
+                    session_id,
+                    checkpoint,
+                })
+                .map(abort_result)
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
     pub async fn begin_review(
         &self,
         session_id: String,
@@ -269,6 +393,21 @@ impl NativeDeltabox {
                     label,
                 })
                 .map(active_review)
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn review_status(
+        &self,
+        session_id: String,
+    ) -> napi::Result<Either<NativeActiveReview, Null>> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .review_status(&session_id)
+                .map(|value| nullable(value.map(active_review)))
                 .map_err(native_error)
         })
         .await
@@ -309,6 +448,18 @@ impl NativeDeltabox {
         })
         .await
     }
+
+    #[napi]
+    pub async fn review_skip(&self, session_id: String) -> napi::Result<NativeActiveReview> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .review_skip(&session_id)
+                .map(active_review)
+                .map_err(native_error)
+        })
+        .await
+    }
 }
 
 fn parse_durability(value: Option<&str>) -> napi::Result<DurabilityMode> {
@@ -317,6 +468,28 @@ fn parse_durability(value: Option<&str>) -> napi::Result<DurabilityMode> {
         "strict" => Ok(DurabilityMode::Strict),
         value => Err(napi::Error::from_reason(format!(
             "unsupported durability mode {value:?}"
+        ))),
+    }
+}
+
+fn parse_filesystem_request(
+    value: Option<&str>,
+    required: Option<bool>,
+) -> napi::Result<(Option<FilesystemMode>, bool)> {
+    match value {
+        None => Ok((Some(FilesystemMode::CbcowThrough), required.unwrap_or(true))),
+        Some("auto") => Ok((None, required.unwrap_or(false))),
+        Some("cbcow-through") => Ok((
+            Some(FilesystemMode::CbcowThrough),
+            required.unwrap_or(false),
+        )),
+        Some("cbcow-private") => Ok((
+            Some(FilesystemMode::CbcowPrivate),
+            required.unwrap_or(false),
+        )),
+        Some("copy-private") => Ok((Some(FilesystemMode::CopyPrivate), required.unwrap_or(false))),
+        Some(value) => Err(napi::Error::from_reason(format!(
+            "unsupported filesystem mode {value:?}"
         ))),
     }
 }
@@ -356,16 +529,36 @@ fn filesystem_mode(value: FilesystemMode) -> String {
 }
 
 fn session_info(value: SessionInfo) -> NativeSessionInfo {
+    let filesystem = value.filesystem;
     NativeSessionInfo {
         session_id: value.session_id,
         project: value.project.to_string_lossy().into_owned(),
-        resolved_fs_mode: filesystem_mode(value.filesystem.resolved_fs_mode),
-        durability: value.filesystem.durability,
-        mountpoint: value
-            .filesystem
+        started_at_ms: value.started_at_ms as f64,
+        status: session_status(value.status),
+        checkpoint_count: value.checkpoint_count as f64,
+        pending_changes: value.pending_changes as f64,
+        requested_fs_mode: filesystem_mode(filesystem.requested_fs_mode),
+        resolved_fs_mode: filesystem_mode(filesystem.resolved_fs_mode),
+        host_visibility: filesystem.host_visibility,
+        durability: filesystem.durability,
+        group_commit_ms: filesystem.group_commit_ms.map(|value| value as f64),
+        isolation: filesystem.isolation,
+        state_provider: nullable(filesystem.state_provider),
+        fallback_reason: nullable(filesystem.fallback_reason),
+        rollback_guarantee: filesystem.rollback_guarantee,
+        tainted: filesystem.tainted,
+        mountpoint: filesystem
             .mountpoint
             .map(|path| path.to_string_lossy().into_owned()),
     }
+}
+
+fn session_status(value: SessionStatus) -> String {
+    match value {
+        SessionStatus::Running => "running",
+        SessionStatus::Stopped => "stopped",
+    }
+    .into()
 }
 
 fn exec_result(value: ExecResult) -> NativeExecResult {
@@ -393,6 +586,16 @@ fn active_review(value: ActiveReview) -> NativeActiveReview {
         kind: review_kind(value.kind),
         label: nullable(value.label),
         started_at_ms: value.started_at_ms as f64,
+    }
+}
+
+fn checkpoint_info(value: CheckpointInfo) -> NativeCheckpointInfo {
+    NativeCheckpointInfo {
+        id: value.id,
+        label: nullable(value.label),
+        created_at_ms: value.created_at_ms as f64,
+        change_count: value.change_count as f64,
+        committed: value.committed,
     }
 }
 
