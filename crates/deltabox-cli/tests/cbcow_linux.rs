@@ -248,6 +248,27 @@ fn abort_invalidates_cached_content_and_namespace() {
 }
 
 #[test]
+fn abort_then_recreated_files_are_immediately_readable() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    let session = Session::start(project.path());
+
+    for index in 0..8 {
+        let name = format!("recreated-{index}.txt");
+        let output = session.exec_shell(&format!(
+            "printf recreated > {name}; test \"$(cat {name})\" = recreated"
+        ));
+        assert_ok(&output);
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["exit_code"], 0, "recreated file result: {result}");
+        session.abort(None);
+        assert!(!project.path().join(name).exists());
+    }
+}
+
+#[test]
 fn helper_restart_preserves_pending_undo() {
     if !available() {
         return;
