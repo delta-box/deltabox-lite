@@ -11,8 +11,11 @@ const { NativeDeltabox } = loadNative()
 const runtime = new NativeDeltabox(process.cwd(), binaryPath(), true)
 ```
 
-Native methods return promises backed by Node's worker pool. File reads and
-writes use `Buffer`, while session, exec, and review calls use typed objects.
+Native methods return promises backed by the addon's Tokio blocking runtime.
+The coordinator and active filesystem state stay resident in the Node process;
+trusted commands share its ambient environment and reuse an isolated Bash
+worker. File reads and writes use `Buffer`, while session, checkpoint, diff,
+commit, abort, and review calls return protocol-shaped typed objects.
 
 Linux CB-CoW modes require `/dev/fuse` and `fusermount3` or `fusermount` on the
 host. Deltabox otherwise reports the reason and falls back to `copy-private`
