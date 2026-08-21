@@ -1,9 +1,9 @@
 use crate::changeset::ChangeKind;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::state_layout::state_root;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
 /// Project-wide publication log: one JSON line per successful publication,
@@ -46,13 +46,112 @@ fn head_path(project: &Path) -> Result<std::path::PathBuf> {
     Ok(state_root(project)?.join("publog.head"))
 }
 
-/// Latest published seq for the project; 0 when nothing was ever published.
-pub(crate) fn head_seq(project: &Path) -> Result<u64> {
+/// Parsed view of the log plus whatever a crashed appender left behind.
+struct LogState {
+    entries: Vec<PublogEntry>,
+    /// Byte length of the newline-terminated prefix.
+    clean_len: u64,
+    tail: Tail,
+}
+
+/// The final, newline-less fragment of the log, if any. Only a crashed
+/// appender can produce one: the entry bytes and the trailing `\n` are
+/// separate writes, so the fragment is either a complete entry that lost its
+/// newline or torn JSON. A malformed line *with* a newline was never written
+/// by us and is reported as corruption instead.
+enum Tail {
+    None,
+    MissingNewline(Box<PublogEntry>),
+    Torn,
+}
+
+fn read_log(project: &Path) -> Result<LogState> {
+    let path = log_path(project)?;
+    let raw = match fs::read(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LogState {
+                entries: Vec::new(),
+                clean_len: 0,
+                tail: Tail::None,
+            })
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut entries = Vec::new();
+    let mut offset = 0usize;
+    let mut clean_len = 0usize;
+    let mut tail = Tail::None;
+    while offset < raw.len() {
+        match raw[offset..].iter().position(|byte| *byte == b'\n') {
+            Some(position) => {
+                let end = offset + position;
+                let text = std::str::from_utf8(&raw[offset..end])
+                    .map_err(|error| corrupt(&path, &format!("entry is not UTF-8: {error}")))?;
+                if !text.trim().is_empty() {
+                    entries.push(
+                        serde_json::from_str::<PublogEntry>(text)
+                            .map_err(|error| corrupt(&path, &error.to_string()))?,
+                    );
+                }
+                offset = end + 1;
+                clean_len = offset;
+            }
+            None => {
+                tail = match std::str::from_utf8(&raw[offset..])
+                    .ok()
+                    .and_then(|text| serde_json::from_str::<PublogEntry>(text).ok())
+                {
+                    Some(entry) => Tail::MissingNewline(Box::new(entry)),
+                    None => Tail::Torn,
+                };
+                break;
+            }
+        }
+    }
+    Ok(LogState {
+        entries,
+        clean_len: clean_len as u64,
+        tail,
+    })
+}
+
+fn corrupt(path: &Path, detail: &str) -> Error {
+    Error::Backend(format!(
+        "corrupt publog entry in {}: {detail}",
+        path.display()
+    ))
+}
+
+fn cached_head(project: &Path) -> Result<Option<u64>> {
     match fs::read_to_string(head_path(project)?) {
-        Ok(raw) => Ok(raw.trim().parse().unwrap_or(0)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Ok(raw) => Ok(raw.trim().parse().ok()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
+}
+
+fn tail_seq(state: &LogState) -> u64 {
+    let logged = state
+        .entries
+        .iter()
+        .map(|entry| entry.seq)
+        .max()
+        .unwrap_or(0);
+    match &state.tail {
+        Tail::MissingNewline(entry) => logged.max(entry.seq),
+        _ => logged,
+    }
+}
+
+/// Latest published seq for the project; 0 when nothing was ever published.
+/// `publog.head` is only an O(1) cache of the log tail: it can be missing,
+/// corrupt, or one entry behind the log (a crash between the entry append and
+/// the head update), so the log itself stays authoritative and the newer of
+/// the two wins. A cache miss must never make published entries invisible.
+pub(crate) fn head_seq(project: &Path) -> Result<u64> {
+    let state = read_log(project)?;
+    Ok(cached_head(project)?.unwrap_or(0).max(tail_seq(&state)))
 }
 
 /// Appends one publication; caller must hold publish.lock. Returns its seq.
@@ -62,7 +161,8 @@ pub(crate) fn append(
     changes: &[PublogChange],
     digests: std::collections::BTreeMap<String, String>,
 ) -> Result<u64> {
-    let seq = head_seq(project)? + 1;
+    let state = read_log(project)?;
+    let seq = cached_head(project)?.unwrap_or(0).max(tail_seq(&state)) + 1;
     let entry = PublogEntry {
         seq,
         session_id: session_id.to_string(),
@@ -72,33 +172,39 @@ pub(crate) fn append(
     };
     let mut file = fs::OpenOptions::new()
         .create(true)
-        .append(true)
+        .write(true)
         .open(log_path(project)?)?;
+    // Repair a crashed appender's leftovers before extending the log, so the
+    // "only the final line can lack a newline" invariant holds for readers.
+    match state.tail {
+        Tail::Torn => file.set_len(state.clean_len)?,
+        Tail::MissingNewline(_) => {
+            file.seek(SeekFrom::End(0))?;
+            file.write_all(b"\n")?;
+        }
+        Tail::None => {}
+    }
+    file.seek(SeekFrom::End(0))?;
     file.write_all(serde_json::to_string(&entry)?.as_bytes())?;
     file.write_all(b"\n")?;
-    fs::write(head_path(project)?, format!("{seq}\n"))?;
+    let head = head_path(project)?;
+    let staged = head.with_extension("head.tmp");
+    fs::write(&staged, format!("{seq}\n"))?;
+    fs::rename(&staged, &head)?;
     Ok(seq)
 }
 
 /// Entries with seq strictly greater than `after`, oldest first. Linear scan:
 /// the log is per-project and bounded by publication count, and callers hit
-/// this only on commit/sync, never on the hot status path.
+/// this only on commit/sync, never on the hot status path. A complete final
+/// entry that lost its newline to a crash still counts; torn JSON does not.
 pub(crate) fn entries_since(project: &Path, after: u64) -> Result<Vec<PublogEntry>> {
-    let raw = match fs::read_to_string(log_path(project)?) {
-        Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error.into()),
-    };
-    let mut entries = Vec::new();
-    for line in raw.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let entry: PublogEntry = serde_json::from_str(line)?;
-        if entry.seq > after {
-            entries.push(entry);
-        }
+    let state = read_log(project)?;
+    let mut entries = state.entries;
+    if let Tail::MissingNewline(entry) = state.tail {
+        entries.push(*entry);
     }
+    entries.retain(|entry| entry.seq > after);
     Ok(entries)
 }
 
@@ -109,4 +215,133 @@ pub(crate) fn file_digest(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path)?;
     std::io::copy(&mut file, &mut hasher)?;
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(state_root(dir.path()).unwrap()).unwrap();
+        dir
+    }
+
+    fn change(path: &str) -> PublogChange {
+        PublogChange {
+            path: path.into(),
+            kind: ChangeKind::Added,
+            existed: false,
+            namespace_changed: false,
+        }
+    }
+
+    fn add(project: &Path, path: &str) -> u64 {
+        append(project, "session-a", &[change(path)], Default::default()).unwrap()
+    }
+
+    #[test]
+    fn sequences_and_cursor() {
+        let dir = project();
+        assert_eq!(add(dir.path(), "a.txt"), 1);
+        assert_eq!(add(dir.path(), "b.txt"), 2);
+        assert_eq!(add(dir.path(), "c.txt"), 3);
+        assert_eq!(head_seq(dir.path()).unwrap(), 3);
+        let entries = entries_since(dir.path(), 1).unwrap();
+        assert_eq!(
+            entries.iter().map(|entry| entry.seq).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert!(entries_since(dir.path(), 3).unwrap().is_empty());
+    }
+
+    #[test]
+    fn missing_head_recovers_from_log() {
+        let dir = project();
+        add(dir.path(), "a.txt");
+        add(dir.path(), "b.txt");
+        fs::remove_file(head_path(dir.path()).unwrap()).unwrap();
+        assert_eq!(head_seq(dir.path()).unwrap(), 2);
+        assert_eq!(add(dir.path(), "c.txt"), 3);
+    }
+
+    #[test]
+    fn corrupt_head_recovers_from_log() {
+        let dir = project();
+        add(dir.path(), "a.txt");
+        add(dir.path(), "b.txt");
+        fs::write(head_path(dir.path()).unwrap(), "not-a-number\n").unwrap();
+        assert_eq!(head_seq(dir.path()).unwrap(), 2);
+        assert_eq!(add(dir.path(), "c.txt"), 3);
+    }
+
+    #[test]
+    fn stale_head_never_reuses_a_seq() {
+        let dir = project();
+        add(dir.path(), "a.txt");
+        add(dir.path(), "b.txt");
+        // A crash between the entry append and the head update leaves the
+        // cache one behind the log; the log must win.
+        fs::write(head_path(dir.path()).unwrap(), "1\n").unwrap();
+        assert_eq!(head_seq(dir.path()).unwrap(), 2);
+        assert_eq!(add(dir.path(), "c.txt"), 3);
+    }
+
+    #[test]
+    fn torn_tail_is_ignored_and_repaired() {
+        let dir = project();
+        add(dir.path(), "a.txt");
+        add(dir.path(), "b.txt");
+        let log = log_path(dir.path()).unwrap();
+        let mut file = fs::OpenOptions::new().append(true).open(&log).unwrap();
+        file.write_all(b"{\"seq\":9999,\"session_id\":\"tor")
+            .unwrap();
+        drop(file);
+        assert_eq!(head_seq(dir.path()).unwrap(), 2);
+        assert_eq!(entries_since(dir.path(), 0).unwrap().len(), 2);
+        assert_eq!(add(dir.path(), "c.txt"), 3);
+        assert!(!fs::read_to_string(&log).unwrap().contains("tor"));
+        assert_eq!(
+            entries_since(dir.path(), 0)
+                .unwrap()
+                .iter()
+                .map(|entry| entry.seq)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn newline_less_complete_entry_still_counts() {
+        let dir = project();
+        add(dir.path(), "a.txt");
+        let orphan = PublogEntry {
+            seq: 2,
+            session_id: "session-b".into(),
+            ts_ms: 0,
+            changes: vec![change("b.txt")],
+            digests: Default::default(),
+        };
+        let log = log_path(dir.path()).unwrap();
+        let mut file = fs::OpenOptions::new().append(true).open(&log).unwrap();
+        file.write_all(serde_json::to_string(&orphan).unwrap().as_bytes())
+            .unwrap();
+        drop(file);
+        assert_eq!(head_seq(dir.path()).unwrap(), 2);
+        assert_eq!(entries_since(dir.path(), 0).unwrap().len(), 2);
+        assert_eq!(add(dir.path(), "c.txt"), 3);
+        assert_eq!(entries_since(dir.path(), 0).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn interior_corruption_is_an_error() {
+        let dir = project();
+        add(dir.path(), "a.txt");
+        let log = log_path(dir.path()).unwrap();
+        let mut file = fs::OpenOptions::new().append(true).open(&log).unwrap();
+        file.write_all(b"garbage\n").unwrap();
+        drop(file);
+        assert!(entries_since(dir.path(), 0).is_err());
+        assert!(head_seq(dir.path()).is_err());
+    }
 }
