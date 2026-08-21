@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/deltabox-core", "crates/deltabox-cli", "deltafs-fuse"]
+members = [
+  "crates/deltabox-core",
+  "crates/deltabox-cli",
+  "crates/deltabox-node",
+  "deltafs-fuse",
+]
 
 [workspace.package]
 version = "0.1.0"

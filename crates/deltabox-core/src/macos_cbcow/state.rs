@@ -376,8 +376,9 @@ impl State {
         Ok(paths.len())
     }
 
-    #[cfg(test)]
-    pub fn mark_paths(&mut self, paths: impl IntoIterator<Item = String>) -> Result<()> {
+    /// Record exact paths changed by a trusted embedded writer without waiting
+    /// for the asynchronous FSEvents stream to rediscover them.
+    pub(crate) fn mark_paths(&mut self, paths: impl IntoIterator<Item = String>) -> Result<()> {
         let mut paths: BTreeSet<String> = paths.into_iter().collect();
         let live = self.live();
         self.load_index()?;
@@ -1213,7 +1214,7 @@ fn entry_kind(metadata: &fs::Metadata) -> Result<EntryKind> {
     }
 }
 
-fn relative_string(path: &Path) -> Result<String> {
+pub(crate) fn relative_string(path: &Path) -> Result<String> {
     if path
         .components()
         .any(|component| !matches!(component, Component::Normal(_)))
