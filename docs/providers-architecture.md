@@ -58,9 +58,16 @@ deltabox CLI / serve
   `--unshare-net` (deny-all), read-only `/usr /lib /lib64 /bin /etc`,
   fresh `/tmp`, and `--die-with-parent`. Environment is scrubbed to an
   allowlist plus `HOME`/`TMPDIR`; user env overrides are applied last.
-- **`review.*` and strict durability are unsupported**: git mode returns
-  explicit unsupported errors at runtime; the methods and result shapes are
-  unchanged at the protocol level.
+- **Review scopes use ghost savepoints**: `review.begin` pins the current
+  workspace in the side repository, `review.diff` compares against that ref,
+  and review commit/abort reuses the normal Git re-baseline/restore boundary.
+  The active scope is persisted beside the session record, so independent CLI
+  processes and `serve` restarts preserve it. Strict durability remains
+  unsupported in git mode.
+- **Session operations share the CB-CoW lock primitive**: standalone commands
+  and `serve` serialize same-session work with a persistent file plus kernel
+  `flock`. Contending operations wait, and process exit releases the lock
+  without PID files or per-operation lock-file `fsync`.
 - **Linux-only**: `bubblewrap` must be installed and able to create user
   namespaces; otherwise `session.start` fails (no fallback, no downgrade).
 - **Server API compatibility**: no new methods, no protocol version change.

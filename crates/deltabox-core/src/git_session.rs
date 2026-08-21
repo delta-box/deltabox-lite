@@ -6,6 +6,7 @@
 //! into the sandbox and no `/dev/fuse` or filesystem helper is involved.
 
 use crate::error::{Error, Result};
+use crate::file_lock::FileLock;
 use crate::policy::Policy;
 use crate::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
@@ -25,6 +26,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 const SESSION_META_FILE: &str = "session.json";
+const ACTIVE_REVIEW_FILE: &str = "active_review.json";
 const LOCK_FILE: &str = "session.lock";
 const MAX_FS_READ_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -125,7 +127,7 @@ impl GitSessionManager {
     }
 
     pub fn status(&self, session_id: &str) -> Result<SessionInfo> {
-        let lock = SessionLock::acquire(&self.session_dir(session_id)?)?;
+        let lock = FileLock::acquire(&self.session_dir(session_id)?.join(LOCK_FILE))?;
         let meta = self.require_meta(session_id)?;
         let info = self.info(&meta);
         drop(lock);
@@ -133,10 +135,11 @@ impl GitSessionManager {
     }
 
     pub fn stop(&self, session_id: &str) -> Result<SessionInfo> {
-        let lock = SessionLock::acquire(&self.session_dir(session_id)?)?;
+        let lock = FileLock::acquire(&self.session_dir(session_id)?.join(LOCK_FILE))?;
         let mut meta = self.require_meta(session_id)?;
         let mut storage = self.open_storage(&meta.session_id)?;
         storage.close()?;
+        self.save_review(session_id, None)?;
         meta.status = SessionStatus::Stopped;
         self.save_meta(&meta)?;
         drop(lock);
@@ -145,7 +148,7 @@ impl GitSessionManager {
 
     pub fn remove_stopped(&self, session_id: &str) -> Result<()> {
         let dir = self.session_dir(session_id)?;
-        let lock = SessionLock::acquire(&dir)?;
+        let lock = FileLock::acquire(&dir.join(LOCK_FILE))?;
         let meta = self.require_meta(session_id)?;
         if meta.status != SessionStatus::Stopped {
             return Err(Error::SessionBusy(session_id.into()));
@@ -159,13 +162,12 @@ impl GitSessionManager {
     }
 
     pub fn exec(&self, params: ExecParams) -> Result<ExecResult> {
-        let _lock = self.lock_running(&params.session_id)?;
+        let _locked = self.lock_running(&params.session_id)?;
         self.isolation.exec(params.argv, params.cwd, params.env)
     }
 
     pub fn read_file(&self, session_id: &str, path: &Path) -> Result<FsReadResult> {
-        let _lock = self.lock_running(session_id)?;
-        let meta = self.require_meta(session_id)?;
+        let (_lock, meta) = self.lock_running(session_id)?;
         let policy = self.policy(&meta)?;
         let rel = relative_project_path(&self.project, path)?;
         if policy.path_is_denied(&rel) {
@@ -193,8 +195,7 @@ impl GitSessionManager {
     }
 
     pub fn write_file(&self, session_id: &str, path: &Path, content: Vec<u8>) -> Result<()> {
-        let _lock = self.lock_running(session_id)?;
-        let meta = self.require_meta(session_id)?;
+        let (_lock, meta) = self.lock_running(session_id)?;
         let policy = self.policy(&meta)?;
         let rel = relative_project_path(&self.project, path)?;
         if policy.path_is_denied(&rel) {
@@ -216,8 +217,15 @@ impl GitSessionManager {
     }
 
     pub fn checkpoint(&self, params: CheckpointParams) -> Result<CheckpointInfo> {
-        let _lock = self.lock_running(&params.session_id)?;
-        let mut meta = self.require_meta(&params.session_id)?;
+        let (_lock, meta) = self.lock_running(&params.session_id)?;
+        self.checkpoint_locked(params, meta)
+    }
+
+    fn checkpoint_locked(
+        &self,
+        params: CheckpointParams,
+        mut meta: GitSessionMeta,
+    ) -> Result<CheckpointInfo> {
         let mut storage = self.open_storage(&meta.session_id)?;
         let change_count = storage.diff(&baseline_ref(&meta))?.pending_changes;
         let ghost_ref = storage.snapshot()?;
@@ -233,8 +241,7 @@ impl GitSessionManager {
     }
 
     pub fn diff(&self, params: DiffParams) -> Result<DiffResult> {
-        let _lock = self.lock_running(&params.session_id)?;
-        let meta = self.require_meta(&params.session_id)?;
+        let (_lock, meta) = self.lock_running(&params.session_id)?;
         let storage = self.open_storage(&meta.session_id)?;
         let from = params.from.unwrap_or_else(|| baseline_ref(&meta));
         match params.to {
@@ -244,8 +251,15 @@ impl GitSessionManager {
     }
 
     pub fn commit(&self, params: CommitParams) -> Result<CommitResult> {
-        let _lock = self.lock_running(&params.session_id)?;
-        let mut meta = self.require_meta(&params.session_id)?;
+        let (_lock, meta) = self.lock_running(&params.session_id)?;
+        self.commit_locked(params, meta)
+    }
+
+    fn commit_locked(
+        &self,
+        params: CommitParams,
+        mut meta: GitSessionMeta,
+    ) -> Result<CommitResult> {
         let mut storage = self.open_storage(&meta.session_id)?;
         let applied = storage.diff(&baseline_ref(&meta))?.pending_changes;
         let refs = storage.list_refs()?;
@@ -256,6 +270,7 @@ impl GitSessionManager {
         meta.baseline_seq = ref_seq(&fresh)?;
         meta.pending_seqs.clear();
         self.save_meta(&meta)?;
+        self.save_review(&params.session_id, None)?;
         Ok(CommitResult {
             checkpoint_id: params.checkpoint.unwrap_or_else(|| "accepted".to_string()),
             applied,
@@ -263,8 +278,11 @@ impl GitSessionManager {
     }
 
     pub fn abort(&self, params: AbortParams) -> Result<AbortResult> {
-        let _lock = self.lock_running(&params.session_id)?;
-        let mut meta = self.require_meta(&params.session_id)?;
+        let (_lock, meta) = self.lock_running(&params.session_id)?;
+        self.abort_locked(params, meta)
+    }
+
+    fn abort_locked(&self, params: AbortParams, mut meta: GitSessionMeta) -> Result<AbortResult> {
         let mut storage = self.open_storage(&meta.session_id)?;
         let target = params
             .checkpoint
@@ -280,51 +298,74 @@ impl GitSessionManager {
         meta.baseline_seq = ref_seq(&fresh)?;
         meta.pending_seqs.clear();
         self.save_meta(&meta)?;
+        self.save_review(&params.session_id, None)?;
         Ok(AbortResult {
             checkpoint_id: target,
             restored,
         })
     }
 
-    pub fn begin_review(&self, _params: ReviewBeginParams) -> Result<ActiveReview> {
-        Err(Error::Unsupported(
-            "review scopes are not supported in git mode".into(),
-        ))
+    pub fn begin_review(&self, params: ReviewBeginParams) -> Result<ActiveReview> {
+        let (_lock, meta) = self.lock_running(&params.session_id)?;
+        if let Some(active) = self.review(&params.session_id)? {
+            return Ok(active);
+        }
+        let checkpoint = self.checkpoint_locked(
+            CheckpointParams {
+                session_id: params.session_id.clone(),
+                label: params.label.clone(),
+            },
+            meta,
+        )?;
+        let active = ActiveReview {
+            checkpoint_id: checkpoint.id,
+            kind: params.kind,
+            label: params.label,
+            started_at_ms: now_ms(),
+        };
+        self.save_review(&params.session_id, Some(&active))?;
+        Ok(active)
     }
 
     pub fn review_status(&self, session_id: &str) -> Result<Option<ActiveReview>> {
-        let _ = session_id;
-        Err(Error::Unsupported(
-            "review scopes are not supported in git mode".into(),
-        ))
+        let _locked = self.lock_running(session_id)?;
+        self.review(session_id)
     }
 
     pub fn review_diff(&self, session_id: &str) -> Result<DiffResult> {
-        let _ = session_id;
-        Err(Error::Unsupported(
-            "review scopes are not supported in git mode".into(),
-        ))
+        let _locked = self.lock_running(session_id)?;
+        let active = self.require_review(session_id)?;
+        let storage = self.open_storage(session_id)?;
+        storage.diff(&active.checkpoint_id)
     }
 
     pub fn review_commit(&self, session_id: &str) -> Result<CommitResult> {
-        let _ = session_id;
-        Err(Error::Unsupported(
-            "review scopes are not supported in git mode".into(),
-        ))
+        let (_lock, meta) = self.lock_running(session_id)?;
+        self.require_review(session_id)?;
+        self.commit_locked(
+            CommitParams {
+                session_id: session_id.to_string(),
+                checkpoint: None,
+            },
+            meta,
+        )
     }
 
     pub fn review_abort(&self, session_id: &str) -> Result<AbortResult> {
-        let _ = session_id;
-        Err(Error::Unsupported(
-            "review scopes are not supported in git mode".into(),
-        ))
+        let (_lock, meta) = self.lock_running(session_id)?;
+        let active = self.require_review(session_id)?;
+        self.abort_locked(
+            AbortParams {
+                session_id: session_id.to_string(),
+                checkpoint: Some(active.checkpoint_id),
+            },
+            meta,
+        )
     }
 
     pub fn review_skip(&self, session_id: &str) -> Result<ActiveReview> {
-        let _ = session_id;
-        Err(Error::Unsupported(
-            "review scopes are not supported in git mode".into(),
-        ))
+        let _locked = self.lock_running(session_id)?;
+        self.require_review(session_id)
     }
 
     fn info(&self, meta: &GitSessionMeta) -> Result<SessionInfo> {
@@ -351,6 +392,47 @@ impl GitSessionManager {
             Some(path) => Policy::load(path),
             None => Ok(Policy::default_agent()),
         }
+    }
+
+    fn review(&self, session_id: &str) -> Result<Option<ActiveReview>> {
+        let path = self.session_dir(session_id)?.join(ACTIVE_REVIEW_FILE);
+        if !path.exists() {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::from_slice(&std::fs::read(path)?)?))
+    }
+
+    fn require_review(&self, session_id: &str) -> Result<ActiveReview> {
+        self.review(session_id)?
+            .ok_or_else(|| Error::ReviewNotActive(session_id.to_string()))
+    }
+
+    fn save_review(&self, session_id: &str, active: Option<&ActiveReview>) -> Result<()> {
+        let dir = self.session_dir(session_id)?;
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(ACTIVE_REVIEW_FILE);
+        let tmp = dir.join(format!("{ACTIVE_REVIEW_FILE}.tmp"));
+        match active {
+            Some(active) => {
+                let mut file = File::create(&tmp)?;
+                file.write_all(&serde_json::to_vec_pretty(active)?)?;
+                file.sync_all()?;
+                std::fs::rename(&tmp, &path)?;
+            }
+            None => {
+                match std::fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+                match std::fs::remove_file(&tmp) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+        sync_dir(&dir)
     }
 
     fn require_meta(&self, session_id: &str) -> Result<GitSessionMeta> {
@@ -398,13 +480,13 @@ impl GitSessionManager {
         Ok(git_session_base()?.join("git_sessions").join(session_id))
     }
 
-    fn lock_running(&self, session_id: &str) -> Result<SessionLock> {
-        let lock = SessionLock::acquire(&self.session_dir(session_id)?)?;
+    fn lock_running(&self, session_id: &str) -> Result<(FileLock, GitSessionMeta)> {
+        let lock = FileLock::acquire(&self.session_dir(session_id)?.join(LOCK_FILE))?;
         let meta = self.require_meta(session_id)?;
         if meta.status != SessionStatus::Running {
             return Err(Error::SessionStopped(session_id.into()));
         }
-        Ok(lock)
+        Ok((lock, meta))
     }
 }
 
@@ -456,74 +538,4 @@ fn relative_project_path(project: &Path, path: &Path) -> Result<PathBuf> {
 fn sync_dir(path: &Path) -> Result<()> {
     File::open(path)?.sync_all()?;
     Ok(())
-}
-
-struct SessionLock {
-    path: PathBuf,
-    pid: u32,
-}
-
-impl SessionLock {
-    fn acquire(store: &Path) -> Result<Self> {
-        std::fs::create_dir_all(store)?;
-        let path = store.join(LOCK_FILE);
-        let pid = std::process::id();
-        for _ in 0..2 {
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(mut file) => {
-                    writeln!(file, "{pid}")?;
-                    file.sync_all()?;
-                    sync_dir(store)?;
-                    return Ok(Self { path, pid });
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let owner = std::fs::read_to_string(&path)
-                        .ok()
-                        .and_then(|contents| contents.trim().parse::<u32>().ok());
-                    if owner.is_some_and(process_is_alive) {
-                        return Err(Error::SessionBusy(store.display().to_string()));
-                    }
-                    match std::fs::remove_file(&path) {
-                        Ok(()) => sync_dir(store)?,
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Err(Error::SessionBusy(store.display().to_string()))
-    }
-}
-
-impl Drop for SessionLock {
-    fn drop(&mut self) {
-        let owned = std::fs::read_to_string(&self.path)
-            .ok()
-            .and_then(|contents| contents.trim().parse::<u32>().ok())
-            == Some(self.pid);
-        if owned && std::fs::remove_file(&self.path).is_ok() {
-            if let Some(parent) = self.path.parent() {
-                let _ = sync_dir(parent);
-            }
-        }
-    }
-}
-
-#[cfg(unix)]
-fn process_is_alive(pid: u32) -> bool {
-    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    if result == 0 {
-        return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
-#[cfg(not(unix))]
-fn process_is_alive(_pid: u32) -> bool {
-    false
 }

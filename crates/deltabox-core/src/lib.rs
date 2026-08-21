@@ -15,6 +15,8 @@ pub mod coordinator;
 pub mod durable;
 pub mod error;
 #[cfg(target_os = "linux")]
+mod file_lock;
+#[cfg(target_os = "linux")]
 pub mod git_session;
 pub mod journal;
 #[cfg(target_os = "macos")]

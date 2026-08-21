@@ -2,6 +2,7 @@ use crate::backend::linux_sandlock::resolve_deny_paths;
 use crate::changeset::{describe_change, ChangeKind, DEFAULT_TEXT_SIZE_LIMIT};
 use crate::command_executor::{self, Endpoint as CommandEndpoint};
 use crate::error::{Error, Result};
+use crate::file_lock::FileLock;
 use crate::journal::{Journal, JournalEntry, JournalKind};
 use crate::pathmap::PathMapper;
 use crate::policy::Policy;
@@ -22,7 +23,6 @@ use serde::{Deserialize, Serialize};
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
@@ -88,7 +88,7 @@ impl Manager {
         durability: DurabilityMode,
         group_commit_ms: Option<u64>,
     ) -> Result<SessionInfo> {
-        let _project_lock = Lock::acquire(&self.root.join("cbcow.lock"))?;
+        let _project_lock = FileLock::acquire(&self.root.join("cbcow.lock"))?;
         self.require_available_project()?;
         let policy_path = resolve_policy(&self.project, policy_path)?;
         let policy = match &policy_path {
@@ -1066,41 +1066,14 @@ impl Manager {
         })
     }
 
-    fn exec_lock(&self, session_id: &str) -> Result<Lock> {
-        Lock::acquire(&self.store(session_id).join(SESSION_LOCK))
+    fn exec_lock(&self, session_id: &str) -> Result<FileLock> {
+        FileLock::acquire(&self.store(session_id).join(SESSION_LOCK))
     }
 }
 
 struct SessionOperationLock {
     _operation: command_executor::OperationLock,
-    _session: Lock,
-}
-
-struct Lock(File);
-
-impl Lock {
-    fn acquire(path: &Path) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(path)?;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(Error::Io(std::io::Error::last_os_error()));
-        }
-        Ok(Self(file))
-    }
-}
-
-impl Drop for Lock {
-    fn drop(&mut self) {
-        unsafe {
-            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
-        }
-    }
+    _session: FileLock,
 }
 
 fn resolve_policy(project: &Path, policy: Option<&Path>) -> Result<Option<PathBuf>> {

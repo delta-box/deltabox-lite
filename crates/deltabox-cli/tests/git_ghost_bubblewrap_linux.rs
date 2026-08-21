@@ -10,6 +10,7 @@ use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_deltabox")
@@ -128,6 +129,46 @@ impl Session {
         serde_json::from_slice(&output.stdout).unwrap()
     }
 
+    fn review_begin(&self, kind: &str, label: Option<&str>) -> Value {
+        let mut args = vec!["review", "begin", &self.id, "--kind", kind];
+        if let Some(label) = label {
+            args.extend(["--label", label]);
+        }
+        let output = self.command(&args);
+        assert_ok(&output);
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    fn review_status(&self) -> Value {
+        let output = self.command(&["review", "status", &self.id]);
+        assert_ok(&output);
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    fn review_diff(&self) -> Value {
+        let output = self.command(&["review", "diff", &self.id, "--json"]);
+        assert_ok(&output);
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    fn review_commit(&self) -> Value {
+        let output = self.command(&["review", "commit", &self.id]);
+        assert_ok(&output);
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    fn review_abort(&self) -> Value {
+        let output = self.command(&["review", "abort", &self.id]);
+        assert_ok(&output);
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    fn review_skip(&self) -> Value {
+        let output = self.command(&["review", "skip", &self.id]);
+        assert_ok(&output);
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
     fn status(&self) -> Value {
         let output = self.command(&["session", "status", &self.id]);
         assert_ok(&output);
@@ -224,6 +265,129 @@ fn git_mode_full_lifecycle_without_fuse() {
     assert_eq!(status["pending_changes"], 0);
     session.stop();
     assert_eq!(session.status()["status"], "stopped");
+}
+
+#[test]
+fn git_mode_serializes_cli_operations_and_releases_lock_after_kill() {
+    if !bwrap_available() {
+        eprintln!("bwrap unavailable; skipping");
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    let state = temp_state();
+    let session = Session::start(project.path(), state.path());
+    let marker = project.path().join("exec-started");
+
+    let mut exec = Command::new(bin())
+        .env("DELTABOX_STATE_DIR", state.path())
+        .current_dir(project.path())
+        .args([
+            "exec",
+            &session.id,
+            "--",
+            "sh",
+            "-c",
+            "printf started > exec-started; sleep 30",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !marker.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(marker.exists(), "long-running exec did not start");
+
+    let mut write = Command::new(bin())
+        .env("DELTABOX_STATE_DIR", state.path())
+        .current_dir(project.path())
+        .args(["write", &session.id, "queued.txt", "--content", "queued"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        write.try_wait().unwrap().is_none(),
+        "concurrent write must wait for the session lock"
+    );
+
+    exec.kill().unwrap();
+    exec.wait().unwrap();
+    let output = write.wait_with_output().unwrap();
+    assert_ok(&output);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("queued.txt")).unwrap(),
+        "queued"
+    );
+    session.stop();
+}
+
+#[test]
+fn git_mode_review_scope_is_cumulative_and_clears_at_boundaries() {
+    if !bwrap_available() {
+        eprintln!("bwrap unavailable; skipping");
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("baseline.txt"), "base\n").unwrap();
+    let state = temp_state();
+    let session = Session::start(project.path(), state.path());
+
+    let first = session.review_begin("task", Some("task-start"));
+    let checkpoint = first["checkpoint_id"].as_str().unwrap().to_string();
+    assert_eq!(first["kind"], "task");
+    assert_eq!(first["label"], "task-start");
+    assert_eq!(session.review_status()["checkpoint_id"], checkpoint);
+
+    session.exec("printf 'first\n' > first.txt");
+    let skipped = session.review_skip();
+    assert_eq!(skipped["checkpoint_id"], checkpoint);
+
+    // A later adapter cannot replace the earliest cumulative rollback point.
+    let second = session.review_begin("tool", None);
+    assert_eq!(second["checkpoint_id"], checkpoint);
+    assert_eq!(second["kind"], "task");
+    session.exec("printf 'second\n' > second.txt");
+    assert_eq!(session.review_diff()["pending_changes"], 2);
+
+    let aborted = session.review_abort();
+    assert_eq!(aborted["checkpoint_id"], checkpoint);
+    assert_eq!(aborted["restored"], 2);
+    assert!(!project.path().join("first.txt").exists());
+    assert!(!project.path().join("second.txt").exists());
+    assert!(session.review_status().is_null());
+
+    let committed_scope = session.review_begin("risky", None);
+    session.exec("printf 'accepted\n' > accepted.txt");
+    let committed = session.review_commit();
+    assert_eq!(committed["applied"], 1);
+    assert_eq!(committed["checkpoint_id"], "accepted");
+    assert!(session.review_status().is_null());
+    assert_eq!(session.diff()["pending_changes"], 0);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("accepted.txt")).unwrap(),
+        "accepted\n"
+    );
+    assert_ne!(
+        committed_scope["checkpoint_id"], committed["checkpoint_id"],
+        "review commit returns the accepted boundary, not the consumed savepoint"
+    );
+
+    // Raw boundaries have the same scope-closing behavior as review.commit/abort.
+    session.review_begin("task", None);
+    session.exec("printf 'raw-commit\n' > raw-commit.txt");
+    session.commit();
+    assert!(session.review_status().is_null());
+
+    session.review_begin("task", None);
+    session.exec("printf 'raw-abort\n' > raw-abort.txt");
+    session.abort();
+    assert!(session.review_status().is_null());
+    assert!(!project.path().join("raw-abort.txt").exists());
+
+    session.stop();
 }
 
 #[test]
@@ -483,20 +647,71 @@ fn serve_protocol_keeps_old_start_compatible_and_git_sessions_usable() {
     );
     assert_eq!(aborted["result"]["restored"], 0);
 
-    // review.* reports an explicit unsupported error in git mode.
+    // review.* uses the same ghost snapshots and keeps the protocol shapes.
     let review = rpc(serde_json::json!({
         "id": 11,
         "method": "review.begin",
         "params": {"session_id": sid, "kind": "task"},
     }));
-    assert!(review["error"].is_object());
-    assert!(review["error"]["message"]
+    assert!(review["error"].is_null(), "review.begin failed: {review}");
+    let review_checkpoint = review["result"]["checkpoint_id"]
         .as_str()
         .unwrap()
-        .contains("not supported in git mode"));
+        .to_string();
+
+    let review_write = rpc(serde_json::json!({
+        "id": 12,
+        "method": "fs.write",
+        "params": {
+            "session_id": sid,
+            "path": project.path().join("review.txt"),
+            "content_base64": base64_encode("review\n"),
+        },
+    }));
+    assert!(
+        review_write["error"].is_null(),
+        "review write failed: {review_write}"
+    );
+
+    let review_diff = rpc(serde_json::json!({
+        "id": 13,
+        "method": "review.diff",
+        "params": {"session_id": sid},
+    }));
+    assert!(
+        review_diff["error"].is_null(),
+        "review.diff failed: {review_diff}"
+    );
+    assert_eq!(review_diff["result"]["pending_changes"], 1);
+
+    let review_status = rpc(serde_json::json!({
+        "id": 14,
+        "method": "review.status",
+        "params": {"session_id": sid},
+    }));
+    assert_eq!(review_status["result"]["checkpoint_id"], review_checkpoint);
+
+    let review_abort = rpc(serde_json::json!({
+        "id": 15,
+        "method": "review.abort",
+        "params": {"session_id": sid},
+    }));
+    assert!(
+        review_abort["error"].is_null(),
+        "review.abort failed: {review_abort}"
+    );
+    assert_eq!(review_abort["result"]["restored"], 1);
+    assert!(!project.path().join("review.txt").exists());
+
+    let review_status = rpc(serde_json::json!({
+        "id": 16,
+        "method": "review.status",
+        "params": {"session_id": sid},
+    }));
+    assert!(review_status["result"].is_null());
 
     let stop = rpc(serde_json::json!({
-        "id": 12,
+        "id": 17,
         "method": "session.stop",
         "params": {"session_id": sid},
     }));
