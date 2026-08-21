@@ -1,3 +1,6 @@
 [submodule "plugin/dsh"]
 	path = plugin/dsh
 	url = git@github.com:Ddnirvana/dsh-deltabox.git
+[submodule "plugin/pi"]
+	path = plugin/pi
+	url = git@github.com:Ddnirvana/pi-deltabox.git
