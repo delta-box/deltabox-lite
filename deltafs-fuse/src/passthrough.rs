@@ -189,6 +189,12 @@ impl InodeTable {
             self.by_backing.remove(&entry.backing);
         }
     }
+
+    fn reset_non_root(&mut self) {
+        self.by_inode.retain(|inode, _| *inode == INodeNo::ROOT.0);
+        self.by_backing.retain(|_, inode| *inode == INodeNo::ROOT.0);
+        self.by_path.retain(|_, inode| *inode == INodeNo::ROOT.0);
+    }
 }
 
 #[derive(Debug)]
@@ -424,8 +430,9 @@ pub struct MountedEngine {
 impl MountedEngine {
     pub fn invalidate(&self) -> io::Result<()> {
         let notifier = self.session.notifier();
-        let inodes = self.inodes.lock().expect("inode table poisoned");
-        for (inode, path) in inodes.entries() {
+        let mut inodes = self.inodes.lock().expect("inode table poisoned");
+        let entries = inodes.entries();
+        for (inode, path) in entries {
             notifier.inval_inode(inode, 0, -1)?;
             if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
                 if let Some(parent_inode) = inodes.inode(parent) {
@@ -433,6 +440,10 @@ impl MountedEngine {
                 }
             }
         }
+        // Rollback mutates the backing tree without passing through FUSE
+        // callbacks, so path and backing aliases can refer to removed inodes.
+        // Keep the root and force subsequent lookups to allocate fresh inodes.
+        inodes.reset_non_root();
         Ok(())
     }
 
