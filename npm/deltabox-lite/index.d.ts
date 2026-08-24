@@ -5,6 +5,13 @@ export interface NativeEnvironmentEntry {
   value: string
 }
 
+export interface NativeDeltaboxOptions {
+  stateDir?: string
+  runtimeDir?: string
+  fsMode?: 'cbcow-through' | 'git'
+  isolation?: 'deltabox' | 'bubblewrap' | 'none'
+}
+
 export interface NativeSessionInfo {
   sessionId: string
   project: string
@@ -43,9 +50,7 @@ export interface NativeDeltaboxConstructor {
   new(
     projectRoot: string,
     helperBinary: string,
-    trusted?: boolean,
-    stateDir?: string,
-    runtimeDir?: string,
+    options?: NativeDeltaboxOptions,
   ): NativeDeltaboxInstance
 }
 

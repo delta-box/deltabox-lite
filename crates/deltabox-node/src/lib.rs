@@ -105,9 +105,32 @@ pub struct NativeAbortResult {
     pub restored: f64,
 }
 
+#[napi(object)]
+pub struct NativeDeltaboxOptions {
+    pub state_dir: Option<String>,
+    pub runtime_dir: Option<String>,
+    pub fs_mode: Option<String>,
+    pub isolation: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeIsolation {
+    Deltabox,
+    Bubblewrap,
+    None,
+}
+
+struct ResolvedNativeOptions {
+    state_dir: Option<PathBuf>,
+    runtime_dir: Option<PathBuf>,
+    fs_mode: FilesystemMode,
+    isolation: NativeIsolation,
+}
+
 #[napi]
 pub struct NativeDeltabox {
     coordinator: Arc<SessionCoordinator>,
+    fs_mode: FilesystemMode,
 }
 
 #[napi]
@@ -116,28 +139,29 @@ impl NativeDeltabox {
     pub fn new(
         project_root: String,
         helper_binary: String,
-        trusted: Option<bool>,
-        state_dir: Option<String>,
-        runtime_dir: Option<String>,
+        options: Option<NativeDeltaboxOptions>,
     ) -> napi::Result<Self> {
-        let command_execution = if trusted.unwrap_or(true) {
-            CommandExecutionMode::Trusted
-        } else {
-            CommandExecutionMode::Sandboxed
+        let options = resolve_native_options(options)?;
+        let command_execution = match options.isolation {
+            NativeIsolation::None => CommandExecutionMode::Trusted,
+            NativeIsolation::Deltabox | NativeIsolation::Bubblewrap => {
+                CommandExecutionMode::Sandboxed
+            }
         };
         let coordinator = SessionCoordinator::new_with_options(
             Path::new(&project_root),
             CoordinatorOptions {
                 helper_bin: Some(PathBuf::from(helper_binary)),
                 command_execution,
-                state_dir: state_dir.map(PathBuf::from),
-                runtime_dir: runtime_dir.map(PathBuf::from),
+                state_dir: options.state_dir,
+                runtime_dir: options.runtime_dir,
                 embedded_fast: true,
             },
         )
         .map_err(native_error)?;
         Ok(Self {
             coordinator: Arc::new(coordinator),
+            fs_mode: options.fs_mode,
         })
     }
 
@@ -149,13 +173,14 @@ impl NativeDeltabox {
         group_commit_ms: Option<f64>,
     ) -> napi::Result<NativeSessionInfo> {
         let coordinator = Arc::clone(&self.coordinator);
+        let fs_mode = self.fs_mode;
         let durability = parse_durability(durability.as_deref())?;
         let group_commit_ms = parse_nonnegative_integer("groupCommitMs", group_commit_ms)?;
         run_blocking(move || {
             coordinator
                 .start_with_durability(
                     policy.as_deref().map(Path::new),
-                    Some(FilesystemMode::CbcowThrough),
+                    Some(fs_mode),
                     true,
                     durability,
                     group_commit_ms,
@@ -321,6 +346,67 @@ fn parse_durability(value: Option<&str>) -> napi::Result<DurabilityMode> {
     }
 }
 
+fn resolve_native_options(
+    options: Option<NativeDeltaboxOptions>,
+) -> napi::Result<ResolvedNativeOptions> {
+    let options = options.unwrap_or(NativeDeltaboxOptions {
+        state_dir: None,
+        runtime_dir: None,
+        fs_mode: None,
+        isolation: None,
+    });
+    let fs_mode = match options.fs_mode.as_deref().unwrap_or("cbcow-through") {
+        "cbcow-through" => FilesystemMode::CbcowThrough,
+        "git" => FilesystemMode::Git,
+        value => {
+            return Err(napi::Error::from_reason(format!(
+                "unsupported native fsMode {value:?}"
+            )))
+        }
+    };
+    let default_isolation = match fs_mode {
+        FilesystemMode::Git => "bubblewrap",
+        _ => "deltabox",
+    };
+    let isolation = match options.isolation.as_deref().unwrap_or(default_isolation) {
+        "deltabox" => NativeIsolation::Deltabox,
+        "bubblewrap" => NativeIsolation::Bubblewrap,
+        "none" => NativeIsolation::None,
+        value => {
+            return Err(napi::Error::from_reason(format!(
+                "unsupported native isolation {value:?}"
+            )))
+        }
+    };
+    let supported = matches!(
+        (fs_mode, isolation),
+        (FilesystemMode::CbcowThrough, NativeIsolation::Deltabox)
+            | (FilesystemMode::CbcowThrough, NativeIsolation::None)
+            | (FilesystemMode::Git, NativeIsolation::Bubblewrap)
+    );
+    if !supported {
+        return Err(napi::Error::from_reason(format!(
+            "unsupported native mode combination fsMode={:?}, isolation={:?}",
+            filesystem_mode(fs_mode),
+            isolation_name(isolation),
+        )));
+    }
+    Ok(ResolvedNativeOptions {
+        state_dir: options.state_dir.map(PathBuf::from),
+        runtime_dir: options.runtime_dir.map(PathBuf::from),
+        fs_mode,
+        isolation,
+    })
+}
+
+fn isolation_name(value: NativeIsolation) -> &'static str {
+    match value {
+        NativeIsolation::Deltabox => "deltabox",
+        NativeIsolation::Bubblewrap => "bubblewrap",
+        NativeIsolation::None => "none",
+    }
+}
+
 fn parse_review_kind(value: &str) -> napi::Result<ReviewKind> {
     match value {
         "task" => Ok(ReviewKind::Task),
@@ -351,6 +437,7 @@ fn filesystem_mode(value: FilesystemMode) -> String {
         FilesystemMode::CbcowThrough => "cbcow-through",
         FilesystemMode::CbcowPrivate => "cbcow-private",
         FilesystemMode::CopyPrivate => "copy-private",
+        FilesystemMode::Git => "git",
     }
     .into()
 }
@@ -442,5 +529,53 @@ fn abort_result(value: AbortResult) -> NativeAbortResult {
     NativeAbortResult {
         checkpoint_id: value.checkpoint_id,
         restored: value.restored as f64,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options(fs_mode: Option<&str>, isolation: Option<&str>) -> NativeDeltaboxOptions {
+        NativeDeltaboxOptions {
+            state_dir: Some("/state".into()),
+            runtime_dir: Some("/runtime".into()),
+            fs_mode: fs_mode.map(str::to_string),
+            isolation: isolation.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn native_options_default_to_cbcow_with_deltabox_isolation() {
+        let resolved = resolve_native_options(None).unwrap();
+        assert_eq!(resolved.fs_mode, FilesystemMode::CbcowThrough);
+        assert_eq!(resolved.isolation, NativeIsolation::Deltabox);
+    }
+
+    #[test]
+    fn native_options_accept_the_supported_matrix() {
+        for (fs_mode, isolation) in [
+            ("cbcow-through", "deltabox"),
+            ("cbcow-through", "none"),
+            ("git", "bubblewrap"),
+        ] {
+            resolve_native_options(Some(options(Some(fs_mode), Some(isolation)))).unwrap();
+        }
+        let git_default = resolve_native_options(Some(options(Some("git"), None))).unwrap();
+        assert_eq!(git_default.isolation, NativeIsolation::Bubblewrap);
+    }
+
+    #[test]
+    fn native_options_reject_crossed_provider_pairs() {
+        for (fs_mode, isolation) in [
+            ("cbcow-through", "bubblewrap"),
+            ("git", "deltabox"),
+            ("git", "none"),
+        ] {
+            let error = resolve_native_options(Some(options(Some(fs_mode), Some(isolation))))
+                .err()
+                .expect("combination must be rejected");
+            assert!(error.reason.contains("unsupported native mode combination"));
+        }
     }
 }

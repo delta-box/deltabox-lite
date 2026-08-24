@@ -214,6 +214,7 @@ pub enum FilesystemMode {
     CbcowPrivate,
     #[default]
     CopyPrivate,
+    Git,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

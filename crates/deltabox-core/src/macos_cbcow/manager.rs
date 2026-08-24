@@ -125,6 +125,7 @@ impl Manager {
             FilesystemMode::CopyPrivate => {
                 return Err(Error::Backend("invalid macOS CB-CoW mode".into()))
             }
+            FilesystemMode::Git => return Err(Error::Backend("invalid macOS CB-CoW mode".into())),
         };
         let _project_lock = Lock::acquire(&self.root.join("cbcow.lock"))?;
         self.require_available_project()?;

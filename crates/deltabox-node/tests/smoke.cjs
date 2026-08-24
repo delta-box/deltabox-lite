@@ -14,7 +14,12 @@ async function main() {
   const runtime = await realpath(await mkdtemp(join(tmpdir(), 'deltabox-node-runtime-')))
   const file = join(project, 'native-buffer.txt')
   process.env.DELTABOX_NATIVE_SHARED_ENV = 'shared-from-node'
-  const native = new NativeDeltabox(project, helperBinary, true, state, runtime)
+  const native = new NativeDeltabox(project, helperBinary, {
+    stateDir: state,
+    runtimeDir: runtime,
+    fsMode: 'cbcow-through',
+    isolation: 'none',
+  })
   let session
   try {
     session = await native.startSession(undefined, 'fast')
