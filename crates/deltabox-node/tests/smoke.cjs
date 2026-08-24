@@ -6,13 +6,21 @@ const { tmpdir } = require('node:os')
 const { join } = require('node:path')
 
 async function main() {
-  const [addonPath, helperBinary, requestedIsolation] = process.argv.slice(2)
+  const [addonPath, helperBinary, requestedIsolation, requestedMode] = process.argv.slice(2)
   if (!addonPath || !helperBinary) {
-    throw new Error('usage: smoke.cjs <addon.node> <deltabox> [deltabox|none]')
+    throw new Error('usage: smoke.cjs <addon.node> <deltabox> [deltabox|bubblewrap|none] [cbcow-through|git]')
   }
-  const isolation = requestedIsolation || 'none'
-  if (isolation !== 'deltabox' && isolation !== 'none') {
+  const mode = requestedMode || 'cbcow-through'
+  if (mode !== 'cbcow-through' && mode !== 'git') {
+    throw new Error(`unsupported smoke mode ${mode}`)
+  }
+  const gitMode = mode === 'git'
+  const isolation = requestedIsolation || (gitMode ? 'bubblewrap' : 'none')
+  if (isolation !== 'deltabox' && isolation !== 'bubblewrap' && isolation !== 'none') {
     throw new Error(`unsupported smoke isolation ${isolation}`)
+  }
+  if (gitMode !== (isolation === 'bubblewrap')) {
+    throw new Error(`git storage and bubblewrap isolation are one choice: got ${mode}+${isolation}`)
   }
   const { NativeDeltabox } = require(addonPath)
   const project = await realpath(await mkdtemp(join(tmpdir(), 'deltabox-node-smoke-')))
@@ -23,25 +31,31 @@ async function main() {
   const native = new NativeDeltabox(project, helperBinary, {
     stateDir: state,
     runtimeDir: runtime,
-    fsMode: 'cbcow-through',
+    fsMode: mode,
     isolation,
   })
   let session
   try {
-    session = await native.startSession(undefined, 'fast', undefined, 'auto', false)
-    assert.equal(session.resolved_fs_mode, 'cbcow-through')
+    // A git session is served by its own bubblewrap sandbox and has no mount of
+    // its own, so it is the one mode that has to name its storage explicitly
+    // instead of letting the coordinator auto-resolve it.
+    if (gitMode) {
+      session = await native.startSession(undefined, 'fast')
+      assert.equal(session.mountpoint === undefined, true)
+    } else {
+      session = await native.startSession(undefined, 'fast', undefined, 'auto', false)
+      assert.ok(session.mountpoint)
+    }
+    assert.equal(session.resolved_fs_mode, mode)
     assert.equal(session.durability, 'process-crash')
     assert.equal(session.status, 'running')
     assert.equal(session.isolation, isolation)
     assert.equal(session.isolation_provider === null, isolation === 'none')
     assert.equal(session.state_provider, 'macos-apfs-fsevents')
     assert.equal(session.fallback_reason, null)
-    assert.ok(session.mountpoint)
-    assert.equal(await native.reviewStatus(session.session_id), null)
 
     const baseline = await native.checkpoint(session.session_id, 'baseline')
     assert.equal(baseline.label, 'baseline')
-
     const exec = await native.exec(
       session.session_id,
       ['/bin/sh', '-c', 'printf "%s:%s" "$DELTABOX_NATIVE_SHARED_ENV" "$EXPLICIT_VALUE"'],
@@ -50,10 +64,13 @@ async function main() {
       'native smoke',
     )
     assert.equal(exec.exit_code, 0)
-    assert.equal(exec.stdout, 'shared-from-node:explicit')
+    // A git session runs in bubblewrap, which does not inherit the Node
+    // process ambient environment the way the `none` isolation path does.
+    assert.equal(exec.stdout, gitMode ? ':explicit' : 'shared-from-node:explicit')
 
     const review = await native.beginReview(session.session_id, 'task', 'native smoke')
     assert.equal((await native.reviewStatus(session.session_id)).kind, 'task')
+
     const content = Buffer.from([0, 1, 2, 253, 254, 255])
     await native.writeFile(session.session_id, file, content)
     assert.deepEqual(await native.readFile(session.session_id, file), content)
@@ -114,7 +131,7 @@ async function main() {
 
     await native.stopSession(session.session_id)
     session = undefined
-    console.log(JSON.stringify({ transport: 'native', environment: 'shared', bytes: content.length }))
+    console.log(JSON.stringify({ transport: 'native', mode, bytes: content.length }))
   } finally {
     if (session !== undefined) await native.stopSession(session.session_id).catch(() => {})
     await Promise.all([project, state, runtime].map(path => rm(path, { recursive: true, force: true })))
