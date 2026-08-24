@@ -1,9 +1,9 @@
-//! Zero-FUSE git-backed sessions: bubblewrap isolation plus git ghost storage.
+//! Zero-FUSE git-backed sessions with native-selected command isolation.
 //!
-//! The agent runs directly against the real project tree inside a `bwrap`
+//! The agent runs directly against the real project tree inside the selected
 //! sandbox; every snapshot is a ghost commit in a private bare side repo that
-//! lives outside the project, so nothing session-owned is ever bind-mounted
-//! into the sandbox and no `/dev/fuse` or filesystem helper is involved.
+//! lives outside the project, so nothing session-owned is exposed to commands
+//! and no `/dev/fuse` or filesystem helper is involved.
 
 use crate::error::{Error, Result};
 use crate::file_lock::FileLock;
@@ -13,7 +13,7 @@ use crate::protocol::{
     CommitResult, DiffParams, DiffResult, ExecParams, ExecResult, FilesystemInfo, FilesystemMode,
     FsReadResult, ReviewBeginParams, SessionInfo, SessionStatus,
 };
-use crate::providers::isolation::BubblewrapIsolation;
+use crate::providers::isolation::{BubblewrapIsolation, DockerIsolation, DOCKER_IMAGE};
 use crate::providers::storage::{GitGhostStorage, GHOST_DIFF_BASIS_MAX_BYTES, GHOST_REF_PREFIX};
 use crate::providers::{canonicalize_allow_missing, IsolationProvider, StorageProvider};
 use crate::session::now_ms;
@@ -48,23 +48,31 @@ pub struct GitSessionMeta {
     pub status: SessionStatus,
 }
 
-/// Combines bubblewrap isolation with git ghost storage for one project.
+/// Combines command isolation with git ghost storage for one project.
 pub struct GitSessionManager {
     project: PathBuf,
-    isolation: BubblewrapIsolation,
     state_root: PathBuf,
     runtime_root: PathBuf,
+    allow_docker: bool,
 }
 
 impl GitSessionManager {
     pub fn new(project: &Path, state_root: PathBuf, runtime_root: PathBuf) -> Result<Self> {
+        Self::new_with_native_docker(project, state_root, runtime_root, false)
+    }
+
+    pub(crate) fn new_with_native_docker(
+        project: &Path,
+        state_root: PathBuf,
+        runtime_root: PathBuf,
+        allow_docker: bool,
+    ) -> Result<Self> {
         let project = project.canonicalize()?;
-        let isolation = BubblewrapIsolation::new(project.clone());
         Ok(Self {
             project,
-            isolation,
             state_root,
             runtime_root,
+            allow_docker,
         })
     }
 
@@ -90,15 +98,28 @@ impl GitSessionManager {
             ));
         }
         let isolation = match isolation {
-            None | Some("bubblewrap") => Ok("bubblewrap"),
-            Some(other) => Err(Error::Unsupported(format!(
-                "isolation provider {other:?} is not supported; git mode accepts only bubblewrap"
-            ))),
-        }?;
-        if !self.isolation.available() {
-            return Err(Error::Unsupported(
-                "bubblewrap is unavailable (missing binary or user namespaces denied); install bubblewrap and retry".into(),
-            ));
+            None | Some("bubblewrap") => "bubblewrap",
+            Some("docker") if self.allow_docker => "docker",
+            Some("docker") => {
+                return Err(Error::Unsupported(
+                    "docker isolation is available only through native embedding".into(),
+                ))
+            }
+            Some(other) => {
+                return Err(Error::Unsupported(format!(
+                    "isolation provider {other:?} is not supported; git mode accepts bubblewrap or native docker"
+                )))
+            }
+        };
+        if !self.isolation_provider(isolation)?.available() {
+            let reason = match isolation {
+                "bubblewrap" => "bubblewrap is unavailable (missing binary or user namespaces denied); install bubblewrap and retry".to_string(),
+                "docker" => format!(
+                    "docker is unavailable or image {DOCKER_IMAGE:?} is missing; prepare the image and grant Docker daemon access"
+                ),
+                _ => unreachable!("validated isolation"),
+            };
+            return Err(Error::Unsupported(reason));
         }
         let policy_path = policy
             .map(|path| {
@@ -168,7 +189,7 @@ impl GitSessionManager {
     }
 
     pub fn exec(&self, params: ExecParams) -> Result<ExecResult> {
-        let _locked = self.lock_running(&params.session_id)?;
+        let (_lock, meta) = self.lock_running(&params.session_id)?;
         if params.execution_profile == crate::protocol::ExecutionProfile::ReadWrite {
             return Err(Error::Unsupported(
                 "read-write execution requires a CB-CoW session; Git isolation cannot widen \
@@ -176,7 +197,9 @@ impl GitSessionManager {
                     .into(),
             ));
         }
-        self.isolation.exec(params.argv, params.cwd, params.env)
+        let isolation = meta.isolation.as_deref().unwrap_or("bubblewrap");
+        self.isolation_provider(isolation)?
+            .exec(params.argv, params.cwd, params.env)
     }
 
     pub fn read_file(&self, session_id: &str, path: &Path) -> Result<FsReadResult> {
@@ -413,6 +436,21 @@ impl GitSessionManager {
         })
     }
 
+    fn isolation_provider(&self, isolation: &str) -> Result<Box<dyn IsolationProvider>> {
+        match isolation {
+            "bubblewrap" => Ok(Box::new(BubblewrapIsolation::new(self.project.clone()))),
+            "docker" if self.allow_docker => {
+                Ok(Box::new(DockerIsolation::new(self.project.clone())))
+            }
+            "docker" => Err(Error::Unsupported(
+                "docker isolation is available only through native embedding".into(),
+            )),
+            other => Err(Error::Unsupported(format!(
+                "unknown persisted isolation provider {other:?}"
+            ))),
+        }
+    }
+
     fn policy(&self, meta: &GitSessionMeta) -> Result<Policy> {
         match &meta.policy_path {
             Some(path) => Policy::load(path),
@@ -517,17 +555,18 @@ impl GitSessionManager {
 }
 
 fn git_filesystem_info(meta: &GitSessionMeta) -> FilesystemInfo {
+    let isolation = meta
+        .isolation
+        .clone()
+        .unwrap_or_else(|| "bubblewrap".to_string());
     FilesystemInfo {
         requested_fs_mode: FilesystemMode::Git,
         resolved_fs_mode: FilesystemMode::Git,
         host_visibility: "immediate".into(),
         durability: "process-crash".into(),
         group_commit_ms: None,
-        isolation: meta
-            .isolation
-            .clone()
-            .unwrap_or_else(|| "bubblewrap".to_string()),
-        isolation_provider: Some("bubblewrap".into()),
+        isolation_provider: Some(isolation.clone()),
+        isolation,
         state_provider: Some("git-ghost".into()),
         fallback_reason: None,
         rollback_guarantee: "git-tracked-files".into(),
@@ -675,5 +714,21 @@ mod tests {
             })
             .unwrap();
         assert_eq!(ref_seq(&next.checkpoint_id).unwrap(), checkpoint_seq + 1);
+    }
+
+    #[test]
+    fn docker_isolation_requires_native_enablement() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let manager = GitSessionManager::new_with_native_docker(
+            &project,
+            root.path().join("state"),
+            root.path().join("runtime"),
+            false,
+        )
+        .unwrap();
+        let error = manager.start(None, Some("docker"), None).unwrap_err();
+        assert!(error.to_string().contains("only through native embedding"));
     }
 }

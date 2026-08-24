@@ -164,6 +164,7 @@ pub struct NativeDeltaboxOptions {
 enum NativeIsolation {
     Deltabox,
     Bubblewrap,
+    Docker,
     None,
 }
 
@@ -172,6 +173,7 @@ impl NativeIsolation {
         match self {
             Self::Deltabox => "deltabox",
             Self::Bubblewrap => "bubblewrap",
+            Self::Docker => "docker",
             Self::None => "none",
         }
     }
@@ -202,11 +204,11 @@ impl NativeDeltabox {
         let options = resolve_native_options(options)?;
         let command_execution = match options.isolation {
             NativeIsolation::None => CommandExecutionMode::Trusted,
-            NativeIsolation::Deltabox | NativeIsolation::Bubblewrap => {
+            NativeIsolation::Deltabox | NativeIsolation::Bubblewrap | NativeIsolation::Docker => {
                 CommandExecutionMode::Sandboxed
             }
         };
-        let coordinator = SessionCoordinator::new_with_options(
+        let coordinator = SessionCoordinator::new_with_options_and_native_docker(
             Path::new(&project_root),
             CoordinatorOptions {
                 helper_bin: Some(PathBuf::from(helper_binary)),
@@ -215,6 +217,7 @@ impl NativeDeltabox {
                 runtime_dir: options.runtime_dir,
                 embedded_fast: true,
             },
+            options.isolation == NativeIsolation::Docker,
         )
         .map_err(native_error)?;
         Ok(Self {
@@ -235,6 +238,7 @@ impl NativeDeltabox {
     ) -> napi::Result<NativeSessionInfo> {
         let coordinator = Arc::clone(&self.coordinator);
         let fs_mode = self.fs_mode;
+        let isolation = self.isolation;
         let durability = parse_durability(durability.as_deref())?;
         let group_commit_ms = parse_nonnegative_integer("groupCommitMs", group_commit_ms)?;
         let (filesystem_mode, require_filesystem_mode) = parse_filesystem_request(
@@ -242,15 +246,15 @@ impl NativeDeltabox {
             require_filesystem_mode,
             self.fs_mode,
         )?;
-        let isolation = self.isolation;
         run_blocking(move || {
             coordinator
-                .start_with_durability(
+                .start_with_durability_and_isolation(
                     policy.as_deref().map(Path::new),
                     filesystem_mode,
                     require_filesystem_mode,
                     durability,
                     group_commit_ms,
+                    (fs_mode == FilesystemMode::Git).then(|| isolation.name()),
                 )
                 .map(|value| session_info(value, isolation))
                 .map_err(native_error)
@@ -607,6 +611,7 @@ fn resolve_native_options(
     let isolation = match options.isolation.as_deref().unwrap_or(default_isolation) {
         "deltabox" => NativeIsolation::Deltabox,
         "bubblewrap" => NativeIsolation::Bubblewrap,
+        "docker" => NativeIsolation::Docker,
         "none" => NativeIsolation::None,
         value => {
             return Err(napi::Error::from_reason(format!(
@@ -614,10 +619,15 @@ fn resolve_native_options(
             )))
         }
     };
-    // Bubblewrap is the provider a git session needs and no other storage mode
-    // has one, so the two choices are locked together: asking for one without
-    // the other fails here rather than at the first command.
-    if matches!(fs_mode, FilesystemMode::Git) != matches!(isolation, NativeIsolation::Bubblewrap) {
+    // A git session runs in an external sandbox (bubblewrap or docker) and no
+    // other storage mode has one, so the two choices are locked together:
+    // asking for one without the other fails here rather than at the first
+    // command.
+    let external_isolation = matches!(
+        isolation,
+        NativeIsolation::Bubblewrap | NativeIsolation::Docker
+    );
+    if matches!(fs_mode, FilesystemMode::Git) != external_isolation {
         return Err(napi::Error::from_reason(format!(
             "unsupported native mode combination fsMode={:?}, isolation={:?}",
             filesystem_mode(fs_mode),
@@ -689,7 +699,7 @@ fn session_info(value: SessionInfo, isolation: NativeIsolation) -> NativeSession
         group_commit_ms: filesystem.group_commit_ms.map(|value| value as f64),
         isolation: isolation.name().into(),
         isolation_provider: match isolation {
-            NativeIsolation::Deltabox | NativeIsolation::Bubblewrap => {
+            NativeIsolation::Deltabox | NativeIsolation::Bubblewrap | NativeIsolation::Docker => {
                 nullable(filesystem.isolation_provider)
             }
             NativeIsolation::None => Either::B(Null),
@@ -822,13 +832,18 @@ mod tests {
     }
 
     #[test]
-    fn native_options_accept_the_private_modes_and_the_ambient_sandbox() {
+    fn native_options_accept_the_private_modes_and_the_external_sandboxes() {
         for fs_mode in ["cbcow-through", "cbcow-private", "copy-private"] {
             let resolved = resolve_native_options(Some(options(Some(fs_mode), Some("none"))))
                 .unwrap();
             assert_eq!(resolved.isolation, NativeIsolation::None);
             assert_eq!(resolved.state_dir, Some(PathBuf::from("/state")));
             assert_eq!(resolved.runtime_dir, Some(PathBuf::from("/runtime")));
+        }
+        for isolation in ["bubblewrap", "docker"] {
+            let resolved =
+                resolve_native_options(Some(options(Some("git"), Some(isolation)))).unwrap();
+            assert_eq!(resolved.fs_mode, FilesystemMode::Git);
         }
     }
 
@@ -843,6 +858,7 @@ mod tests {
     fn native_options_reject_crossed_provider_pairs() {
         for (fs_mode, isolation) in [
             ("cbcow-through", "bubblewrap"),
+            ("cbcow-through", "docker"),
             ("cbcow-private", "bubblewrap"),
             ("copy-private", "bubblewrap"),
             ("git", "deltabox"),

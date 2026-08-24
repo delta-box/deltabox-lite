@@ -1,6 +1,4 @@
-//! Bubblewrap isolation: every `exec` runs as a fresh `bwrap` child with the
-//! project tree bound at `/workspace`. No FUSE, no helper process, no
-//! `/dev/fuse`; the only child processes are `bwrap` and its target command.
+//! Linux command isolation for zero-FUSE git-backed sessions.
 
 use crate::error::{Error, Result};
 use crate::protocol::ExecResult;
@@ -8,6 +6,10 @@ use crate::providers::{canonicalize_allow_missing, IsolationProvider};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
+use uuid::Uuid;
+
+/// Fixed image used by the native-only Docker isolation profile.
+pub const DOCKER_IMAGE: &str = "ubuntu:22.04";
 
 /// One command may run for at most this long.
 const EXEC_TIMEOUT: Duration = Duration::from_secs(600);
@@ -91,6 +93,103 @@ impl IsolationProvider for BubblewrapIsolation {
     }
 }
 
+/// Confines commands in a fresh Docker container against the real project.
+pub struct DockerIsolation {
+    project: PathBuf,
+}
+
+impl DockerIsolation {
+    pub fn new(project: PathBuf) -> Self {
+        Self { project }
+    }
+
+    fn command(
+        &self,
+        container_name: &str,
+        argv: &[String],
+        cwd: Option<PathBuf>,
+        env: Option<Vec<(String, String)>>,
+    ) -> Result<Command> {
+        if argv.is_empty() {
+            return Err(Error::InvalidPolicy("empty argv".into()));
+        }
+        let project = self.project.to_string_lossy();
+        if project.contains(',') {
+            return Err(Error::InvalidPolicy(
+                "Docker project path must not contain a comma".into(),
+            ));
+        }
+        let sandbox_cwd = map_sandbox_cwd(&self.project, cwd)?;
+        let user = format!("{}:{}", unsafe { libc::geteuid() }, unsafe {
+            libc::getegid()
+        });
+        let mount = format!("type=bind,src={project},dst=/workspace");
+        let mut cmd = Command::new("docker");
+        cmd.args([
+            "run",
+            "--rm",
+            "--init",
+            "--name",
+            container_name,
+            "--network",
+            "none",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--user",
+            &user,
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,exec,mode=1777",
+            "--mount",
+            &mount,
+            "--workdir",
+            &sandbox_cwd,
+        ]);
+        for key in ENV_ALLOWLIST {
+            if let Some(value) = std::env::var_os(key) {
+                cmd.arg("--env")
+                    .arg(format!("{key}={}", value.to_string_lossy()));
+            }
+        }
+        cmd.args(["--env", "HOME=/tmp", "--env", "TMPDIR=/tmp"]);
+        for (key, value) in env.unwrap_or_default() {
+            cmd.arg("--env").arg(format!("{key}={value}"));
+        }
+        cmd.arg(DOCKER_IMAGE);
+        cmd.args(argv);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        Ok(cmd)
+    }
+}
+
+impl IsolationProvider for DockerIsolation {
+    fn available(&self) -> bool {
+        Command::new("docker")
+            .args(["image", "inspect", DOCKER_IMAGE])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    fn exec(
+        &self,
+        argv: Vec<String>,
+        cwd: Option<PathBuf>,
+        env: Option<Vec<(String, String)>>,
+    ) -> Result<ExecResult> {
+        let container_name = format!("deltabox-{}", Uuid::new_v4());
+        let command = self.command(&container_name, &argv, cwd, env)?;
+        run_docker(command, &container_name)
+    }
+}
+
 /// Map a host project path to its `/workspace` sandbox path.
 fn map_sandbox_cwd(project: &Path, cwd: Option<PathBuf>) -> Result<String> {
     let relative = match cwd {
@@ -154,6 +253,55 @@ fn run_bwrap(mut cmd: Command) -> Result<ExecResult> {
             let _ = worker.join();
             Err(Error::Backend(format!(
                 "bwrap exec timed out after {}s",
+                EXEC_TIMEOUT.as_secs()
+            )))
+        }
+    }
+}
+
+fn run_docker(mut cmd: Command, container_name: &str) -> Result<ExecResult> {
+    let start = crate::session::now_ms();
+    let mut child = cmd
+        .spawn()
+        .map_err(|error| Error::Backend(format!("docker exec spawn failed: {error}")))?;
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel::<ExecResult>();
+    let worker = std::thread::spawn(move || {
+        let stdout = child.stdout.take().expect("stdout piped");
+        let stderr = child.stderr.take().expect("stderr piped");
+        let err_thread = std::thread::spawn(move || crate::worker::read_capped(stderr));
+        let (out_text, out_trunc) = crate::worker::read_capped(stdout);
+        let (err_text, err_trunc) = err_thread.join().unwrap_or_default();
+        let duration_ms = crate::session::now_ms() - start;
+        let exit_code = child.wait().ok().and_then(|status| status.code());
+        let _ = tx.send(ExecResult {
+            exit_code,
+            stdout: out_text,
+            stderr: err_text,
+            duration_ms,
+            truncated: out_trunc || err_trunc,
+        });
+    });
+    match rx.recv_timeout(EXEC_TIMEOUT) {
+        Ok(result) => {
+            let _ = worker.join();
+            Ok(result)
+        }
+        Err(_) => {
+            let _ = Command::new("docker")
+                .args(["rm", "--force", container_name])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            if rx.recv_timeout(Duration::from_secs(5)).is_err() {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGKILL);
+                }
+            }
+            let _ = worker.join();
+            Err(Error::Backend(format!(
+                "docker exec timed out after {}s",
                 EXEC_TIMEOUT.as_secs()
             )))
         }
@@ -241,5 +389,43 @@ mod tests {
             .exec(vec!["pwd".into()], Some(outside.path().to_path_buf()), None)
             .unwrap_err();
         assert!(error.to_string().contains("cwd outside project"));
+    }
+
+    #[test]
+    fn docker_command_has_fixed_image_and_confinement() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir(project.path().join("sub")).unwrap();
+        let isolation = DockerIsolation::new(project.path().to_path_buf());
+        let command = isolation
+            .command(
+                "deltabox-test",
+                &["sh".into(), "-c".into(), "pwd".into()],
+                Some(project.path().join("sub")),
+                Some(vec![("EXPLICIT_VALUE".into(), "yes".into())]),
+            )
+            .unwrap();
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(command.get_program(), "docker");
+        assert!(args.windows(2).any(|pair| pair == ["--network", "none"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--workdir", "/workspace/sub"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--env", "EXPLICIT_VALUE=yes"]));
+        assert_eq!(args[args.len() - 4], DOCKER_IMAGE);
+        assert_eq!(&args[args.len() - 3..], ["sh", "-c", "pwd"]);
+    }
+
+    #[test]
+    fn docker_command_rejects_project_path_with_mount_delimiter() {
+        let isolation = DockerIsolation::new("/tmp/project,unsafe".into());
+        let error = isolation
+            .command("deltabox-test", &["true".into()], None, None)
+            .unwrap_err();
+        assert!(error.to_string().contains("must not contain a comma"));
     }
 }

@@ -16,12 +16,13 @@ export interface NativeDeltaboxOptions {
   runtimeDir?: string
   fsMode?: 'cbcow-through' | 'cbcow-private' | 'copy-private' | 'git'
   /**
-   * `deltabox` keeps the session's own sandbox and deny set. `bubblewrap` is
-   * the sandbox a `git` session runs in, and is the default there. `none` lets
-   * commands share the Node process ambient environment, so a host has to name
-   * it explicitly; the native transport is the only one that can offer it.
+   * `deltabox` keeps the session's own sandbox and deny set. `bubblewrap` and
+   * `docker` are the sandboxes a `git` session can run in (`bubblewrap` is the
+   * default there). `none` lets commands share the Node process ambient
+   * environment, so a host has to name it explicitly; the native transport is
+   * the only one that can offer it.
    */
-  isolation?: 'deltabox' | 'bubblewrap' | 'none'
+  isolation?: 'deltabox' | 'bubblewrap' | 'docker' | 'none'
 }
 
 export interface NativeSessionInfo {
@@ -36,10 +37,10 @@ export interface NativeSessionInfo {
   host_visibility: 'immediate' | 'on-commit'
   durability: string
   group_commit_ms?: number
-  isolation: 'deltabox' | 'bubblewrap' | 'none'
+  isolation: 'deltabox' | 'bubblewrap' | 'docker' | 'none'
   /**
-   * Resolved OS mechanism behind `deltabox`/`bubblewrap` (`sandlock`,
-   * `seatbelt`, or `bubblewrap`), absent under `none`.
+   * Resolved OS mechanism behind `deltabox`/`bubblewrap`/`docker` (`sandlock`,
+   * `seatbelt`, `bubblewrap`, or `docker`), absent under `none`.
    */
   isolation_provider: string | null
   state_provider: string | null

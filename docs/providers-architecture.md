@@ -8,13 +8,14 @@ Sessions are composed from two orthogonal providers:
 
 Today the production providers are DeltaFS FUSE + Sandlock (Linux CB-CoW),
 APFS/FSEvents + Seatbelt (macOS native), the service-free copy-private engine,
-and the zero-FUSE **bubblewrap + GitGhost** engine.
+and the zero-FUSE GitGhost engine with Bubblewrap or native-only Docker
+isolation.
 
 ## GitGhost storage (`--fs-mode git`)
 
 Git-backed ghost sessions run the agent directly against the real project
-tree inside a bubblewrap sandbox and keep every snapshot as a commit in a
-private bare side repository.
+tree inside a Bubblewrap sandbox or ephemeral Docker container and keep every
+snapshot as a commit in a private bare side repository.
 
 ### Data flow
 
@@ -23,6 +24,7 @@ deltabox CLI / serve
   └─ SessionCoordinator
        └─ GitSessionManager (fs_mode=git, routed before any FUSE probing)
             ├─ BubblewrapIsolation  → bwrap --bind <project>:/workspace ...
+            ├─ DockerIsolation      → docker run <project>:/workspace ubuntu:22.04 ...
             └─ GitGhostStorage      → git --git-dir=undo.git --work-tree=<project>
 ```
 
@@ -51,9 +53,9 @@ deltabox CLI / serve
 
 ### Capability boundaries
 
-- **Zero FUSE**: no mount, no filesystem/command helper process, no
-  `/dev/fuse`, no `fusermount`. The only child processes are `bwrap` and
-  `git`. `SessionInfo.mountpoint`/`helper_pid` are absent.
+- **Zero FUSE**: no DeltaFS mount or helper process, `/dev/fuse`, or
+  `fusermount`. Commands use either `bwrap` or the Docker CLI; snapshots use
+  host Git. `SessionInfo.mountpoint`/`helper_pid` are absent.
 - **Ignored files are outside the contract**: files matched by the project's
   `.gitignore` never enter snapshots, so abort leaves them untouched.
 - **Policy scope differs from Deltabox isolation**: `fs.read` and `fs.write`
@@ -65,6 +67,11 @@ deltabox CLI / serve
   `--unshare-net` (deny-all), read-only `/usr /lib /lib64 /bin /etc`,
   fresh `/tmp`, and `--die-with-parent`. Environment is scrubbed to an
   allowlist plus `HOME`/`TMPDIR`; user env overrides are applied last.
+- **Native-only Docker option**: `git+docker` uses the fixed, preinstalled
+  `ubuntu:22.04` image. Each command gets a read-only root, writable project
+  bind at `/workspace`, private `/tmp`, current host UID/GID, no network, no
+  capabilities, and `no-new-privileges`. The CLI and stdio protocol do not
+  enable this option, and Deltabox never pulls the image automatically.
 - **Review scopes use ghost savepoints**: `review.begin` pins the current
   workspace in the side repository, `review.diff` compares against that ref,
   Review abort restores and promotes that savepoint as the session baseline.
@@ -88,8 +95,9 @@ deltabox CLI / serve
 | --- | --- | --- | --- | --- |
 | `deltabox` | Platform worker profile plus explicit request environment | Policy-controlled | Policy-controlled | N-API bytes |
 | `bubblewrap` | Host allowlist plus explicit overrides; fresh `HOME`/`TMPDIR` | Deny-all | Entire project bind mount | N-API bytes with policy checks |
+| `docker` | Image environment plus host allowlist and explicit overrides; fresh `HOME`/`TMPDIR` | Deny-all | Entire project bind mount | N-API bytes with policy checks |
 | `none` | Inherits the embedding Node process environment | Unrestricted | Direct mount | Direct mount plus exact-path recording |
 
 `isolation` is the stable logical profile. `SessionInfo.isolation_provider`
-reports the implementation selected on the host: `sandlock`, `seatbelt`, or
-`bubblewrap`; it is absent for `none`.
+reports the implementation selected on the host: `sandlock`, `seatbelt`,
+`bubblewrap`, or `docker`; it is absent for `none`.

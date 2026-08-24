@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 
 const assert = require('node:assert/strict')
-const { mkdtemp, readFile, realpath, rm } = require('node:fs/promises')
+const { mkdtemp, readFile, realpath, rm, stat } = require('node:fs/promises')
 const { tmpdir } = require('node:os')
 const { join } = require('node:path')
 
 async function main() {
   const [addonPath, helperBinary, requestedIsolation, requestedMode] = process.argv.slice(2)
   if (!addonPath || !helperBinary) {
-    throw new Error('usage: smoke.cjs <addon.node> <deltabox> [deltabox|bubblewrap|none] [cbcow-through|git]')
+    throw new Error('usage: smoke.cjs <addon.node> <deltabox> [deltabox|bubblewrap|docker|none] [cbcow-through|git]')
   }
   const mode = requestedMode || 'cbcow-through'
   if (mode !== 'cbcow-through' && mode !== 'git') {
@@ -16,11 +16,15 @@ async function main() {
   }
   const gitMode = mode === 'git'
   const isolation = requestedIsolation || (gitMode ? 'bubblewrap' : 'none')
-  if (isolation !== 'deltabox' && isolation !== 'bubblewrap' && isolation !== 'none') {
+  if (!['deltabox', 'bubblewrap', 'docker', 'none'].includes(isolation)) {
     throw new Error(`unsupported smoke isolation ${isolation}`)
   }
-  if (gitMode !== (isolation === 'bubblewrap')) {
-    throw new Error(`git storage and bubblewrap isolation are one choice: got ${mode}+${isolation}`)
+  // A git session is served by its own namespace or container sandbox; the
+  // CB-CoW family runs in the session's Deltabox sandbox or the ambient
+  // environment. The two choices are locked together in both directions.
+  const gitIsolation = isolation === 'bubblewrap' || isolation === 'docker'
+  if (gitMode !== gitIsolation) {
+    throw new Error(`git storage needs bubblewrap or docker isolation: got ${mode}+${isolation}`)
   }
   const { NativeDeltabox } = require(addonPath)
   const project = await realpath(await mkdtemp(join(tmpdir(), 'deltabox-node-smoke-')))
@@ -36,9 +40,9 @@ async function main() {
   })
   let session
   try {
-    // A git session is served by its own bubblewrap sandbox and has no mount of
-    // its own, so it is the one mode that has to name its storage explicitly
-    // instead of letting the coordinator auto-resolve it.
+    // A git session is served by its own bubblewrap or container sandbox and
+    // has no mount of its own, so it is the one mode that has to name its
+    // storage explicitly instead of letting the coordinator auto-resolve it.
     if (gitMode) {
       session = await native.startSession(undefined, 'fast')
       assert.equal(session.mountpoint === undefined, true)
@@ -60,17 +64,30 @@ async function main() {
 
     const baseline = await native.checkpoint(session.session_id, 'baseline')
     assert.equal(baseline.label, 'baseline')
+
+    // The container command also proves the workspace is writable at the mount
+    // point and that the image filesystem stays read-only.
+    const command = isolation === 'docker'
+      ? ['/bin/sh', '-c', 'printf "%s:%s" "$DELTABOX_NATIVE_SHARED_ENV" "$EXPLICIT_VALUE"; printf "container\n" > docker-command.txt; touch /etc/deltabox-ro-test 2>/dev/null && exit 9; printf ":%s" "$PWD"']
+      : ['/bin/sh', '-c', 'printf "%s:%s" "$DELTABOX_NATIVE_SHARED_ENV" "$EXPLICIT_VALUE"']
     const exec = await native.exec(
       session.session_id,
-      ['/bin/sh', '-c', 'printf "%s:%s" "$DELTABOX_NATIVE_SHARED_ENV" "$EXPLICIT_VALUE"'],
+      command,
       project,
       [{ key: 'EXPLICIT_VALUE', value: 'explicit' }],
       'native smoke',
     )
     assert.equal(exec.exit_code, 0)
-    // A git session runs in bubblewrap, which does not inherit the Node
-    // process ambient environment the way the `none` isolation path does.
-    assert.equal(exec.stdout, gitMode ? ':explicit' : 'shared-from-node:explicit')
+    // A git session runs in bubblewrap or a container, neither of which
+    // inherits the Node process ambient environment the way `none` does.
+    assert.equal(exec.stdout, isolation === 'docker'
+      ? ':explicit:/workspace'
+      : gitMode ? ':explicit' : 'shared-from-node:explicit')
+    if (isolation === 'docker') {
+      const commandFile = join(project, 'docker-command.txt')
+      assert.equal(await readFile(commandFile, 'utf8'), 'container\n')
+      assert.equal((await stat(commandFile)).uid, process.getuid())
+    }
 
     const review = await native.beginReview(session.session_id, 'task', 'native smoke')
     assert.equal((await native.reviewStatus(session.session_id)).kind, 'task')
@@ -81,7 +98,12 @@ async function main() {
     assert.deepEqual(await readFile(file), content)
     const diff = await native.reviewDiff(session.session_id)
     assert.equal(diff.pending_changes, 1)
-    assert.equal((await native.diff(session.session_id, baseline.id)).pending_changes, 1)
+    // The container command added a file before the review opened, so only the
+    // diff against the pre-exec baseline sees it.
+    assert.equal(
+      (await native.diff(session.session_id, baseline.id)).pending_changes,
+      isolation === 'docker' ? 2 : 1,
+    )
     assert.equal((await native.reviewSkip(session.session_id)).checkpoint_id, review.checkpoint_id)
     await native.reviewAbort(session.session_id)
 
@@ -135,7 +157,7 @@ async function main() {
 
     await native.stopSession(session.session_id)
     session = undefined
-    console.log(JSON.stringify({ transport: 'native', mode, bytes: content.length }))
+    console.log(JSON.stringify({ transport: 'native', mode, isolation, bytes: content.length }))
   } finally {
     if (session !== undefined) await native.stopSession(session.session_id).catch(() => {})
     await Promise.all([project, state, runtime].map(path => rm(path, { recursive: true, force: true })))
