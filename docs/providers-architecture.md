@@ -37,8 +37,10 @@ deltabox CLI / serve
 - Snapshot `N` is a commit pinned at `refs/deltabox/undo/<N>` whose parent is
   the previous ghost commit. The session's baseline is its first snapshot;
   `checkpoint.create` pins explicit savepoints; `commit` and `abort` retire
-  the pending refs and re-baseline from the resulting workspace. Objects stay
-  in the side repo until the session closes.
+  the pending refs and establish the accepted baseline. Abort promotes its
+  restored ghost ref directly instead of rescanning the resulting workspace;
+  commit snapshots the newly accepted workspace. Objects stay in the side repo
+  until the session closes.
 - `diff` maps `git diff-tree --name-status/--numstat` plus blob sizes onto
   the protocol `Change` shape, with per-file `-U3` text patches (8-path
   chunks, 10 MiB per-file budget, `core.quotepath=false`). Binary detection
@@ -65,7 +67,7 @@ deltabox CLI / serve
   allowlist plus `HOME`/`TMPDIR`; user env overrides are applied last.
 - **Review scopes use ghost savepoints**: `review.begin` pins the current
   workspace in the side repository, `review.diff` compares against that ref,
-  and review commit/abort reuses the normal Git re-baseline/restore boundary.
+  Review abort restores and promotes that savepoint as the session baseline.
   The active scope is persisted beside the session record, so independent CLI
   processes and `serve` restarts preserve it. Strict durability remains
   unsupported in git mode.
