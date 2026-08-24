@@ -157,11 +157,13 @@ pub struct NativeDeltaboxOptions {
 }
 
 /// How a command reaches the host. `Deltabox` keeps the session's own sandbox
-/// and deny set; `None` lets the command share the Node process ambient
-/// environment, which is why the caller has to ask for it by name.
+/// and deny set, and `Bubblewrap` is the sandbox a git session runs in; `None`
+/// lets the command share the Node process ambient environment, which is why
+/// the caller has to ask for it by name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeIsolation {
     Deltabox,
+    Bubblewrap,
     None,
 }
 
@@ -169,6 +171,7 @@ impl NativeIsolation {
     fn name(self) -> &'static str {
         match self {
             Self::Deltabox => "deltabox",
+            Self::Bubblewrap => "bubblewrap",
             Self::None => "none",
         }
     }
@@ -198,8 +201,10 @@ impl NativeDeltabox {
     ) -> napi::Result<Self> {
         let options = resolve_native_options(options)?;
         let command_execution = match options.isolation {
-            NativeIsolation::Deltabox => CommandExecutionMode::Sandboxed,
             NativeIsolation::None => CommandExecutionMode::Trusted,
+            NativeIsolation::Deltabox | NativeIsolation::Bubblewrap => {
+                CommandExecutionMode::Sandboxed
+            }
         };
         let coordinator = SessionCoordinator::new_with_options(
             Path::new(&project_root),
@@ -229,6 +234,7 @@ impl NativeDeltabox {
         require_filesystem_mode: Option<bool>,
     ) -> napi::Result<NativeSessionInfo> {
         let coordinator = Arc::clone(&self.coordinator);
+        let fs_mode = self.fs_mode;
         let durability = parse_durability(durability.as_deref())?;
         let group_commit_ms = parse_nonnegative_integer("groupCommitMs", group_commit_ms)?;
         let (filesystem_mode, require_filesystem_mode) = parse_filesystem_request(
@@ -585,14 +591,22 @@ fn resolve_native_options(
         "cbcow-through" => FilesystemMode::CbcowThrough,
         "cbcow-private" => FilesystemMode::CbcowPrivate,
         "copy-private" => FilesystemMode::CopyPrivate,
+        "git" => FilesystemMode::Git,
         value => {
             return Err(napi::Error::from_reason(format!(
                 "unsupported native fsMode {value:?}"
             )))
         }
     };
-    let isolation = match options.isolation.as_deref().unwrap_or("deltabox") {
+    // A git session is served by its own bubblewrap sandbox, so that is the
+    // default there; every other storage mode runs in the Deltabox sandbox.
+    let default_isolation = match fs_mode {
+        FilesystemMode::Git => "bubblewrap",
+        _ => "deltabox",
+    };
+    let isolation = match options.isolation.as_deref().unwrap_or(default_isolation) {
         "deltabox" => NativeIsolation::Deltabox,
+        "bubblewrap" => NativeIsolation::Bubblewrap,
         "none" => NativeIsolation::None,
         value => {
             return Err(napi::Error::from_reason(format!(
@@ -600,6 +614,16 @@ fn resolve_native_options(
             )))
         }
     };
+    // Bubblewrap is the provider a git session needs and no other storage mode
+    // has one, so the two choices are locked together: asking for one without
+    // the other fails here rather than at the first command.
+    if matches!(fs_mode, FilesystemMode::Git) != matches!(isolation, NativeIsolation::Bubblewrap) {
+        return Err(napi::Error::from_reason(format!(
+            "unsupported native mode combination fsMode={:?}, isolation={:?}",
+            filesystem_mode(fs_mode),
+            isolation.name(),
+        )));
+    }
     Ok(ResolvedNativeOptions {
         state_dir: options.state_dir.map(PathBuf::from),
         runtime_dir: options.runtime_dir.map(PathBuf::from),
@@ -638,6 +662,7 @@ fn filesystem_mode(value: FilesystemMode) -> String {
         FilesystemMode::CbcowThrough => "cbcow-through",
         FilesystemMode::CbcowPrivate => "cbcow-private",
         FilesystemMode::CopyPrivate => "copy-private",
+        FilesystemMode::Git => "git",
     }
     .into()
 }
@@ -664,7 +689,9 @@ fn session_info(value: SessionInfo, isolation: NativeIsolation) -> NativeSession
         group_commit_ms: filesystem.group_commit_ms.map(|value| value as f64),
         isolation: isolation.name().into(),
         isolation_provider: match isolation {
-            NativeIsolation::Deltabox => nullable(filesystem.isolation_provider),
+            NativeIsolation::Deltabox | NativeIsolation::Bubblewrap => {
+                nullable(filesystem.isolation_provider)
+            }
             NativeIsolation::None => Either::B(Null),
         },
         state_provider: nullable(filesystem.state_provider),
@@ -806,11 +833,34 @@ mod tests {
     }
 
     #[test]
+    fn native_options_default_git_to_bubblewrap() {
+        let resolved = resolve_native_options(Some(options(Some("git"), None))).unwrap();
+        assert_eq!(resolved.fs_mode, FilesystemMode::Git);
+        assert_eq!(resolved.isolation, NativeIsolation::Bubblewrap);
+    }
+
+    #[test]
+    fn native_options_reject_crossed_provider_pairs() {
+        for (fs_mode, isolation) in [
+            ("cbcow-through", "bubblewrap"),
+            ("cbcow-private", "bubblewrap"),
+            ("copy-private", "bubblewrap"),
+            ("git", "deltabox"),
+            ("git", "none"),
+        ] {
+            let error = resolve_native_options(Some(options(Some(fs_mode), Some(isolation))))
+                .err()
+                .expect("combination must be rejected");
+            assert!(error.reason.contains("unsupported native mode combination"));
+        }
+    }
+
+    #[test]
     fn native_options_reject_modes_this_build_does_not_serve() {
-        for fs_mode in ["git", "auto", "cbcow"] {
+        for fs_mode in ["auto", "cbcow"] {
             assert!(resolve_native_options(Some(options(Some(fs_mode), None))).is_err());
         }
-        for isolation in ["bubblewrap", "docker", "trusted"] {
+        for isolation in ["docker", "trusted"] {
             assert!(resolve_native_options(Some(options(None, Some(isolation)))).is_err());
         }
     }

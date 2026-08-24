@@ -25,6 +25,10 @@ review calls return protocol-shaped typed objects. Every session record names
 its `isolation` profile and the resolved `isolation_provider` (`sandlock` or
 `seatbelt`).
 
+Native options default to `cbcow-through` storage with Deltabox command
+isolation. Supported pairs are `cbcow-through+deltabox`,
+`cbcow-through+none`, and `git+bubblewrap`; invalid pairs fail at construction.
+
 Linux CB-CoW modes require `/dev/fuse` and `fusermount3` or `fusermount` on the
 host. Deltabox otherwise reports the reason and falls back to `copy-private`
 unless the requested mode is required.

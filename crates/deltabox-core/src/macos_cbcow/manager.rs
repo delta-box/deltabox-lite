@@ -126,6 +126,7 @@ impl Manager {
             FilesystemMode::CopyPrivate => {
                 return Err(Error::Backend("invalid macOS CB-CoW mode".into()))
             }
+            FilesystemMode::Git => return Err(Error::Backend("invalid macOS CB-CoW mode".into())),
         };
         // Policy resolution reads only per-request inputs; keeping it outside
         // the admission lock keeps policy IO out of the project-wide window.

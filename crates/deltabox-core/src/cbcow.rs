@@ -213,6 +213,9 @@ impl Manager {
             crate::protocol::FilesystemMode::CopyPrivate => {
                 return Err(Error::Backend("invalid CB-CoW mode".into()))
             }
+            crate::protocol::FilesystemMode::Git => {
+                return Err(Error::Backend("invalid CB-CoW mode".into()))
+            }
         };
         save_json(&store.join(DENY_PATHS), &deny_paths)?;
         let layout = SessionLayout::from_roots(
@@ -1558,6 +1561,7 @@ fn filesystem_info_inner(record: &MountRecord) -> FilesystemInfo {
             record.restarts,
         ),
         crate::protocol::FilesystemMode::CopyPrivate => unreachable!("CB-CoW mount record mode"),
+        crate::protocol::FilesystemMode::Git => unreachable!("CB-CoW mount record mode"),
     };
     info.with_durability(record.durability, record.group_commit_ms)
 }

@@ -14,13 +14,14 @@ export interface NativeEnvironmentEntry {
 export interface NativeDeltaboxOptions {
   stateDir?: string
   runtimeDir?: string
-  fsMode?: 'cbcow-through' | 'cbcow-private' | 'copy-private'
+  fsMode?: 'cbcow-through' | 'cbcow-private' | 'copy-private' | 'git'
   /**
-   * `deltabox` keeps the session's own sandbox and deny set. `none` lets
+   * `deltabox` keeps the session's own sandbox and deny set. `bubblewrap` is
+   * the sandbox a `git` session runs in, and is the default there. `none` lets
    * commands share the Node process ambient environment, so a host has to name
    * it explicitly; the native transport is the only one that can offer it.
    */
-  isolation?: 'deltabox' | 'none'
+  isolation?: 'deltabox' | 'bubblewrap' | 'none'
 }
 
 export interface NativeSessionInfo {
@@ -30,13 +31,13 @@ export interface NativeSessionInfo {
   status: 'running' | 'stopped'
   checkpoint_count: number
   pending_changes: number
-  requested_fs_mode: 'cbcow-through' | 'cbcow-private' | 'copy-private'
-  resolved_fs_mode: 'cbcow-through' | 'cbcow-private' | 'copy-private'
+  requested_fs_mode: 'cbcow-through' | 'cbcow-private' | 'copy-private' | 'git'
+  resolved_fs_mode: 'cbcow-through' | 'cbcow-private' | 'copy-private' | 'git'
   host_visibility: 'immediate' | 'on-commit'
   durability: string
   group_commit_ms?: number
-  isolation: 'deltabox' | 'none'
-  /** Resolved OS mechanism behind `deltabox` isolation, absent under `none`. */
+  isolation: 'deltabox' | 'bubblewrap' | 'none'
+  /** Resolved OS mechanism behind `deltabox`/`bubblewrap`, absent under `none`. */
   isolation_provider: string | null
   state_provider: string | null
   fallback_reason: string | null

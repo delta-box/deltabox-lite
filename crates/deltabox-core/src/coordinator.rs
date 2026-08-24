@@ -143,6 +143,9 @@ impl SessionCoordinator {
                 durability,
                 group_commit_ms,
             ),
+            FilesystemMode::Git => Err(Error::Unsupported(
+                "git native mode is not available in this build".into(),
+            )),
         }?;
         self.routes
             .write()
@@ -479,6 +482,9 @@ impl SessionCoordinator {
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate => Err(Error::Unsupported(
                 "this CB-CoW session requires Linux".into(),
+            )),
+            FilesystemMode::Git => Err(Error::Unsupported(
+                "git native mode is not available in this build".into(),
             )),
         }
     }
