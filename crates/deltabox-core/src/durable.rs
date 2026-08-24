@@ -466,7 +466,14 @@ impl DurableSessionManager {
         self.finish_transaction(&store, &txn)?;
         let mut digests = std::collections::BTreeMap::new();
         let mut published = Vec::new();
-        for change in &published_delta {
+        // Copy-private has no `session.sync`, so it never materializes a
+        // `.deltabox-theirs` merge draft. The shared publish gate is applied
+        // anyway to keep every backend's publog consistent: a draft-suffixed
+        // path is never recorded as a host publication.
+        for change in published_delta
+            .iter()
+            .filter(|change| crate::publog::is_publishable(&change.path))
+        {
             published.push(crate::publog::PublogChange {
                 path: change.path.clone(),
                 kind: change.kind,

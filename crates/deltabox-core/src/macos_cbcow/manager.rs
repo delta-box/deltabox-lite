@@ -422,7 +422,7 @@ impl Manager {
             }
             let host_path = self.project.join(path);
             let theirs = if host_path.is_file() {
-                let theirs_rel = format!("{path}.deltabox-theirs");
+                let theirs_rel = format!("{path}{}", crate::publog::THEIRS_DRAFT_SUFFIX);
                 let target = state.live().join(&theirs_rel);
                 if let Some(parent) = target.parent() {
                     fs::create_dir_all(parent)?;

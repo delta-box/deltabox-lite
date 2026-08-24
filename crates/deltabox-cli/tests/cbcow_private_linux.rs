@@ -304,15 +304,21 @@ fn conflicting_session_recovers_via_sync_and_lands() {
     assert_eq!(sync["conflicts"][0]["path"], "shared.txt");
 
     b.write("shared.txt", "merged");
-    let cleanup = b.exec_shell("rm shared.txt.deltabox-theirs");
-    assert_exec_ok(&cleanup);
 
+    // Commit with the draft still present: the tool, not the agent, keeps the
+    // private `.deltabox-theirs` copy out of the host project.
     let landed = b.commit();
     assert_ok(&landed);
     assert_eq!(
         std::fs::read_to_string(project.join("shared.txt")).unwrap(),
         "merged"
     );
+    assert_eq!(
+        std::fs::read_to_string(project.join("b-only.txt")).unwrap(),
+        "from-b"
+    );
+    // The draft never crosses into the real project.
+    assert!(!project.join("shared.txt.deltabox-theirs").exists());
 }
 
 #[test]

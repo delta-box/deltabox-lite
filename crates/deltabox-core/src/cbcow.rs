@@ -662,12 +662,22 @@ impl Manager {
             }
         }
         let status = self.engine_status(record)?;
+        // `.deltabox-theirs` drafts stay in the private engine view — the agent
+        // merges against them — but must never cross into the host project.
+        // Filtering the publish set here keeps them out of the staged tree, the
+        // host application, and the publog in one move; the engine commit below
+        // still retains them for the session, so abort/undo are unaffected.
+        let publish_changes: Vec<_> = changes
+            .iter()
+            .filter(|change| crate::publog::is_publishable(&change.path))
+            .cloned()
+            .collect();
         let mut publication = Publication::prepare(
             &store,
             &self.project,
             &record.source,
             &accepted,
-            &changes,
+            &publish_changes,
             status.accepted_checkpoint,
             strict,
         )?;
@@ -765,7 +775,7 @@ impl Manager {
             // Materialize "theirs" through the mounted view so the copy is a
             // routed, undo-tracked write like any other session edit.
             let theirs = if host_path.is_file() {
-                let theirs_rel = format!("{path}.deltabox-theirs");
+                let theirs_rel = format!("{path}{}", crate::publog::THEIRS_DRAFT_SUFFIX);
                 let target = record.mountpoint.join(&theirs_rel);
                 if let Some(parent) = target.parent() {
                     fs::create_dir_all(parent)?;

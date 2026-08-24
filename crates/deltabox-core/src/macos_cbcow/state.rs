@@ -506,7 +506,19 @@ impl State {
         if let Some(target) = target {
             self.abort(Some(target))?;
         }
-        let paths = self.manifest.pending_paths.clone();
+        // `.deltabox-theirs` drafts that `sync` materialized stay in the live
+        // view for the agent to merge against, but never cross into the host or
+        // the accepted baseline: dropping them from the publish set here excludes
+        // them from staging, both applies (host and base), and the publog at once.
+        // `pending_paths` itself is cleared below, so they simply stop being
+        // pending — they are not deleted from the working tree.
+        let paths: BTreeSet<String> = self
+            .manifest
+            .pending_paths
+            .iter()
+            .filter(|path| crate::publog::is_publishable(path.as_str()))
+            .cloned()
+            .collect();
         if self.manifest.mode == Mode::Private {
             validate_paths(
                 &self.root.join(BASE_DIR),

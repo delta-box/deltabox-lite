@@ -208,6 +208,28 @@ pub(crate) fn entries_since(project: &Path, after: u64) -> Result<Vec<PublogEntr
     Ok(entries)
 }
 
+/// Reserved suffix for the private "theirs" merge draft that `session.sync`
+/// materializes for a contested path: a copy of the sibling's published
+/// version, dropped into the losing session's private view so the agent can
+/// diff and merge against it. Like the `.deltabox` state directory, it is a
+/// tool-owned artifact, never part of the project.
+pub(crate) const THEIRS_DRAFT_SUFFIX: &str = ".deltabox-theirs";
+
+/// Whether a touched path may be published to the host project. Excludes the
+/// private `.deltabox-theirs` merge drafts: they exist only for the agent to
+/// merge against inside the session, and publishing them would litter the real
+/// project with copies of the sibling's version (patch `.orig` residue, but
+/// worse — it also doubles the publication set on a wide conflict). The draft
+/// stays in the private view; this only gates the crossing into the host.
+/// Mirrors the existing `.deltabox` ignore rule, matched on the final segment
+/// so drafts at any depth are caught.
+pub(crate) fn is_publishable(path: &str) -> bool {
+    !Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(THEIRS_DRAFT_SUFFIX))
+}
+
 /// Files above this size publish without a digest: hashing is ~2ms/MiB at
 /// commit time, and digest endorsement only ever benefits merge-sized files.
 /// An absent digest fails closed — the path simply conflicts as it would

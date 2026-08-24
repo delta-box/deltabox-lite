@@ -310,7 +310,9 @@ fn racing_commits_serialize_under_publish_lock() {
 }
 
 // Stage-3 north star: the losing session recovers with one sync — merges
-// against the materialized theirs copy and lands on the second attempt.
+// against the materialized theirs copy and lands on the second attempt. The
+// private `.deltabox-theirs` draft must never leak into the real project, even
+// when the agent leaves it in place at commit time.
 #[test]
 fn conflicting_session_recovers_via_sync_and_lands() {
     let env = SharedProject::new();
@@ -346,9 +348,9 @@ fn conflicting_session_recovers_via_sync_and_lands() {
     assert_ok(&theirs);
 
     assert_ok(&run(vec!["write", &b, "shared.txt", "--content", "merged: a-version + b-version", "--project", &project]));
-    let cleanup = run(vec!["exec", &b, "--project", &project, "--", "rm", "shared.txt.deltabox-theirs"]);
-    assert_ok(&cleanup);
 
+    // Commit with the draft still present: the tool, not the agent, is
+    // responsible for keeping `.deltabox-theirs` out of the host project.
     assert_ok(&run(vec!["commit", &b, "--project", &project]));
     assert_eq!(
         std::fs::read_to_string(env.project.path().join("shared.txt")).unwrap(),
@@ -358,7 +360,11 @@ fn conflicting_session_recovers_via_sync_and_lands() {
         std::fs::read_to_string(env.project.path().join("b-only.txt")).unwrap(),
         "from-b"
     );
+    // The draft never crosses into the real project...
     assert!(!env.project.path().join("shared.txt.deltabox-theirs").exists());
+    // ...yet stays in the private view: it was gated at the host boundary, not
+    // deleted from the session.
+    assert_ok(&run(vec!["read", &b, "shared.txt.deltabox-theirs", "--project", &project]));
 }
 
 // The multi-agent north star: disjoint private commits both land; an
