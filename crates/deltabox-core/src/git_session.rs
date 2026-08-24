@@ -303,16 +303,18 @@ impl GitSessionManager {
             .checkpoint
             .clone()
             .unwrap_or_else(|| baseline_ref(&meta));
+        let target_seq = ref_seq(&target)?;
         let restored = storage.diff(&target)?.pending_changes;
         storage.restore(&target)?;
-        let refs = storage.list_refs()?;
-        for ghost_ref in refs {
-            storage.drop_ref(&ghost_ref)?;
-        }
-        let fresh = storage.snapshot()?;
-        meta.baseline_seq = ref_seq(&fresh)?;
+        meta.baseline_seq = target_seq;
         meta.pending_seqs.clear();
         self.save_meta(&meta)?;
+        let refs = storage.list_refs()?;
+        for ghost_ref in refs {
+            if ghost_ref != target {
+                storage.drop_ref(&ghost_ref)?;
+            }
+        }
         self.save_review(&params.session_id, None)?;
         Ok(AbortResult {
             checkpoint_id: target,
@@ -554,4 +556,112 @@ fn relative_project_path(project: &Path, path: &Path) -> Result<PathBuf> {
 fn sync_dir(path: &Path) -> Result<()> {
     File::open(path)?.sync_all()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Harness {
+        _root: tempfile::TempDir,
+        project: PathBuf,
+        state: PathBuf,
+        runtime: PathBuf,
+        manager: GitSessionManager,
+        session_id: String,
+    }
+
+    fn setup() -> Harness {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let state = root.path().join("state");
+        let runtime = root.path().join("runtime");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::create_dir_all(&runtime).unwrap();
+        std::fs::write(project.join("tracked.txt"), "baseline\n").unwrap();
+        let manager = GitSessionManager::new(&project, state.clone(), runtime.clone()).unwrap();
+        let session_id = "test-session".to_string();
+        std::fs::create_dir_all(manager.session_dir(&session_id).unwrap()).unwrap();
+        let mut storage = manager.open_storage(&session_id).unwrap();
+        let baseline = storage.snapshot().unwrap();
+        manager
+            .save_meta(&GitSessionMeta {
+                session_id: session_id.clone(),
+                project: project.canonicalize().unwrap(),
+                isolation: Some("bubblewrap".into()),
+                policy_path: None,
+                baseline_seq: ref_seq(&baseline).unwrap(),
+                pending_seqs: Vec::new(),
+                started_at_ms: now_ms(),
+                status: SessionStatus::Running,
+            })
+            .unwrap();
+        Harness {
+            _root: root,
+            project,
+            state,
+            runtime,
+            manager,
+            session_id,
+        }
+    }
+
+    #[test]
+    fn review_abort_promotes_checkpoint_ref_to_reopened_baseline() {
+        let harness = setup();
+        let active = harness
+            .manager
+            .begin_review(ReviewBeginParams {
+                session_id: harness.session_id.clone(),
+                kind: crate::protocol::ReviewKind::Task,
+                label: Some("test".into()),
+            })
+            .unwrap();
+        let checkpoint_seq = ref_seq(&active.checkpoint_id).unwrap();
+        std::fs::write(harness.project.join("tracked.txt"), "changed\n").unwrap();
+        std::fs::write(harness.project.join("created.txt"), "new\n").unwrap();
+
+        let result = harness.manager.review_abort(&harness.session_id).unwrap();
+        assert_eq!(result.checkpoint_id, active.checkpoint_id);
+        assert_eq!(result.restored, 2);
+        assert_eq!(
+            std::fs::read_to_string(harness.project.join("tracked.txt")).unwrap(),
+            "baseline\n"
+        );
+        assert!(!harness.project.join("created.txt").exists());
+
+        let meta = harness.manager.require_meta(&harness.session_id).unwrap();
+        assert_eq!(meta.baseline_seq, checkpoint_seq);
+        assert!(meta.pending_seqs.is_empty());
+        let refs = harness
+            .manager
+            .open_storage(&harness.session_id)
+            .unwrap()
+            .list_refs()
+            .unwrap();
+        assert_eq!(refs, vec![active.checkpoint_id.clone()]);
+
+        let reopened = GitSessionManager::new(
+            &harness.project,
+            harness.state.clone(),
+            harness.runtime.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            reopened
+                .status(&harness.session_id)
+                .unwrap()
+                .pending_changes,
+            0
+        );
+        let next = reopened
+            .begin_review(ReviewBeginParams {
+                session_id: harness.session_id.clone(),
+                kind: crate::protocol::ReviewKind::Task,
+                label: None,
+            })
+            .unwrap();
+        assert_eq!(ref_seq(&next.checkpoint_id).unwrap(), checkpoint_seq + 1);
+    }
 }

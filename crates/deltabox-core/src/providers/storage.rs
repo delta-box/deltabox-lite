@@ -669,7 +669,6 @@ impl StorageProvider for GitGhostStorage {
                     Err(error) => return Err(error.into()),
                 }
             }
-            self.git(&["update-ref", "-d", ghost_ref], None, false)?;
             Ok(())
         })();
         self.remove_temp_index(&index);
@@ -908,7 +907,10 @@ mod tests {
             .collect();
         root.sort();
         assert_eq!(root, vec!["a.txt".to_string(), "sub".to_string()]);
-        assert_eq!(side_git(&harness.side, &["for-each-ref"]).trim(), "");
+        assert_eq!(
+            side_git(&harness.side, &["for-each-ref", "--format=%(refname)"]).trim(),
+            ghost_ref
+        );
     }
 
     #[test]

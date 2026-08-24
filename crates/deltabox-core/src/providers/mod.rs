@@ -58,7 +58,9 @@ pub trait StorageProvider {
     /// Read the changes between two resolved git trees.
     fn diff_trees(&self, from: &str, to: &str) -> Result<DiffResult>;
 
-    /// Rewind the workspace to the ghost snapshot and consume its ref.
+    /// Rewind the workspace to the ghost snapshot while retaining its ref.
+    /// The session manager may promote that ref to its new baseline before it
+    /// drops superseded refs.
     fn restore(&mut self, ghost_ref: &str) -> Result<()>;
 
     /// Drop one ghost ref; snapshot objects stay until `close`.
