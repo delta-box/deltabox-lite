@@ -7,7 +7,7 @@ each response is one JSON object per line.
 ## Request
 
 ```json
-{"id": 1, "method": "session.start", "params": {"project": "/abs/path", "policy": null, "fs_mode": "cbcow-through", "require_fs_mode": false, "durability": "strict", "group_commit_ms": 2}}
+{"id": 1, "method": "session.start", "params": {"project": "/abs/path", "policy": null, "fs_mode": "git", "isolation": "bubblewrap", "require_fs_mode": true, "durability": "fast"}}
 ```
 
 ## Response
@@ -21,7 +21,7 @@ each response is one JSON object per line.
 
 | Method | Params | Result |
 |---|---|---|
-| `session.start` | `{project, policy?, fs_mode?, require_fs_mode?, durability?, group_commit_ms?}` | `SessionInfo` |
+| `session.start` | `{project, policy?, fs_mode?, isolation?, require_fs_mode?, durability?, group_commit_ms?}` | `SessionInfo` |
 | `session.stop` | `{session_id}` | `SessionInfo` |
 | `session.status` | `{session_id}` | `SessionInfo` |
 | `session.exec` | `{session_id, argv, cwd?, env?, label?, execution_profile?}` | `ExecResult` |
@@ -37,7 +37,7 @@ each response is one JSON object per line.
 | `review.abort` | `{session_id}` | `AbortResult` |
 | `review.skip` | `{session_id}` | `ActiveReview` |
 
-`fs_mode` accepts `cbcow-through`, `cbcow-private`, or `copy-private`. On Linux
+`fs_mode` accepts `cbcow-through`, `cbcow-private`, `copy-private`, or `git`. On Linux
 and macOS, omitting it requests `cbcow-through`; a clean CB-CoW startup failure
 may resolve to `copy-private`. Set `require_fs_mode: true` to reject fallback.
 
@@ -48,6 +48,11 @@ return before its own group is synchronized. Group commit is available to the
 Linux FUSE provider; the native macOS provider rejects it. Strict mode requires
 `cbcow-through` or `cbcow-private`; it rejects `copy-private` and does not use
 automatic filesystem fallback.
+
+`git` is Linux-only, requires Bubblewrap and Git, supports fast durability
+only, and never falls back. Its optional `isolation` value must be
+`bubblewrap`. Native embedding additionally supports `cbcow-through+none`;
+that unsandboxed profile is intentionally not restartable through stdio/CLI.
 
 On macOS, fast `session.exec` returns after the confined child exits and may
 defer FSEvents accounting until the next state operation. Status, diff,
@@ -64,14 +69,19 @@ pending_changes, requested_fs_mode, resolved_fs_mode, host_visibility,
 durability, group_commit_ms?, isolation, isolation_provider?, state_provider,
 fallback_reason, rollback_guarantee, tainted, mountpoint?, helper_pid?,
 helper_restarts, mount_namespace, degraded_protections?}`. `isolation` names the
-session's isolation profile and `isolation_provider` the OS mechanism behind it
-(`sandlock` or `seatbelt`), so a consumer can tell which confinement it relies
-on without parsing the platform. On Linux kernels that cannot enforce every
-Landlock protection, `degraded_protections` lists the dropped scopes (for example
+session's isolation profile (`deltabox`, `bubblewrap`, or `none`) and
+`isolation_provider` the OS mechanism behind it (`sandlock`, `seatbelt`, or
+`bubblewrap`), so a consumer can tell which confinement it relies on without
+parsing the platform. On Linux kernels that cannot enforce every Landlock
+protection, `degraded_protections` lists the dropped scopes (for example
 `signal-scope` below ABI v6); consumers must not assume those confinements.
 
 `session.start` over `serve` must name the project `serve` was started in;
 a mismatching `project` is rejected instead of being silently ignored.
+
+`isolation` is one of `deltabox`, `bubblewrap`, or `none`.
+`isolation_provider` reports the host implementation (`sandlock`, `seatbelt`,
+or `bubblewrap`) and is absent for `none`.
 
 For `cbcow-through`, `host_visibility` is `immediate`: commit accepts the
 current host-visible state and abort reverts it. `cbcow-private` and

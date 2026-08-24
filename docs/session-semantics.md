@@ -15,12 +15,17 @@ host visibility, rollback guarantee, helper state, and any fallback reason.
 | `cbcow-through` | Pending changes are visible immediately | Accepts the current state and retires undo history | Replays undo records into the host-visible tree |
 | `cbcow-private` | The host project remains unchanged | Conflict-checks and publishes touched paths from private `LIVE`, then retires undo history | Replays undo records into private `LIVE` |
 | `copy-private` | The host project remains unchanged | Validates and publishes the private working diff | Restores the private working view |
+| `git` | Pending non-ignored changes are visible immediately | Re-baselines the Git ghost index | Restores files tracked by the Git ghost index |
 
 Linux requests `cbcow-through` by default when DeltaFS FUSE is mount-ready.
 macOS requests the native APFS/FSEvents `cbcow-through` provider. If startup
 cannot establish the requested provider, Deltabox reports the reason and falls
 back to `copy-private`; `--require-fs-mode` converts that fallback into an
 error. Select `cbcow-private` when pre-commit host isolation is required.
+
+Git mode runs without FUSE and does not inspect or mutate the project's own
+Git index or branches. Files ignored by the project's `.gitignore` are outside
+its diff and rollback contract and remain untouched by abort.
 
 Independent CLI processes may execute, read, write, diff, commit, checkpoint,
 or abort the same session. `diff` compares the current view with the accepted

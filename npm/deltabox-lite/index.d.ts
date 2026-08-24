@@ -37,7 +37,10 @@ export interface NativeSessionInfo {
   durability: string
   group_commit_ms?: number
   isolation: 'deltabox' | 'bubblewrap' | 'none'
-  /** Resolved OS mechanism behind `deltabox`/`bubblewrap`, absent under `none`. */
+  /**
+   * Resolved OS mechanism behind `deltabox`/`bubblewrap` (`sandlock`,
+   * `seatbelt`, or `bubblewrap`), absent under `none`.
+   */
   isolation_provider: string | null
   state_provider: string | null
   fallback_reason: string | null

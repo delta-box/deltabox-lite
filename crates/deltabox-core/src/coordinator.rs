@@ -136,6 +136,25 @@ impl SessionCoordinator {
         durability: DurabilityMode,
         group_commit_ms: Option<u64>,
     ) -> Result<SessionInfo> {
+        self.start_with_durability_and_isolation(
+            policy,
+            requested,
+            require_requested,
+            durability,
+            group_commit_ms,
+            None,
+        )
+    }
+
+    pub fn start_with_durability_and_isolation(
+        &self,
+        policy: Option<&Path>,
+        requested: Option<FilesystemMode>,
+        require_requested: bool,
+        durability: DurabilityMode,
+        group_commit_ms: Option<u64>,
+        isolation: Option<&str>,
+    ) -> Result<SessionInfo> {
         if group_commit_ms.is_some() && durability != DurabilityMode::Strict {
             return Err(Error::InvalidDurability(
                 "group_commit_ms requires strict durability".into(),
@@ -144,6 +163,11 @@ impl SessionCoordinator {
         if group_commit_ms == Some(0) {
             return Err(Error::InvalidDurability(
                 "group_commit_ms must be greater than zero".into(),
+            ));
+        }
+        if requested != Some(FilesystemMode::Git) && isolation.is_some() {
+            return Err(Error::Unsupported(
+                "explicit isolation is currently supported only with fs_mode git".into(),
             ));
         }
         let requested = requested.unwrap_or(default_mode());
@@ -172,7 +196,7 @@ impl SessionCoordinator {
                 }
                 #[cfg(target_os = "linux")]
                 {
-                    self.git.start(policy, Some("bubblewrap"), group_commit_ms)
+                    self.git.start(policy, isolation, group_commit_ms)
                 }
                 #[cfg(not(target_os = "linux"))]
                 {

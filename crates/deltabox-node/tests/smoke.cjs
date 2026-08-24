@@ -51,8 +51,12 @@ async function main() {
     assert.equal(session.status, 'running')
     assert.equal(session.isolation, isolation)
     assert.equal(session.isolation_provider === null, isolation === 'none')
-    assert.equal(session.state_provider, 'macos-apfs-fsevents')
-    assert.equal(session.fallback_reason, null)
+    if (gitMode) {
+      assert.equal(session.rollback_guarantee, 'git-tracked-files')
+    } else {
+      assert.equal(session.state_provider, 'macos-apfs-fsevents')
+      assert.equal(session.fallback_reason, null)
+    }
 
     const baseline = await native.checkpoint(session.session_id, 'baseline')
     assert.equal(baseline.label, 'baseline')

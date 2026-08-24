@@ -270,7 +270,7 @@ impl Manager {
             };
         }
 
-        let filesystem = filesystem_info(&record);
+        let filesystem = filesystem_info(&record, self.execution_mode);
         let meta = SessionMeta {
             session_id: session_id.clone(),
             project: self.project.clone(),
@@ -365,7 +365,7 @@ impl Manager {
             status: meta.status,
             checkpoint_count: status.checkpoints.len().saturating_sub(1),
             pending_changes: status.touched_paths,
-            filesystem: filesystem_info(&record),
+            filesystem: filesystem_info(&record, self.execution_mode),
         })
     }
 
@@ -431,7 +431,7 @@ impl Manager {
             wait_unmounted(&record.mountpoint)?;
         }
         meta.status = SessionStatus::Stopped;
-        meta.filesystem = filesystem_info(&record);
+        meta.filesystem = filesystem_info(&record, self.execution_mode);
         meta.filesystem.helper_pid = None;
         self.save_meta(&meta)?;
         crate::project_lease::release(
@@ -1542,10 +1542,14 @@ fn default_record_mode() -> crate::protocol::FilesystemMode {
     crate::protocol::FilesystemMode::CbcowThrough
 }
 
-fn filesystem_info(record: &MountRecord) -> FilesystemInfo {
+fn filesystem_info(record: &MountRecord, execution_mode: CommandExecutionMode) -> FilesystemInfo {
     let mut info = filesystem_info_inner(record);
     info.degraded_protections = crate::backend::linux_sandlock::degraded_protections();
-    return info;
+    if execution_mode == CommandExecutionMode::Trusted {
+        info.isolation = "none".into();
+        info.isolation_provider = None;
+    }
+    info
 }
 
 fn filesystem_info_inner(record: &MountRecord) -> FilesystemInfo {
@@ -1563,6 +1567,10 @@ fn filesystem_info_inner(record: &MountRecord) -> FilesystemInfo {
         crate::protocol::FilesystemMode::CopyPrivate => unreachable!("CB-CoW mount record mode"),
         crate::protocol::FilesystemMode::Git => unreachable!("CB-CoW mount record mode"),
     };
+    if execution_mode == CommandExecutionMode::Trusted {
+        info.isolation = "none".into();
+        info.isolation_provider = None;
+    }
     info.with_durability(record.durability, record.group_commit_ms)
 }
 

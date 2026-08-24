@@ -167,6 +167,7 @@ deltabox session start /abs/path/my-project --fs-mode cbcow-private --require-fs
 deltabox session start /abs/path/my-project --fs-mode cbcow-through --require-fs-mode
 deltabox session start /abs/path/my-project --fs-mode cbcow-through --durable
 deltabox session start /abs/path/my-project --fs-mode cbcow-through --durable --group-commit-ms 2
+deltabox session start /abs/path/my-project --fs-mode git --isolation bubblewrap
 ```
 
 Fast mode is the default and recovers helper/process failures. `--durable`

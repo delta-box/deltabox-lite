@@ -1,7 +1,7 @@
 //! Provider traits for the zero-FUSE git-backed session engine.
 //!
 //! `IsolationProvider` confines one command execution; `StorageProvider`
-//! keeps byte-for-byte rollback snapshots in a private bare git repository.
+//! keeps rollback snapshots for the Git ghost index in a private bare repo.
 
 #[cfg(target_os = "linux")]
 pub mod isolation;
@@ -45,7 +45,7 @@ pub trait IsolationProvider {
     ) -> Result<ExecResult>;
 }
 
-/// Byte-for-byte workspace snapshots stored as ghost commits in a side repo.
+/// Ghost-index snapshots stored as commits in a side repo.
 pub trait StorageProvider {
     /// Record the current workspace as the next ghost commit and pin it under
     /// `refs/deltabox/undo/<seq>`; the parent is the previous ghost.

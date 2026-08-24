@@ -59,6 +59,8 @@ pub struct SessionStartParams {
     #[serde(default)]
     pub require_fs_mode: bool,
     #[serde(default)]
+    pub isolation: Option<String>,
+    #[serde(default)]
     pub durability: DurabilityMode,
     #[serde(default)]
     pub group_commit_ms: Option<u64>,
@@ -548,6 +550,7 @@ mod tests {
                 policy: None,
                 fs_mode: None,
                 require_fs_mode: false,
+                isolation: None,
                 durability: DurabilityMode::Fast,
                 group_commit_ms: None,
             }),
@@ -591,9 +594,23 @@ mod tests {
             Method::SessionStart(params) => {
                 assert_eq!(params.fs_mode, None);
                 assert!(!params.require_fs_mode);
+                assert_eq!(params.isolation, None);
             }
             other => panic!("unexpected method: {other:?}"),
         }
+    }
+
+    #[test]
+    fn git_start_request_accepts_bubblewrap_isolation() {
+        let parsed: Request = serde_json::from_str(
+            r#"{"id":1,"method":"session.start","params":{"project":"/tmp/proj","fs_mode":"git","isolation":"bubblewrap"}}"#,
+        )
+        .unwrap();
+        let Method::SessionStart(params) = parsed.method else {
+            panic!("unexpected method");
+        };
+        assert_eq!(params.fs_mode, Some(FilesystemMode::Git));
+        assert_eq!(params.isolation.as_deref(), Some("bubblewrap"));
     }
 
     #[test]
@@ -604,6 +621,8 @@ mod tests {
         assert_eq!(value["resolved_fs_mode"], "cbcow-through");
         assert_eq!(value["host_visibility"], "immediate");
         assert_eq!(value["durability"], "process-crash");
+        assert_eq!(value["isolation"], "deltabox");
+        assert_eq!(value["isolation_provider"], platform_isolation());
         assert_eq!(value["helper_restarts"], 3);
         assert_eq!(value["mount_namespace"], false);
 

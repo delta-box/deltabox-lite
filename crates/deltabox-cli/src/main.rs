@@ -136,6 +136,8 @@ struct StartArgs {
     fs_mode: Option<FilesystemMode>,
     #[arg(long)]
     require_fs_mode: bool,
+    #[arg(long, value_parser = ["bubblewrap"])]
+    isolation: Option<String>,
     /// Require CB-CoW and wait for ordered storage barriers before operations return.
     #[arg(long)]
     durable: bool,
@@ -186,6 +188,8 @@ struct RunArgs {
     fs_mode: Option<FilesystemMode>,
     #[arg(long)]
     require_fs_mode: bool,
+    #[arg(long, value_parser = ["bubblewrap"])]
+    isolation: Option<String>,
     /// Require CB-CoW and wait for ordered storage barriers before operations return.
     #[arg(long)]
     durable: bool,
@@ -369,7 +373,7 @@ fn main() -> anyhow::Result<()> {
         Command::Session { cmd } => match cmd {
             SessionCmd::Start(args) => {
                 let manager = SessionCoordinator::new(&args.project, None)?;
-                let info = manager.start_with_durability(
+                let info = manager.start_with_durability_and_isolation(
                     args.policy.as_deref(),
                     args.fs_mode,
                     args.require_fs_mode,
@@ -379,6 +383,7 @@ fn main() -> anyhow::Result<()> {
                         DurabilityMode::Fast
                     },
                     args.group_commit_ms.map(NonZeroU64::get),
+                    args.isolation.as_deref(),
                 )?;
                 if args.json {
                     println!("{}", serde_json::to_string_pretty(&info)?);
@@ -731,7 +736,7 @@ fn run_transaction(args: RunArgs) -> anyhow::Result<i32> {
     };
 
     let manager = SessionCoordinator::new(&args.project, None)?;
-    let info = manager.start_with_durability(
+    let info = manager.start_with_durability_and_isolation(
         args.policy.as_deref(),
         args.fs_mode,
         args.require_fs_mode,
@@ -741,6 +746,7 @@ fn run_transaction(args: RunArgs) -> anyhow::Result<i32> {
             DurabilityMode::Fast
         },
         args.group_commit_ms.map(NonZeroU64::get),
+        args.isolation.as_deref(),
     )?;
     print_start_notice(&info);
     let session_id = info.session_id;
@@ -821,6 +827,10 @@ fn print_start_notice(info: &deltabox_core::protocol::SessionInfo) {
         eprintln!(
             "deltabox: host changes are immediate; commit accepts them and abort reverts them"
         );
+    } else if info.filesystem.resolved_fs_mode == FilesystemMode::Git {
+        eprintln!(
+            "deltabox: non-ignored host changes are immediate; commit accepts them and abort reverts them"
+        );
     } else if let Some(reason) = &info.filesystem.fallback_reason {
         eprintln!("deltabox: requested filesystem is unavailable; using copy-private: {reason}");
     }
@@ -831,7 +841,8 @@ fn parse_filesystem_mode(value: &str) -> Result<FilesystemMode, String> {
         "cbcow-through" => Ok(FilesystemMode::CbcowThrough),
         "cbcow-private" => Ok(FilesystemMode::CbcowPrivate),
         "copy-private" => Ok(FilesystemMode::CopyPrivate),
-        _ => Err("expected cbcow-through, cbcow-private, or copy-private".into()),
+        "git" => Ok(FilesystemMode::Git),
+        _ => Err("expected cbcow-through, cbcow-private, copy-private, or git".into()),
     }
 }
 
