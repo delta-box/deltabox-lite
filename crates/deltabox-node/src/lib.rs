@@ -124,6 +124,7 @@ pub struct NativeDeltaboxOptions {
 enum NativeIsolation {
     Deltabox,
     Bubblewrap,
+    Docker,
     None,
 }
 
@@ -138,6 +139,7 @@ struct ResolvedNativeOptions {
 pub struct NativeDeltabox {
     coordinator: Arc<SessionCoordinator>,
     fs_mode: FilesystemMode,
+    isolation: NativeIsolation,
 }
 
 #[napi]
@@ -151,11 +153,11 @@ impl NativeDeltabox {
         let options = resolve_native_options(options)?;
         let command_execution = match options.isolation {
             NativeIsolation::None => CommandExecutionMode::Trusted,
-            NativeIsolation::Deltabox | NativeIsolation::Bubblewrap => {
+            NativeIsolation::Deltabox | NativeIsolation::Bubblewrap | NativeIsolation::Docker => {
                 CommandExecutionMode::Sandboxed
             }
         };
-        let coordinator = SessionCoordinator::new_with_options(
+        let coordinator = SessionCoordinator::new_with_options_and_native_docker(
             Path::new(&project_root),
             CoordinatorOptions {
                 helper_bin: Some(PathBuf::from(helper_binary)),
@@ -164,11 +166,13 @@ impl NativeDeltabox {
                 runtime_dir: options.runtime_dir,
                 embedded_fast: true,
             },
+            options.isolation == NativeIsolation::Docker,
         )
         .map_err(native_error)?;
         Ok(Self {
             coordinator: Arc::new(coordinator),
             fs_mode: options.fs_mode,
+            isolation: options.isolation,
         })
     }
 
@@ -181,16 +185,18 @@ impl NativeDeltabox {
     ) -> napi::Result<NativeSessionInfo> {
         let coordinator = Arc::clone(&self.coordinator);
         let fs_mode = self.fs_mode;
+        let isolation = self.isolation;
         let durability = parse_durability(durability.as_deref())?;
         let group_commit_ms = parse_nonnegative_integer("groupCommitMs", group_commit_ms)?;
         run_blocking(move || {
             coordinator
-                .start_with_durability(
+                .start_with_durability_and_isolation(
                     policy.as_deref().map(Path::new),
                     Some(fs_mode),
                     true,
                     durability,
                     group_commit_ms,
+                    (fs_mode == FilesystemMode::Git).then(|| isolation_name(isolation)),
                 )
                 .map(session_info)
                 .map_err(native_error)
@@ -378,6 +384,7 @@ fn resolve_native_options(
     let isolation = match options.isolation.as_deref().unwrap_or(default_isolation) {
         "deltabox" => NativeIsolation::Deltabox,
         "bubblewrap" => NativeIsolation::Bubblewrap,
+        "docker" => NativeIsolation::Docker,
         "none" => NativeIsolation::None,
         value => {
             return Err(napi::Error::from_reason(format!(
@@ -390,6 +397,7 @@ fn resolve_native_options(
         (FilesystemMode::CbcowThrough, NativeIsolation::Deltabox)
             | (FilesystemMode::CbcowThrough, NativeIsolation::None)
             | (FilesystemMode::Git, NativeIsolation::Bubblewrap)
+            | (FilesystemMode::Git, NativeIsolation::Docker)
     );
     if !supported {
         return Err(napi::Error::from_reason(format!(
@@ -410,6 +418,7 @@ fn isolation_name(value: NativeIsolation) -> &'static str {
     match value {
         NativeIsolation::Deltabox => "deltabox",
         NativeIsolation::Bubblewrap => "bubblewrap",
+        NativeIsolation::Docker => "docker",
         NativeIsolation::None => "none",
     }
 }
@@ -569,6 +578,7 @@ mod tests {
             ("cbcow-through", "deltabox"),
             ("cbcow-through", "none"),
             ("git", "bubblewrap"),
+            ("git", "docker"),
         ] {
             resolve_native_options(Some(options(Some(fs_mode), Some(isolation)))).unwrap();
         }
@@ -580,6 +590,7 @@ mod tests {
     fn native_options_reject_crossed_provider_pairs() {
         for (fs_mode, isolation) in [
             ("cbcow-through", "bubblewrap"),
+            ("cbcow-through", "docker"),
             ("git", "deltabox"),
             ("git", "none"),
         ] {

@@ -60,6 +60,15 @@ impl SessionCoordinator {
     }
 
     pub fn new_with_options(project: &Path, options: CoordinatorOptions) -> Result<Self> {
+        Self::new_with_options_and_native_docker(project, options, false)
+    }
+
+    #[doc(hidden)]
+    pub fn new_with_options_and_native_docker(
+        project: &Path,
+        options: CoordinatorOptions,
+        native_docker: bool,
+    ) -> Result<Self> {
         let project = project.canonicalize()?;
         let helper_bin = options
             .helper_bin
@@ -80,7 +89,7 @@ impl SessionCoordinator {
             options.embedded_fast,
         )?;
         #[cfg(target_os = "linux")]
-        let git = GitSessionManager::new(
+        let git = GitSessionManager::new_with_native_docker(
             &project,
             options
                 .state_dir
@@ -90,6 +99,7 @@ impl SessionCoordinator {
                 .runtime_dir
                 .clone()
                 .unwrap_or_else(default_runtime_base),
+            native_docker,
         )?;
         #[cfg(target_os = "macos")]
         let macos_cbcow = crate::macos_cbcow::Manager::new_with_execution_mode(

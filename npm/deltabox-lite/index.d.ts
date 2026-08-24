@@ -9,7 +9,7 @@ export interface NativeDeltaboxOptions {
   stateDir?: string
   runtimeDir?: string
   fsMode?: 'cbcow-through' | 'git'
-  isolation?: 'deltabox' | 'bubblewrap' | 'none'
+  isolation?: 'deltabox' | 'bubblewrap' | 'docker' | 'none'
 }
 
 export interface NativeSessionInfo {
@@ -17,8 +17,8 @@ export interface NativeSessionInfo {
   project: string
   resolved_fs_mode: 'cbcow-through' | 'git'
   durability: string
-  isolation: 'deltabox' | 'bubblewrap' | 'none'
-  isolation_provider?: 'sandlock' | 'seatbelt' | 'bubblewrap'
+  isolation: 'deltabox' | 'bubblewrap' | 'docker' | 'none'
+  isolation_provider?: 'sandlock' | 'seatbelt' | 'bubblewrap' | 'docker'
   state_provider?: string
   rollback_guarantee: string
   mountpoint?: string
