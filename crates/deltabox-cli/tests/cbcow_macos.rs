@@ -749,3 +749,221 @@ fn commit_publog_records_real_change_kinds() {
     assert_eq!(existing["existed"], true);
     session.stop();
 }
+
+// Multiagent start overlap: while one start is parked inside its shared-mode
+// publish-lock scan, a sibling start must run to completion instead of
+// queueing behind it. Under the old whole-start cbcow.lock plus exclusive
+// publish hold, B would block until A released and this test would fail on
+// the pause hook's 30s abort.
+#[test]
+fn concurrent_private_starts_overlap_scans() {
+    let env = SharedProject::new();
+    let project = env.project.path().to_str().unwrap().to_string();
+    let pause = tempfile::tempdir().unwrap();
+    let mut start_a = std::process::Command::new(bin());
+    start_a
+        .current_dir(env.project.path())
+        .env("DELTABOX_STATE_DIR", env.state.path())
+        .env("DELTABOX_TEST_PAUSE_AT", "start_scan_shared")
+        .env("DELTABOX_TEST_PAUSE_DIR", pause.path())
+        .args([
+            "session",
+            "start",
+            &project,
+            "--fs-mode",
+            "cbcow-private",
+            "--require-fs-mode",
+        ])
+        .stdout(std::process::Stdio::piped());
+    let mut start_a = start_a.spawn().unwrap();
+    let arrived = pause.path().join("start_scan_shared.arrived");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !arrived.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "start A never reached its scan"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let b = env.try_start("cbcow-private");
+    assert_ok(&b);
+    let b = sid_of(&b);
+
+    std::fs::write(pause.path().join("start_scan_shared.release"), b"").unwrap();
+    let out_a = start_a.wait_with_output().unwrap();
+    assert!(out_a.status.success(), "{out_a:?}");
+    let a = sid_of(&out_a);
+
+    for sid in [&a, &b] {
+        let status = command(
+            env.project.path(),
+            env.state.path(),
+            ["session", "status", sid, "--project", &project],
+        );
+        assert_ok(&status);
+    }
+}
+
+// The other direction of the shared/exclusive split: publication stays fully
+// excluded from a start's scan window, so no sibling publication can land
+// between the start's two host scans — and the started session's baseline
+// snapshot therefore predates the publication, which folds for it later.
+#[test]
+fn start_scan_excludes_publication() {
+    let env = SharedProject::new();
+    let a = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let project = env.project.path().to_str().unwrap().to_string();
+    let out = command(
+        env.project.path(),
+        env.state.path(),
+        ["write", &a, "pending.txt", "--content", "x", "--project", &project],
+    );
+    assert_ok(&out);
+
+    let pause = tempfile::tempdir().unwrap();
+    let mut start_b = std::process::Command::new(bin());
+    start_b
+        .current_dir(env.project.path())
+        .env("DELTABOX_STATE_DIR", env.state.path())
+        .env("DELTABOX_TEST_PAUSE_AT", "start_scan_shared")
+        .env("DELTABOX_TEST_PAUSE_DIR", pause.path())
+        .args([
+            "session",
+            "start",
+            &project,
+            "--fs-mode",
+            "cbcow-private",
+            "--require-fs-mode",
+        ])
+        .stdout(std::process::Stdio::piped());
+    let mut start_b = start_b.spawn().unwrap();
+    let arrived = pause.path().join("start_scan_shared.arrived");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !arrived.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "start B never reached its scan"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let mut commit_a = std::process::Command::new(bin());
+    commit_a
+        .current_dir(env.project.path())
+        .env("DELTABOX_STATE_DIR", env.state.path())
+        .args(["commit", &a, "--project", &project]);
+    let mut commit_a = commit_a.spawn().unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(
+        commit_a.try_wait().unwrap().is_none(),
+        "a publication landed inside a start's scan window"
+    );
+
+    std::fs::write(pause.path().join("start_scan_shared.release"), b"").unwrap();
+    let out_b = start_b.wait_with_output().unwrap();
+    assert!(out_b.status.success(), "{out_b:?}");
+    let b = sid_of(&out_b);
+    assert!(commit_a.wait().unwrap().success());
+    assert_eq!(
+        std::fs::read_to_string(env.project.path().join("pending.txt")).unwrap(),
+        "x"
+    );
+
+    let sync = command(
+        env.project.path(),
+        env.state.path(),
+        ["sync", &b, "--project", &project],
+    );
+    assert_ok(&sync);
+    let sync: Value = serde_json::from_slice(&sync.stdout).unwrap();
+    assert_eq!(sync["folded_publications"], 1);
+}
+
+// A start killed inside its scan window leaves its admission pin behind: a
+// Running record plus a lease, with no engine record. The zombie must stay
+// visible (the through rejection names it) and be clearable with a single
+// `session stop`, which finalizes the rollback the dead start never ran.
+#[test]
+fn killed_start_leaves_stoppable_admission_pin() {
+    let env = SharedProject::new();
+    let project = env.project.path().to_str().unwrap().to_string();
+    let pause = tempfile::tempdir().unwrap();
+    let mut start_a = std::process::Command::new(bin());
+    start_a
+        .current_dir(env.project.path())
+        .env("DELTABOX_STATE_DIR", env.state.path())
+        .env("DELTABOX_TEST_PAUSE_AT", "start_scan_shared")
+        .env("DELTABOX_TEST_PAUSE_DIR", pause.path())
+        .args([
+            "session",
+            "start",
+            &project,
+            "--fs-mode",
+            "cbcow-private",
+            "--require-fs-mode",
+        ])
+        .stdout(std::process::Stdio::piped());
+    let mut start_a = start_a.spawn().unwrap();
+    let arrived = pause.path().join("start_scan_shared.arrived");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !arrived.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "start never reached its scan"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // While the start is alive its admission pin is held: the busy error
+    // names it, and stop refuses to roll back a living start.
+    let through_live = env.try_start("cbcow-through");
+    assert!(!through_live.status.success());
+    let stderr = String::from_utf8_lossy(&through_live.stderr).to_string();
+    assert!(stderr.contains("session busy: "), "{stderr}");
+    let live_sid = stderr
+        .split("session busy: ")
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    let stop_live = command(
+        env.project.path(),
+        env.state.path(),
+        ["session", "stop", &live_sid, "--project", &project],
+    );
+    assert!(!stop_live.status.success(), "stopped a live start");
+    assert!(
+        String::from_utf8_lossy(&stop_live.stderr).contains("session busy"),
+        "{stop_live:?}"
+    );
+
+    start_a.kill().unwrap();
+    start_a.wait().unwrap();
+
+    let through = env.try_start("cbcow-through");
+    assert!(!through.status.success());
+    let stderr = String::from_utf8_lossy(&through.stderr).to_string();
+    assert!(stderr.contains("session busy: "), "{stderr}");
+    let sid = stderr
+        .split("session busy: ")
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+
+    let stop = command(
+        env.project.path(),
+        env.state.path(),
+        ["session", "stop", &sid, "--project", &project],
+    );
+    assert_ok(&stop);
+    assert_ok(&env.try_start("cbcow-through"));
+}

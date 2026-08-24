@@ -86,7 +86,8 @@ impl Manager {
                 return Err(Error::Backend("invalid macOS CB-CoW mode".into()))
             }
         };
-        let _project_lock = Lock::acquire(&self.root.join("cbcow.lock"))?;
+        // Policy resolution reads only per-request inputs; keeping it outside
+        // the admission lock keeps policy IO out of the project-wide window.
         let policy_path = resolve_policy(&self.project, policy_path)?;
         match &policy_path {
             Some(path) => Policy::load(path)?,
@@ -95,87 +96,159 @@ impl Manager {
         .validate()?;
 
         let session_id = Uuid::new_v4().to_string();
-        crate::project_lease::acquire(
-            &crate::state_layout::leases_dir(&self.project)?,
-            &self.root.join(PROJECT_LEASE),
-            mode_for_lease(mode),
-            &session_id,
-            |sid| {
-                self.load_meta(sid)
-                    .is_ok_and(|meta| meta.status == SessionStatus::Running)
-            },
-        )?;
         let store = self.store(&session_id);
         let state_root = state_base(&self.project)?.join(&session_id);
-        fs::create_dir_all(&store)?;
-        fs::create_dir_all(&state_root)?;
-        fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700))?;
-        // The probe source must live on the project's volume: clonefile only
-        // works within one volume, and the session root now lives under the
-        // external state base, which may be a different volume. The in-project
-        // .deltabox directory is still required for the FSEvents barrier and
-        // is filtered from scans, so it doubles as the probe scratch area.
-        let probe_dir = self.project.join(".deltabox");
-        fs::create_dir_all(&probe_dir)?;
-        probe_clonefile(&probe_dir, &state_root)?;
-        write_file(
-            &state_root.join("command-token"),
-            format!("{}{}\n", Uuid::new_v4(), Uuid::new_v4()).as_bytes(),
-            durability == DurabilityMode::Strict,
-        )?;
+        let started_at_ms = now_ms();
+        // Admission critical section: reclaim/check/grant of the project
+        // lease plus the durable Running record admission judges liveness by.
+        // The record must be pinned before cbcow.lock drops — a sibling's
+        // acquire would otherwise reclaim this fresh lease as dead, and a
+        // through start could then take exclusivity while this start is still
+        // scanning. Everything slow (host scans, helper spawn) runs after the
+        // lock is released so concurrent starts overlap.
+        let _start_pin;
+        {
+            let _project_lock = Lock::acquire(&self.root.join("cbcow.lock"))?;
+            crate::project_lease::acquire(
+                &crate::state_layout::leases_dir(&self.project)?,
+                &self.root.join(PROJECT_LEASE),
+                mode_for_lease(mode),
+                &session_id,
+                |sid| {
+                    self.load_meta(sid)
+                        .is_ok_and(|meta| meta.status == SessionStatus::Running)
+                },
+            )?;
+            fs::create_dir_all(&store)?;
+            // Held for the whole start, acquired before the Running record
+            // exists: while this process is alive, `stop` reads the pin as
+            // "start in flight" instead of rolling back a live admission; the
+            // kernel drops it on death, which is what lets `stop` finalize a
+            // killed start.
+            _start_pin = Lock::acquire(&store.join("start.lock"))?;
+            self.save_meta(&SessionMeta {
+                session_id: session_id.clone(),
+                project: self.project.clone(),
+                policy_path: policy_path.clone(),
+                started_at_ms,
+                status: SessionStatus::Running,
+                filesystem: FilesystemInfo::macos_native(mode_for_lease(mode))
+                    .with_durability(durability, None),
+            })?;
+        }
 
-        let durable = durability == DurabilityMode::Strict;
-        let event_id = current_event_id();
-        let uuid = device_uuid(&self.project)?;
-        // The accepted base and private live tree are two scans of the host;
-        // hold the publish lock so no sibling publication lands between them
-        // or before the event boundary pins the baseline.
-        let publish =
-            Lock::acquire(&crate::state_layout::publish_lock_path(&self.project)?)?;
-        let mut state = State::create(
-            &self.project,
-            &state_root.join("engine"),
-            mode,
-            durable,
-            event_id,
-            uuid.clone(),
-        )?;
-        state.set_event_boundary(current_event_id(), uuid)?;
-        fs::write(
-            store.join("publog.seq"),
-            format!("{}\n", crate::publog::head_seq(&self.project)?),
-        )?;
-        drop(publish);
-        self.prepare_events(&mut state, true)?;
+        let started = (|| -> Result<SessionInfo> {
+            fs::create_dir_all(&state_root)?;
+            fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700))?;
+            // The probe source must live on the project's volume: clonefile only
+            // works within one volume, and the session root now lives under the
+            // external state base, which may be a different volume. The in-project
+            // .deltabox directory is still required for the FSEvents barrier and
+            // is filtered from scans, so it doubles as the probe scratch area.
+            let probe_dir = self.project.join(".deltabox");
+            fs::create_dir_all(&probe_dir)?;
+            probe_clonefile(&probe_dir, &state_root, &session_id)?;
+            write_file(
+                &state_root.join("command-token"),
+                format!("{}{}\n", Uuid::new_v4(), Uuid::new_v4()).as_bytes(),
+                durability == DurabilityMode::Strict,
+            )?;
 
-        let record = Record {
-            state_root,
-            durability,
-        };
-        save_json(&store.join(RECORD_FILE), &record, durable)?;
-        let filesystem = filesystem_info(mode, &state, durability);
-        let meta = SessionMeta {
-            session_id: session_id.clone(),
-            project: self.project.clone(),
-            policy_path,
-            started_at_ms: now_ms(),
-            status: SessionStatus::Running,
-            filesystem: filesystem.clone(),
-        };
-        self.save_meta(&meta)?;
-        self.append(&record, &session_id, JournalKind::SessionStart, None)?;
-        Ok(SessionInfo {
-            session_id,
-            project: self.project.clone(),
-            started_at_ms: meta.started_at_ms,
-            status: SessionStatus::Running,
-            checkpoint_count: 0,
-            pending_changes: 0,
-            filesystem,
-        })
+            let durable = durability == DurabilityMode::Strict;
+            let event_id = current_event_id();
+            let uuid = device_uuid(&self.project)?;
+            // The accepted base and private live tree are two scans of the
+            // host, taken under the publish lock in SHARED mode: sibling
+            // starts scan concurrently, while publication and publication
+            // recovery — exclusive holders — are still fully excluded. No
+            // sibling publication can land between the scans or before the
+            // event boundary pins the baseline, exactly as under the old
+            // exclusive hold.
+            let publish = Lock::acquire_shared(&crate::state_layout::publish_lock_path(
+                &self.project,
+            )?)?;
+            crate::test_hooks::maybe_pause("start_scan_shared");
+            let mut state = State::create(
+                &self.project,
+                &state_root.join("engine"),
+                mode,
+                durable,
+                event_id,
+                uuid.clone(),
+            )?;
+            state.set_event_boundary(current_event_id(), uuid)?;
+            fs::write(
+                store.join("publog.seq"),
+                format!("{}\n", crate::publog::head_seq(&self.project)?),
+            )?;
+            drop(publish);
+            self.prepare_events(&mut state, true)?;
+
+            let record = Record {
+                state_root: state_root.clone(),
+                durability,
+            };
+            save_json(&store.join(RECORD_FILE), &record, durable)?;
+            let filesystem = filesystem_info(mode, &state, durability);
+            let meta = SessionMeta {
+                session_id: session_id.clone(),
+                project: self.project.clone(),
+                policy_path: policy_path.clone(),
+                started_at_ms,
+                status: SessionStatus::Running,
+                filesystem: filesystem.clone(),
+            };
+            self.save_meta(&meta)?;
+            self.append(&record, &session_id, JournalKind::SessionStart, None)?;
+            Ok(SessionInfo {
+                session_id: session_id.clone(),
+                project: self.project.clone(),
+                started_at_ms,
+                status: SessionStatus::Running,
+                checkpoint_count: 0,
+                pending_changes: 0,
+                filesystem,
+            })
+        })();
+        if started.is_err() {
+            // Admission rollback: mark the record dead first so any racing
+            // acquire stops treating the lease as live, then drop the lease.
+            // release() without cbcow.lock matches stop(); a concurrent
+            // reclaim of the now-Stopped record is the intended outcome.
+            if let Ok(mut meta) = self.load_meta(&session_id) {
+                meta.status = SessionStatus::Stopped;
+                let _ = self.save_meta(&meta);
+            }
+            if let Ok(leases) = crate::state_layout::leases_dir(&self.project) {
+                crate::project_lease::release(
+                    &leases,
+                    &self.root.join(PROJECT_LEASE),
+                    &session_id,
+                );
+            }
+            let _ = fs::remove_dir_all(&state_root);
+        }
+        started
     }
 
     pub fn status(&self, session_id: &str) -> Result<SessionInfo> {
+        if !self.store(session_id).join(RECORD_FILE).exists() {
+            // Start in flight (or torn): report the durable record as-is
+            // instead of failing on the missing engine.
+            let meta = self.load_meta(session_id)?;
+            if meta.status == SessionStatus::Stopped {
+                return Ok(info_from_stopped(meta));
+            }
+            return Ok(SessionInfo {
+                session_id: meta.session_id,
+                project: meta.project,
+                started_at_ms: meta.started_at_ms,
+                status: meta.status,
+                checkpoint_count: 0,
+                pending_changes: 0,
+                filesystem: meta.filesystem,
+            });
+        }
         let _lock = self.lock(session_id)?;
         let mut meta = self.load_meta(session_id)?;
         if meta.status == SessionStatus::Stopped {
@@ -203,6 +276,35 @@ impl Manager {
     }
 
     pub fn stop(&self, session_id: &str) -> Result<SessionInfo> {
+        if !self.store(session_id).join(RECORD_FILE).exists() {
+            let mut meta = self.running_meta(session_id)?;
+            // No engine record: the start is either still scanning or died
+            // before writing it. The admission pin decides which — a live
+            // start holds it; a dead one's was released by the kernel.
+            let Some(_pin) =
+                Lock::try_acquire(&self.store(session_id).join("start.lock"))?
+            else {
+                return Err(Error::SessionBusy(session_id.into()));
+            };
+            if !self.store(session_id).join(RECORD_FILE).exists() {
+                // Torn start: finalize the rollback the dead start never ran,
+                // so its lease stops pinning project admission.
+                meta.status = SessionStatus::Stopped;
+                self.save_meta(&meta)?;
+                if let Ok(leases) = crate::state_layout::leases_dir(&self.project) {
+                    crate::project_lease::release(
+                        &leases,
+                        &self.root.join(PROJECT_LEASE),
+                        session_id,
+                    );
+                }
+                if let Ok(base) = state_base(&self.project) {
+                    let _ = fs::remove_dir_all(base.join(session_id));
+                }
+                return Ok(info_from_stopped(meta));
+            }
+            // The start completed while we probed; run the normal stop.
+        }
         let _lock = self.lock(session_id)?;
         let mut meta = self.running_meta(session_id)?;
         let record = self.record(session_id)?;
@@ -968,8 +1070,10 @@ fn state_base(project: &Path) -> Result<PathBuf> {
         .join(format!("{:016x}", hasher.finish())))
 }
 
-fn probe_clonefile(project_state: &Path, state_root: &Path) -> Result<()> {
-    let source = project_state.join(".apfs-clone-probe");
+fn probe_clonefile(project_state: &Path, state_root: &Path, session_id: &str) -> Result<()> {
+    // Concurrent unlocked starts share the probe scratch directory, so the
+    // source name must be per-session or create/remove would race.
+    let source = project_state.join(format!(".apfs-clone-probe-{session_id}"));
     let destination = state_root.join(".apfs-clone-probe");
     fs::write(&source, b"deltafs")?;
     let source_c = CString::new(source.as_os_str().as_bytes()).expect("probe path");

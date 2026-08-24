@@ -96,6 +96,7 @@ impl Manager {
         let quota_bytes = policy.limits.max_storage_bytes.unwrap_or(u64::MAX);
 
         let session_id = Uuid::new_v4().to_string();
+        let _start_pin;
         {
             // Mode-aware admission under the project flock: through stays
             // exclusive because it mutates the host tree; private sessions
@@ -120,6 +121,11 @@ impl Manager {
             // would otherwise reclaim this lease as dead mid-start.
             let store = self.store(&session_id);
             fs::create_dir_all(&store)?;
+            // Held for the whole start, acquired before the witness exists:
+            // while this process is alive, `stop` reads the pin as "start in
+            // flight" instead of rolling back a live admission; the kernel
+            // drops it on death, which lets `stop` finalize a killed start.
+            _start_pin = Lock::acquire(&store.join("start.lock"))?;
             save_json_with(
                 &store.join(SESSION_META),
                 &SessionMeta {
@@ -128,7 +134,17 @@ impl Manager {
                     policy_path: policy_path.clone(),
                     started_at_ms: now_ms(),
                     status: SessionStatus::Running,
-                    filesystem: crate::protocol::FilesystemInfo::default(),
+                    filesystem: {
+                        // The witness must carry the real mode: the
+                        // coordinator routes session addressing by
+                        // resolved_fs_mode, so a defaulted mode would send
+                        // stop/status for a mid-start session to the
+                        // copy-private manager instead of this one.
+                        let mut filesystem = crate::protocol::FilesystemInfo::default();
+                        filesystem.requested_fs_mode = mode;
+                        filesystem.resolved_fs_mode = mode;
+                        filesystem
+                    },
                 },
                 false,
             )?;
@@ -141,9 +157,13 @@ impl Manager {
                 let live = store.join(LIVE_DIR);
                 let strict = durability == DurabilityMode::Strict;
                 // The baseline fingerprints must describe the same host state
-                // the clone was taken from: hold the publish lock so no
-                // sibling publication lands between clone and capture.
-                let publish = Lock::acquire(&publish_lock_path(&self.project)?)?;
+                // the clone was taken from. The publish lock is taken SHARED:
+                // sibling starts materialize concurrently, while publication
+                // and publication recovery — exclusive holders — stay fully
+                // excluded, so no sibling publication lands between clone and
+                // capture, exactly as under the old exclusive hold.
+                let publish = Lock::acquire_shared(&publish_lock_path(&self.project)?)?;
+                crate::test_hooks::maybe_pause("start_scan_shared");
                 let accepted = materialize_with_durability(&self.project, &live, strict)?;
                 AcceptedIndex::create_with_durability(
                     &store.join(ACCEPTED_INDEX),
@@ -252,6 +272,20 @@ impl Manager {
     }
 
     pub fn status(&self, session_id: &str) -> Result<SessionInfo> {
+        if !self.store(session_id).join(MOUNT_RECORD).exists() {
+            // Start in flight (or torn): report the durable witness instead
+            // of failing on the missing engine record.
+            let meta = self.load_meta(session_id)?;
+            return Ok(SessionInfo {
+                session_id: meta.session_id,
+                project: meta.project,
+                started_at_ms: meta.started_at_ms,
+                status: meta.status,
+                checkpoint_count: 0,
+                pending_changes: 0,
+                filesystem: meta.filesystem,
+            });
+        }
         let _lock = self.lock(session_id)?;
         let meta = self.load_meta(session_id)?;
         if meta.status == SessionStatus::Stopped {
@@ -291,6 +325,43 @@ impl Manager {
     }
 
     pub fn stop(&self, session_id: &str) -> Result<SessionInfo> {
+        if !self.store(session_id).join(MOUNT_RECORD).exists() {
+            let mut meta = self.running_meta(session_id)?;
+            // No engine record: the start is either still materializing or
+            // died before writing it. The admission pin decides which — a
+            // live start holds it; a dead one's was released by the kernel.
+            let Some(_pin) =
+                Lock::try_acquire(&self.store(session_id).join("start.lock"))?
+            else {
+                return Err(Error::SessionBusy(session_id.into()));
+            };
+            if !self.store(session_id).join(MOUNT_RECORD).exists() {
+                // Torn start: finalize the rollback the dead start never ran,
+                // so its lease stops pinning project admission.
+                meta.status = SessionStatus::Stopped;
+                self.save_meta(&meta)?;
+                crate::project_lease::release(
+                    &crate::state_layout::leases_dir(&self.project)?,
+                    &self.root.join("active-cbcow"),
+                    session_id,
+                );
+                let _ = fs::remove_dir_all(self.store(session_id).join(LIVE_DIR));
+                if let Ok(base) = state_base() {
+                    let _ = fs::remove_dir_all(base.join(session_id));
+                }
+                let _ = fs::remove_dir_all(runtime_base().join(session_id));
+                return Ok(SessionInfo {
+                    session_id: meta.session_id,
+                    project: meta.project,
+                    started_at_ms: meta.started_at_ms,
+                    status: meta.status,
+                    checkpoint_count: 0,
+                    pending_changes: 0,
+                    filesystem: meta.filesystem,
+                });
+            }
+            // The start completed while we probed; run the normal stop.
+        }
         let _lock = self.lock(session_id)?;
         let mut meta = self.running_meta(session_id)?;
         let record = self.ensure_helper(session_id)?;

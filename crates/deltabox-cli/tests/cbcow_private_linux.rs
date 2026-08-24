@@ -606,3 +606,188 @@ fn assert_ok(output: &Output) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+// Multiagent start overlap: while one start is parked inside its shared-mode
+// publish-lock materialization, a sibling start must run to completion
+// instead of queueing behind it. Under the old exclusive hold, B would block
+// until A released and this test would fail on the pause hook's 30s abort.
+#[test]
+fn concurrent_private_starts_overlap_scans() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("a.txt"), "accepted").unwrap();
+    let pause = tempfile::tempdir().unwrap();
+    let mut start_a = Command::new(env!("CARGO_BIN_EXE_deltabox"));
+    start_a
+        .env("DELTABOX_TEST_PAUSE_AT", "start_scan_shared")
+        .env("DELTABOX_TEST_PAUSE_DIR", pause.path())
+        .args(["session", "start"])
+        .arg(project.path())
+        .args(["--fs-mode", "cbcow-private", "--require-fs-mode"])
+        .stdout(std::process::Stdio::piped());
+    let start_a = start_a.spawn().unwrap();
+    let arrived = pause.path().join("start_scan_shared.arrived");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !arrived.exists() {
+        assert!(Instant::now() < deadline, "start A never reached its scan");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let b = Session::start(project.path());
+
+    std::fs::write(pause.path().join("start_scan_shared.release"), b"").unwrap();
+    let out_a = start_a.wait_with_output().unwrap();
+    assert!(out_a.status.success(), "{out_a:?}");
+    let a_id = String::from_utf8_lossy(&out_a.stdout)
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    assert_ok(&b.command(["session", "status", &a_id]));
+    assert_ok(&b.command(["session", "stop", &a_id]));
+}
+
+// The other direction of the shared/exclusive split: publication stays fully
+// excluded from a start's materialization window, and the started session's
+// baseline snapshot therefore predates the publication, which folds for it.
+#[test]
+fn start_scan_excludes_publication() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("a.txt"), "accepted").unwrap();
+    let a = Session::start(project.path());
+    a.write("pending.txt", "x");
+
+    let pause = tempfile::tempdir().unwrap();
+    let mut start_b = Command::new(env!("CARGO_BIN_EXE_deltabox"));
+    start_b
+        .env("DELTABOX_TEST_PAUSE_AT", "start_scan_shared")
+        .env("DELTABOX_TEST_PAUSE_DIR", pause.path())
+        .args(["session", "start"])
+        .arg(project.path())
+        .args(["--fs-mode", "cbcow-private", "--require-fs-mode"])
+        .stdout(std::process::Stdio::piped());
+    let start_b = start_b.spawn().unwrap();
+    let arrived = pause.path().join("start_scan_shared.arrived");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !arrived.exists() {
+        assert!(Instant::now() < deadline, "start B never reached its scan");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let mut commit_a = Command::new(env!("CARGO_BIN_EXE_deltabox"));
+    commit_a
+        .args(["commit", &a.id])
+        .arg("--project")
+        .arg(project.path());
+    let mut commit_a = commit_a.spawn().unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(
+        commit_a.try_wait().unwrap().is_none(),
+        "a publication landed inside a start's materialization window"
+    );
+
+    std::fs::write(pause.path().join("start_scan_shared.release"), b"").unwrap();
+    let out_b = start_b.wait_with_output().unwrap();
+    assert!(out_b.status.success(), "{out_b:?}");
+    let b_id = String::from_utf8_lossy(&out_b.stdout)
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    assert!(commit_a.wait().unwrap().success());
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("pending.txt")).unwrap(),
+        "x"
+    );
+
+    let sync = a.command(["sync", &b_id]);
+    assert_ok(&sync);
+    let sync: Value = serde_json::from_slice(&sync.stdout).unwrap();
+    assert_eq!(sync["folded_publications"], 1);
+    assert_ok(&a.command(["session", "stop", &b_id]));
+}
+
+// A start killed inside its materialization window leaves its admission pin
+// behind: a Running witness plus a lease, with no engine record. The zombie
+// stays visible (the through rejection names it) and is clearable with one
+// `session stop`; a living start is protected from that same stop.
+#[test]
+fn killed_start_leaves_stoppable_admission_pin() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("a.txt"), "accepted").unwrap();
+    let pause = tempfile::tempdir().unwrap();
+    let mut start_a = Command::new(env!("CARGO_BIN_EXE_deltabox"));
+    start_a
+        .env("DELTABOX_TEST_PAUSE_AT", "start_scan_shared")
+        .env("DELTABOX_TEST_PAUSE_DIR", pause.path())
+        .args(["session", "start"])
+        .arg(project.path())
+        .args(["--fs-mode", "cbcow-private", "--require-fs-mode"])
+        .stdout(std::process::Stdio::piped());
+    let mut start_a = start_a.spawn().unwrap();
+    let arrived = pause.path().join("start_scan_shared.arrived");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !arrived.exists() {
+        assert!(Instant::now() < deadline, "start never reached its scan");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let raw = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_deltabox"))
+            .args(args)
+            .arg("--project")
+            .arg(project.path())
+            .output()
+            .unwrap()
+    };
+    let through_live = Command::new(env!("CARGO_BIN_EXE_deltabox"))
+        .args(["session", "start"])
+        .arg(project.path())
+        .args(["--fs-mode", "cbcow-through", "--require-fs-mode"])
+        .output()
+        .unwrap();
+    assert!(!through_live.status.success());
+    let stderr = String::from_utf8_lossy(&through_live.stderr).to_string();
+    assert!(stderr.contains("session busy: "), "{stderr}");
+    let sid = stderr
+        .split("session busy: ")
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    let stop_live = raw(&["session", "stop", &sid]);
+    assert!(!stop_live.status.success(), "stopped a live start");
+    assert!(
+        String::from_utf8_lossy(&stop_live.stderr).contains("session busy"),
+        "{stop_live:?}"
+    );
+
+    start_a.kill().unwrap();
+    start_a.wait().unwrap();
+
+    let stop_dead = raw(&["session", "stop", &sid]);
+    assert_ok(&stop_dead);
+    let through = Command::new(env!("CARGO_BIN_EXE_deltabox"))
+        .args(["session", "start"])
+        .arg(project.path())
+        .args(["--fs-mode", "cbcow-through", "--require-fs-mode"])
+        .output()
+        .unwrap();
+    assert_ok(&through);
+    let through_id = String::from_utf8_lossy(&through.stdout)
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    assert_ok(&raw(&["session", "stop", &through_id]));
+}
