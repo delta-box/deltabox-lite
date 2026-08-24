@@ -13,18 +13,22 @@ export interface NativeDeltaboxOptions {
 }
 
 export interface NativeSessionInfo {
-  sessionId: string
+  session_id: string
   project: string
-  resolvedFsMode: string
+  resolved_fs_mode: 'cbcow-through' | 'git'
   durability: string
+  isolation: 'deltabox' | 'bubblewrap' | 'none'
+  isolation_provider?: 'sandlock' | 'seatbelt' | 'bubblewrap'
+  state_provider?: string
+  rollback_guarantee: string
   mountpoint?: string
 }
 
 export interface NativeExecResult {
-  exitCode?: number
+  exit_code?: number
   stdout: string
   stderr: string
-  durationMs: number
+  duration_ms: number
   truncated: boolean
 }
 

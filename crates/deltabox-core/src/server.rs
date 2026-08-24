@@ -37,13 +37,16 @@ impl Server {
 
     fn dispatch(&mut self, method: Method) -> CoreResult<Value> {
         let value = match method {
-            Method::SessionStart(p) => serde_json::to_value(self.manager.start_with_durability(
-                p.policy.as_deref(),
-                p.fs_mode,
-                p.require_fs_mode,
-                p.durability,
-                p.group_commit_ms,
-            )?)?,
+            Method::SessionStart(p) => {
+                serde_json::to_value(self.manager.start_with_durability_and_isolation(
+                    p.policy.as_deref(),
+                    p.fs_mode,
+                    p.require_fs_mode,
+                    p.durability,
+                    p.group_commit_ms,
+                    p.isolation.as_deref(),
+                )?)?
+            }
             Method::SessionStop(p) => serde_json::to_value(self.manager.stop(&p.session_id)?)?,
             Method::SessionStatus(p) => serde_json::to_value(self.manager.status(&p.session_id)?)?,
             Method::SessionExec(p) => serde_json::to_value(self.manager.exec(p)?)?,
@@ -119,6 +122,7 @@ mod tests {
                 policy: None,
                 fs_mode: Some(crate::protocol::FilesystemMode::CopyPrivate),
                 require_fs_mode: false,
+                isolation: None,
                 durability: crate::protocol::DurabilityMode::Fast,
                 group_commit_ms: None,
             }),
@@ -160,6 +164,7 @@ mod tests {
                 policy: None,
                 fs_mode: Some(crate::protocol::FilesystemMode::CopyPrivate),
                 require_fs_mode: false,
+                isolation: None,
                 durability: crate::protocol::DurabilityMode::Fast,
                 group_commit_ms: None,
             }),
@@ -200,6 +205,7 @@ mod tests {
                 policy: None,
                 fs_mode: Some(crate::protocol::FilesystemMode::CopyPrivate),
                 require_fs_mode: false,
+                isolation: None,
                 durability: crate::protocol::DurabilityMode::Fast,
                 group_commit_ms: None,
             }),

@@ -20,6 +20,10 @@ writes use `Buffer`, while session, exec, and review calls use typed objects.
 Native options default to `cbcow-through` storage with Deltabox command
 isolation. Supported pairs are `cbcow-through+deltabox`,
 `cbcow-through+none`, and `git+bubblewrap`; invalid pairs fail at construction.
+Session records expose the stable `isolation` profile and the resolved
+`isolation_provider` (`sandlock`, `seatbelt`, or `bubblewrap`). Git mode uses
+native `Buffer` reads and writes, supports fast durability only, and leaves
+files matched by the project's `.gitignore` outside its rollback contract.
 
 Linux CB-CoW modes require `/dev/fuse` and `fusermount3` or `fusermount` on the
 host. Deltabox otherwise reports the reason and falls back to `copy-private`

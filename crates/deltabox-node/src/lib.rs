@@ -40,6 +40,13 @@ pub struct NativeSessionInfo {
     #[napi(js_name = "resolved_fs_mode")]
     pub resolved_fs_mode: String,
     pub durability: String,
+    pub isolation: String,
+    #[napi(js_name = "isolation_provider")]
+    pub isolation_provider: Option<String>,
+    #[napi(js_name = "state_provider")]
+    pub state_provider: Option<String>,
+    #[napi(js_name = "rollback_guarantee")]
+    pub rollback_guarantee: String,
     pub mountpoint: Option<String>,
 }
 
@@ -448,6 +455,10 @@ fn session_info(value: SessionInfo) -> NativeSessionInfo {
         project: value.project.to_string_lossy().into_owned(),
         resolved_fs_mode: filesystem_mode(value.filesystem.resolved_fs_mode),
         durability: value.filesystem.durability,
+        isolation: value.filesystem.isolation,
+        isolation_provider: value.filesystem.isolation_provider,
+        state_provider: value.filesystem.state_provider,
+        rollback_guarantee: value.filesystem.rollback_guarantee,
         mountpoint: value
             .filesystem
             .mountpoint

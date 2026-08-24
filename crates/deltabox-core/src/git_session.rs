@@ -516,6 +516,7 @@ fn git_filesystem_info(meta: &GitSessionMeta) -> FilesystemInfo {
             .isolation
             .clone()
             .unwrap_or_else(|| "bubblewrap".to_string()),
+        isolation_provider: Some("bubblewrap".into()),
         state_provider: Some("git-ghost".into()),
         fallback_reason: None,
         rollback_guarantee: "git-tracked-files".into(),

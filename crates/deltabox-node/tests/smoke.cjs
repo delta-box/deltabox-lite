@@ -29,6 +29,9 @@ async function main() {
     assert.equal(session.resolved_fs_mode, mode)
     assert.equal(session.durability, 'process-crash')
     assert.equal(session.mountpoint === undefined, gitMode)
+    assert.equal(session.isolation, gitMode ? 'bubblewrap' : 'none')
+    assert.equal(session.isolation_provider, gitMode ? 'bubblewrap' : undefined)
+    assert.equal(session.rollback_guarantee, gitMode ? 'git-tracked-files' : 'fuse-routed-writes-only')
 
     const exec = await native.exec(
       session.session_id,
