@@ -208,6 +208,20 @@ pub(crate) fn entries_since(project: &Path, after: u64) -> Result<Vec<PublogEntr
     Ok(entries)
 }
 
+/// Files above this size publish without a digest: hashing is ~2ms/MiB at
+/// commit time, and digest endorsement only ever benefits merge-sized files.
+/// An absent digest fails closed — the path simply conflicts as it would
+/// have before the publication log existed.
+pub(crate) const DIGEST_CAP_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Capped digest for publog entries; None when the file exceeds the cap.
+pub(crate) fn file_digest_capped(path: &Path) -> Result<Option<String>> {
+    if fs::metadata(path)?.len() > DIGEST_CAP_BYTES {
+        return Ok(None);
+    }
+    file_digest(path).map(Some)
+}
+
 /// sha256 hex digest of one regular file, for publog entries.
 pub(crate) fn file_digest(path: &Path) -> Result<String> {
     use sha2::{Digest, Sha256};

@@ -699,7 +699,9 @@ impl Manager {
             });
             let host_path = self.project.join(&change.path);
             if change.kind != deltafs_fuse::engine::ChangeKind::Deleted && host_path.is_file() {
-                digests.insert(change.path.clone(), crate::publog::file_digest(&host_path)?);
+                if let Some(digest) = crate::publog::file_digest_capped(&host_path)? {
+                    digests.insert(change.path.clone(), digest);
+                }
             }
         }
         let seq = crate::publog::append(&self.project, &params.session_id, &published, digests)?;
