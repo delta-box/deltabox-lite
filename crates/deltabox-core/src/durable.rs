@@ -574,6 +574,7 @@ impl DurableSessionManager {
         let result = self.commit_locked(CommitParams {
             session_id: session_id.to_string(),
             checkpoint: None,
+            ours: false,
         })?;
         self.save_active_review(session_id, None)?;
         Ok(result)

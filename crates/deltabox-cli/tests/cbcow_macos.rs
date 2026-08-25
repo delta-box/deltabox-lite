@@ -967,3 +967,131 @@ fn killed_start_leaves_stoppable_admission_pin() {
     assert_ok(&stop);
     assert_ok(&env.try_start("cbcow-through"));
 }
+
+// commit --sync keeps the reject -> fold -> report recovery inside one
+// invocation: stdout carries the sync payload with the conflict list and
+// theirs locations, and the baseline is already refreshed, so a plain commit
+// right after lands without a separate sync round-trip.
+#[test]
+fn commit_sync_recovers_in_one_invocation() {
+    let env = SharedProject::new();
+    let a = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let b = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let project = env.project.path().to_str().unwrap().to_string();
+    assert_ok(&command(
+        env.project.path(),
+        env.state.path(),
+        ["write", &a, "a.txt", "--content", "A-version", "--project", &project],
+    ));
+    assert_ok(&command(
+        env.project.path(),
+        env.state.path(),
+        ["write", &b, "a.txt", "--content", "B-version", "--project", &project],
+    ));
+    assert_ok(&command(env.project.path(), env.state.path(), ["commit", &a, "--project", &project]));
+
+    let out = command(
+        env.project.path(),
+        env.state.path(),
+        ["commit", &b, "--sync", "--project", &project],
+    );
+    assert!(!out.status.success());
+    let payload: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(payload["committed"], false);
+    assert_eq!(payload["folded_publications"], 1);
+    assert_eq!(payload["conflicts"][0]["path"], "a.txt");
+    assert_eq!(payload["conflicts"][0]["theirs"], "a.txt.deltabox-theirs");
+
+    assert_ok(&command(env.project.path(), env.state.path(), ["commit", &b, "--project", &project]));
+    assert_eq!(
+        std::fs::read_to_string(env.project.path().join("a.txt")).unwrap(),
+        "B-version"
+    );
+    assert!(!env.project.path().join("a.txt.deltabox-theirs").exists());
+}
+
+// commit --sync --ours automates the whole recovery: fold, keep the session's
+// version, and recommit inside the same invocation, reporting how many sync
+// retries it took.
+#[test]
+fn commit_sync_ours_lands_in_one_invocation() {
+    let env = SharedProject::new();
+    let a = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let b = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let project = env.project.path().to_str().unwrap().to_string();
+    assert_ok(&command(
+        env.project.path(),
+        env.state.path(),
+        ["write", &a, "a.txt", "--content", "A-version", "--project", &project],
+    ));
+    assert_ok(&command(
+        env.project.path(),
+        env.state.path(),
+        ["write", &b, "a.txt", "--content", "B-version", "--project", &project],
+    ));
+    assert_ok(&command(env.project.path(), env.state.path(), ["commit", &a, "--project", &project]));
+
+    let out = command(
+        env.project.path(),
+        env.state.path(),
+        ["commit", &b, "--sync", "--ours", "--project", &project],
+    );
+    assert_ok(&out);
+    let payload: Value = serde_json::from_slice(&out.stdout).unwrap();
+    // In-lock ours: the commit resolves the sibling publication inside its
+    // own publish-lock window, so no CLI-level sync retry happens at all.
+    assert!(payload.get("sync_retries").is_none(), "{payload}");
+    assert_eq!(payload["folded_publications"], 1);
+    assert_eq!(
+        std::fs::read_to_string(env.project.path().join("a.txt")).unwrap(),
+        "B-version"
+    );
+    assert!(!env.project.path().join("a.txt.deltabox-theirs").exists());
+}
+
+// The ours policy only overrides digest-endorsed sibling publications: a
+// change made outside deltabox has no publog digest and must keep failing
+// closed, even with --sync --ours.
+#[test]
+fn commit_ours_never_overrides_strangers() {
+    let env = SharedProject::new();
+    let s = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let project = env.project.path().to_str().unwrap().to_string();
+    assert_ok(&command(
+        env.project.path(),
+        env.state.path(),
+        ["write", &s, "a.txt", "--content", "session-version", "--project", &project],
+    ));
+    std::fs::write(env.project.path().join("a.txt"), "stranger-version").unwrap();
+
+    let out = command(
+        env.project.path(),
+        env.state.path(),
+        ["commit", &s, "--sync", "--ours", "--project", &project],
+    );
+    assert!(!out.status.success(), "ours overrode a stranger change");
+    assert_eq!(
+        std::fs::read_to_string(env.project.path().join("a.txt")).unwrap(),
+        "stranger-version"
+    );
+}

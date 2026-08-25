@@ -226,6 +226,20 @@ impl AcceptedIndex {
     }
 
     pub fn validate(&self, project: &Path, paths: impl IntoIterator<Item = String>) -> Result<()> {
+        self.validate_with_endorsement(project, paths, None)
+    }
+
+    /// `validate`, with an optional pre-declared endorsement set: a conflict
+    /// on a path whose current host content digest-matches an endorsed publog
+    /// digest is accepted baseline movement (a sibling publication the caller
+    /// has chosen to override). Anything without a matching digest — dirs,
+    /// symlinks, deletions, oversized files, strangers — keeps failing closed.
+    pub fn validate_with_endorsement(
+        &self,
+        project: &Path,
+        paths: impl IntoIterator<Item = String>,
+        endorsed: Option<&BTreeMap<String, String>>,
+    ) -> Result<()> {
         let mut checked = BTreeSet::new();
         let mut targets = Vec::new();
         checked.insert(String::new());
@@ -272,6 +286,22 @@ impl AcceptedIndex {
                     }
                 }
             }
+        }
+        if let Some(endorsed) = endorsed {
+            let mut kept = Vec::new();
+            for conflict in conflicts {
+                let host_path = project.join(&conflict.path);
+                let overridden = host_path.is_file()
+                    && endorsed.get(&conflict.path).is_some_and(|expected| {
+                        crate::publog::file_digest(&host_path)
+                            .map(|digest| digest == *expected)
+                            .unwrap_or(false)
+                    });
+                if !overridden {
+                    kept.push(conflict);
+                }
+            }
+            conflicts = kept;
         }
         if conflicts.is_empty() {
             return Ok(());
@@ -544,11 +574,16 @@ impl Publication {
         live: &Path,
         accepted: &AcceptedIndex,
         changes: &[Change],
+        endorsed: Option<&BTreeMap<String, String>>,
         engine_accepted_checkpoint: u64,
         durable: bool,
     ) -> Result<Self> {
         let changes = collapse_changes(changes, accepted, live)?;
-        accepted.validate(project, changes.iter().map(|change| change.path.clone()))?;
+        accepted.validate_with_endorsement(
+            project,
+            changes.iter().map(|change| change.path.clone()),
+            endorsed,
+        )?;
         let base_seq = crate::publog::head_seq(project)?;
         let id = Uuid::new_v4().to_string();
         let transaction = store.join(PUBLISH_DIR).join(&id);
@@ -1314,7 +1349,8 @@ mod tests {
             change("gone", ChangeKind::Deleted),
         ];
         let publication =
-            Publication::prepare(&store, &project, &live, &accepted, &changes, 0, false).unwrap();
+            Publication::prepare(&store, &project, &live, &accepted, &changes, None, 0, false)
+                .unwrap();
         publication.apply(&store, &project).unwrap();
         assert_eq!(fs::read_to_string(project.join("a")).unwrap(), "new");
         assert!(project.join("added").exists());

@@ -786,6 +786,7 @@ mod tests {
             .commit(CommitParams {
                 session_id: info.session_id.clone(),
                 checkpoint: None,
+                ours: false,
             })
             .unwrap();
         assert_eq!(committed.checkpoint_id, ckpt.id);

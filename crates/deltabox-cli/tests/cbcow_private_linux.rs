@@ -791,3 +791,82 @@ fn killed_start_leaves_stoppable_admission_pin() {
         .to_string();
     assert_ok(&raw(&["session", "stop", &through_id]));
 }
+
+// commit --sync keeps the reject -> fold -> report recovery inside one
+// invocation; a plain commit right after lands without a separate sync.
+#[test]
+fn commit_sync_recovers_in_one_invocation() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("shared.txt"), "base").unwrap();
+    let a = Session::start(project.path());
+    let b = Session::start(project.path());
+    a.write("shared.txt", "A-version");
+    b.write("shared.txt", "B-version");
+    assert_ok(&a.commit());
+
+    let out = b.command(["commit", &b.id, "--sync"]);
+    assert!(!out.status.success());
+    let payload: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(payload["committed"], false);
+    assert_eq!(payload["conflicts"][0]["path"], "shared.txt");
+
+    assert_ok(&b.commit());
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("shared.txt")).unwrap(),
+        "B-version"
+    );
+    assert!(!project.path().join("shared.txt.deltabox-theirs").exists());
+}
+
+// commit --sync --ours automates fold + keep-mine + recommit in one call.
+#[test]
+fn commit_sync_ours_lands_in_one_invocation() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("shared.txt"), "base").unwrap();
+    let a = Session::start(project.path());
+    let b = Session::start(project.path());
+    a.write("shared.txt", "A-version");
+    b.write("shared.txt", "B-version");
+    assert_ok(&a.commit());
+
+    let out = b.command(["commit", &b.id, "--sync", "--ours"]);
+    assert_ok(&out);
+    let payload: Value = serde_json::from_slice(&out.stdout).unwrap();
+    // In-lock ours: the commit resolves the sibling publication inside its
+    // own publish-lock window, so no CLI-level sync retry happens at all.
+    assert!(payload.get("sync_retries").is_none(), "{payload}");
+    assert_eq!(payload["folded_publications"], 1);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("shared.txt")).unwrap(),
+        "B-version"
+    );
+    assert!(!project.path().join("shared.txt.deltabox-theirs").exists());
+}
+
+// The ours policy only overrides digest-endorsed sibling publications: a
+// change made outside deltabox has no publog digest and must keep failing
+// closed, even with --sync --ours.
+#[test]
+fn commit_ours_never_overrides_strangers() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("shared.txt"), "base").unwrap();
+    let s = Session::start(project.path());
+    s.write("shared.txt", "session-version");
+    std::fs::write(project.path().join("shared.txt"), "stranger-version").unwrap();
+
+    let out = s.command(["commit", &s.id, "--sync", "--ours"]);
+    assert!(!out.status.success(), "ours overrode a stranger change");
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("shared.txt")).unwrap(),
+        "stranger-version"
+    );
+}

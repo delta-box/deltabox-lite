@@ -743,12 +743,29 @@ impl Manager {
             .filter(|change| crate::publog::is_publishable(&change.path))
             .cloned()
             .collect();
+        // Pre-declared `ours` policy: contested paths whose current host
+        // content is digest-endorsed by the publog are sibling publications
+        // and may be overridden without a prior sync, inside this same lock
+        // window. The endorsement set is built from the log, never from the
+        // host tree, so stranger changes keep failing validation closed.
+        let endorsed = if params.ours {
+            let mut endorsed = std::collections::BTreeMap::new();
+            for entry in crate::publog::entries_since(&self.project, 0)? {
+                for (path, digest) in entry.digests {
+                    endorsed.insert(path, digest);
+                }
+            }
+            Some(endorsed)
+        } else {
+            None
+        };
         let mut publication = Publication::prepare(
             &store,
             &self.project,
             &record.source,
             &accepted,
             &publish_changes,
+            endorsed.as_ref(),
             status.accepted_checkpoint,
             strict,
         )?;
@@ -949,6 +966,7 @@ impl Manager {
         self.commit_locked(CommitParams {
             session_id: session_id.into(),
             checkpoint: None,
+            ours: false,
         })
     }
 

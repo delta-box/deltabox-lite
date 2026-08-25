@@ -126,6 +126,12 @@ pub struct CommitParams {
     pub session_id: String,
     #[serde(default)]
     pub checkpoint: Option<String>,
+    /// Pre-declared conflict policy: publications by sibling sessions may be
+    /// overridden by this session's version without a prior sync, resolved
+    /// inside the publish-lock window. Only digest-endorsed sibling content
+    /// qualifies — changes made outside deltabox still fail closed.
+    #[serde(default)]
+    pub ours: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

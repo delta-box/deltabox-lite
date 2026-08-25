@@ -627,7 +627,14 @@ impl Manager {
             .and_then(|raw| raw.trim().parse().ok())
             .unwrap_or(0);
         let folded = crate::publog::entries_since(&self.project, seen)?.len() as u64;
-        let result = state.commit(target, seen)?;
+        // The endorsement bound is normally the session's own publog cursor:
+        // only publications it has acknowledged may move the baseline, so
+        // first-committer-wins holds. The pre-declared `ours` policy waives
+        // that acknowledgement inside this same lock window — every
+        // digest-endorsed sibling publication is accepted and overridden,
+        // while stranger changes keep failing closed.
+        let endorsed_until = if params.ours { u64::MAX } else { seen };
+        let result = state.commit(target, endorsed_until)?;
         self.finish_events(&mut state, &tracker, false)?;
         let (id, published) = result;
         let applied = published.len();
@@ -737,6 +744,7 @@ impl Manager {
         self.commit_locked(CommitParams {
             session_id: session_id.into(),
             checkpoint: None,
+            ours: false,
         })
     }
 
