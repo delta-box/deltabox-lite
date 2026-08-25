@@ -3,8 +3,9 @@
 use deltabox_core::changeset::{Change, ChangeKind};
 use deltabox_core::coordinator::{CommandExecutionMode, CoordinatorOptions, SessionCoordinator};
 use deltabox_core::protocol::{
-    AbortResult, ActiveReview, CommitResult, DiffResult, DurabilityMode, ExecParams, ExecResult,
-    FilesystemMode, ReviewBeginParams, ReviewKind, SessionInfo,
+    AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
+    CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecResult, FilesystemMode,
+    ReviewBeginParams, ReviewKind, SessionInfo, SessionStatus,
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -37,16 +38,32 @@ pub struct NativeSessionInfo {
     #[napi(js_name = "session_id")]
     pub session_id: String,
     pub project: String,
+    #[napi(js_name = "started_at_ms")]
+    pub started_at_ms: f64,
+    pub status: String,
+    #[napi(js_name = "checkpoint_count")]
+    pub checkpoint_count: f64,
+    #[napi(js_name = "pending_changes")]
+    pub pending_changes: f64,
+    #[napi(js_name = "requested_fs_mode")]
+    pub requested_fs_mode: String,
     #[napi(js_name = "resolved_fs_mode")]
     pub resolved_fs_mode: String,
+    #[napi(js_name = "host_visibility")]
+    pub host_visibility: String,
     pub durability: String,
+    #[napi(js_name = "group_commit_ms")]
+    pub group_commit_ms: Option<f64>,
     pub isolation: String,
     #[napi(js_name = "isolation_provider")]
     pub isolation_provider: Option<String>,
     #[napi(js_name = "state_provider")]
-    pub state_provider: Option<String>,
+    pub state_provider: Either<String, Null>,
+    #[napi(js_name = "fallback_reason")]
+    pub fallback_reason: Either<String, Null>,
     #[napi(js_name = "rollback_guarantee")]
     pub rollback_guarantee: String,
+    pub tainted: bool,
     pub mountpoint: Option<String>,
 }
 
@@ -69,6 +86,17 @@ pub struct NativeActiveReview {
     pub label: Either<String, Null>,
     #[napi(js_name = "started_at_ms")]
     pub started_at_ms: f64,
+}
+
+#[napi(object)]
+pub struct NativeCheckpointInfo {
+    pub id: String,
+    pub label: Either<String, Null>,
+    #[napi(js_name = "created_at_ms")]
+    pub created_at_ms: f64,
+    #[napi(js_name = "change_count")]
+    pub change_count: f64,
+    pub committed: bool,
 }
 
 #[napi(object)]
@@ -116,8 +144,8 @@ pub struct NativeAbortResult {
 pub struct NativeDeltaboxOptions {
     pub state_dir: Option<String>,
     pub runtime_dir: Option<String>,
-    pub fs_mode: Option<String>,
-    pub isolation: Option<String>,
+    pub fs_mode: String,
+    pub isolation: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,7 +176,7 @@ impl NativeDeltabox {
     pub fn new(
         project_root: String,
         helper_binary: String,
-        options: Option<NativeDeltaboxOptions>,
+        options: NativeDeltaboxOptions,
     ) -> napi::Result<Self> {
         let options = resolve_native_options(options)?;
         let command_execution = match options.isolation {
@@ -198,7 +226,7 @@ impl NativeDeltabox {
                     group_commit_ms,
                     (fs_mode == FilesystemMode::Git).then(|| isolation_name(isolation)),
                 )
-                .map(session_info)
+                .map(|value| session_info(value, isolation))
                 .map_err(native_error)
         })
         .await
@@ -207,10 +235,24 @@ impl NativeDeltabox {
     #[napi]
     pub async fn stop_session(&self, session_id: String) -> napi::Result<NativeSessionInfo> {
         let coordinator = Arc::clone(&self.coordinator);
+        let isolation = self.isolation;
         run_blocking(move || {
             coordinator
                 .stop(&session_id)
-                .map(session_info)
+                .map(|value| session_info(value, isolation))
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn session_status(&self, session_id: String) -> napi::Result<NativeSessionInfo> {
+        let coordinator = Arc::clone(&self.coordinator);
+        let isolation = self.isolation;
+        run_blocking(move || {
+            coordinator
+                .status(&session_id)
+                .map(|value| session_info(value, isolation))
                 .map_err(native_error)
         })
         .await
@@ -291,6 +333,81 @@ impl NativeDeltabox {
     }
 
     #[napi]
+    pub async fn checkpoint(
+        &self,
+        session_id: String,
+        label: Option<String>,
+    ) -> napi::Result<NativeCheckpointInfo> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .checkpoint(CheckpointParams { session_id, label })
+                .map(checkpoint_info)
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn diff(
+        &self,
+        session_id: String,
+        from: Option<String>,
+        to: Option<String>,
+    ) -> napi::Result<NativeDiffResult> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .diff(DiffParams {
+                    session_id,
+                    from,
+                    to,
+                })
+                .map(diff_result)
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn commit(
+        &self,
+        session_id: String,
+        checkpoint: Option<String>,
+    ) -> napi::Result<NativeCommitResult> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .commit(CommitParams {
+                    session_id,
+                    checkpoint,
+                })
+                .map(commit_result)
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn abort(
+        &self,
+        session_id: String,
+        checkpoint: Option<String>,
+    ) -> napi::Result<NativeAbortResult> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .abort(AbortParams {
+                    session_id,
+                    checkpoint,
+                })
+                .map(abort_result)
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
     pub async fn begin_review(
         &self,
         session_id: String,
@@ -307,6 +424,21 @@ impl NativeDeltabox {
                     label,
                 })
                 .map(active_review)
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn review_status(
+        &self,
+        session_id: String,
+    ) -> napi::Result<Either<NativeActiveReview, Null>> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .review_status(&session_id)
+                .map(|value| nullable(value.map(active_review)))
                 .map_err(native_error)
         })
         .await
@@ -347,6 +479,18 @@ impl NativeDeltabox {
         })
         .await
     }
+
+    #[napi]
+    pub async fn review_skip(&self, session_id: String) -> napi::Result<NativeActiveReview> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .review_skip(&session_id)
+                .map(active_review)
+                .map_err(native_error)
+        })
+        .await
+    }
 }
 
 fn parse_durability(value: Option<&str>) -> napi::Result<DurabilityMode> {
@@ -359,17 +503,11 @@ fn parse_durability(value: Option<&str>) -> napi::Result<DurabilityMode> {
     }
 }
 
-fn resolve_native_options(
-    options: Option<NativeDeltaboxOptions>,
-) -> napi::Result<ResolvedNativeOptions> {
-    let options = options.unwrap_or(NativeDeltaboxOptions {
-        state_dir: None,
-        runtime_dir: None,
-        fs_mode: None,
-        isolation: None,
-    });
-    let fs_mode = match options.fs_mode.as_deref().unwrap_or("cbcow-through") {
+fn resolve_native_options(options: NativeDeltaboxOptions) -> napi::Result<ResolvedNativeOptions> {
+    let fs_mode = match options.fs_mode.as_str() {
         "cbcow-through" => FilesystemMode::CbcowThrough,
+        "cbcow-private" => FilesystemMode::CbcowPrivate,
+        "copy-private" => FilesystemMode::CopyPrivate,
         "git" => FilesystemMode::Git,
         value => {
             return Err(napi::Error::from_reason(format!(
@@ -377,11 +515,7 @@ fn resolve_native_options(
             )))
         }
     };
-    let default_isolation = match fs_mode {
-        FilesystemMode::Git => "bubblewrap",
-        _ => "deltabox",
-    };
-    let isolation = match options.isolation.as_deref().unwrap_or(default_isolation) {
+    let isolation = match options.isolation.as_str() {
         "deltabox" => NativeIsolation::Deltabox,
         "bubblewrap" => NativeIsolation::Bubblewrap,
         "docker" => NativeIsolation::Docker,
@@ -396,6 +530,10 @@ fn resolve_native_options(
         (fs_mode, isolation),
         (FilesystemMode::CbcowThrough, NativeIsolation::Deltabox)
             | (FilesystemMode::CbcowThrough, NativeIsolation::None)
+            | (FilesystemMode::CbcowPrivate, NativeIsolation::Deltabox)
+            | (FilesystemMode::CbcowPrivate, NativeIsolation::None)
+            | (FilesystemMode::CopyPrivate, NativeIsolation::Deltabox)
+            | (FilesystemMode::CopyPrivate, NativeIsolation::None)
             | (FilesystemMode::Git, NativeIsolation::Bubblewrap)
             | (FilesystemMode::Git, NativeIsolation::Docker)
     );
@@ -458,21 +596,42 @@ fn filesystem_mode(value: FilesystemMode) -> String {
     .into()
 }
 
-fn session_info(value: SessionInfo) -> NativeSessionInfo {
+fn session_info(value: SessionInfo, isolation: NativeIsolation) -> NativeSessionInfo {
+    let mut filesystem = value.filesystem;
+    if isolation == NativeIsolation::None && filesystem.resolved_fs_mode != FilesystemMode::Git {
+        filesystem.isolation = "none".into();
+        filesystem.isolation_provider = None;
+    }
     NativeSessionInfo {
         session_id: value.session_id,
         project: value.project.to_string_lossy().into_owned(),
-        resolved_fs_mode: filesystem_mode(value.filesystem.resolved_fs_mode),
-        durability: value.filesystem.durability,
-        isolation: value.filesystem.isolation,
-        isolation_provider: value.filesystem.isolation_provider,
-        state_provider: value.filesystem.state_provider,
-        rollback_guarantee: value.filesystem.rollback_guarantee,
-        mountpoint: value
-            .filesystem
+        started_at_ms: value.started_at_ms as f64,
+        status: session_status(value.status),
+        checkpoint_count: value.checkpoint_count as f64,
+        pending_changes: value.pending_changes as f64,
+        requested_fs_mode: filesystem_mode(filesystem.requested_fs_mode),
+        resolved_fs_mode: filesystem_mode(filesystem.resolved_fs_mode),
+        host_visibility: filesystem.host_visibility,
+        durability: filesystem.durability,
+        group_commit_ms: filesystem.group_commit_ms.map(|value| value as f64),
+        isolation: filesystem.isolation,
+        isolation_provider: filesystem.isolation_provider,
+        state_provider: nullable(filesystem.state_provider),
+        fallback_reason: nullable(filesystem.fallback_reason),
+        rollback_guarantee: filesystem.rollback_guarantee,
+        tainted: filesystem.tainted,
+        mountpoint: filesystem
             .mountpoint
             .map(|path| path.to_string_lossy().into_owned()),
     }
+}
+
+fn session_status(value: SessionStatus) -> String {
+    match value {
+        SessionStatus::Running => "running",
+        SessionStatus::Stopped => "stopped",
+    }
+    .into()
 }
 
 fn exec_result(value: ExecResult) -> NativeExecResult {
@@ -500,6 +659,16 @@ fn active_review(value: ActiveReview) -> NativeActiveReview {
         kind: review_kind(value.kind),
         label: nullable(value.label),
         started_at_ms: value.started_at_ms as f64,
+    }
+}
+
+fn checkpoint_info(value: CheckpointInfo) -> NativeCheckpointInfo {
+    NativeCheckpointInfo {
+        id: value.id,
+        label: nullable(value.label),
+        created_at_ms: value.created_at_ms as f64,
+        change_count: value.change_count as f64,
+        committed: value.committed,
     }
 }
 
@@ -556,20 +725,13 @@ fn abort_result(value: AbortResult) -> NativeAbortResult {
 mod tests {
     use super::*;
 
-    fn options(fs_mode: Option<&str>, isolation: Option<&str>) -> NativeDeltaboxOptions {
+    fn options(fs_mode: &str, isolation: &str) -> NativeDeltaboxOptions {
         NativeDeltaboxOptions {
             state_dir: Some("/state".into()),
             runtime_dir: Some("/runtime".into()),
-            fs_mode: fs_mode.map(str::to_string),
-            isolation: isolation.map(str::to_string),
+            fs_mode: fs_mode.into(),
+            isolation: isolation.into(),
         }
-    }
-
-    #[test]
-    fn native_options_default_to_cbcow_with_deltabox_isolation() {
-        let resolved = resolve_native_options(None).unwrap();
-        assert_eq!(resolved.fs_mode, FilesystemMode::CbcowThrough);
-        assert_eq!(resolved.isolation, NativeIsolation::Deltabox);
     }
 
     #[test]
@@ -577,13 +739,15 @@ mod tests {
         for (fs_mode, isolation) in [
             ("cbcow-through", "deltabox"),
             ("cbcow-through", "none"),
+            ("cbcow-private", "deltabox"),
+            ("cbcow-private", "none"),
+            ("copy-private", "deltabox"),
+            ("copy-private", "none"),
             ("git", "bubblewrap"),
             ("git", "docker"),
         ] {
-            resolve_native_options(Some(options(Some(fs_mode), Some(isolation)))).unwrap();
+            resolve_native_options(options(fs_mode, isolation)).unwrap();
         }
-        let git_default = resolve_native_options(Some(options(Some("git"), None))).unwrap();
-        assert_eq!(git_default.isolation, NativeIsolation::Bubblewrap);
     }
 
     #[test]
@@ -594,7 +758,7 @@ mod tests {
             ("git", "deltabox"),
             ("git", "none"),
         ] {
-            let error = resolve_native_options(Some(options(Some(fs_mode), Some(isolation))))
+            let error = resolve_native_options(options(fs_mode, isolation))
                 .err()
                 .expect("combination must be rejected");
             assert!(error.reason.contains("unsupported native mode combination"));
