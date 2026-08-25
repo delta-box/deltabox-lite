@@ -3,7 +3,7 @@ use crate::engine::{Durability, EngineOptions, StateEngine};
 use crate::passthrough;
 use anyhow::{Context, Result};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -212,9 +212,10 @@ fn children(directory: &Path) -> Result<Vec<PathBuf>> {
 }
 
 fn write_response(stream: &mut UnixStream, response: Response) -> Result<()> {
-    serde_json::to_writer(&mut *stream, &response)?;
-    stream.write_all(b"\n")?;
-    stream.flush()?;
+    let mut writer = BufWriter::with_capacity(64 * 1024, stream);
+    serde_json::to_writer(&mut writer, &response)?;
+    writer.write_all(b"\n")?;
+    writer.flush()?;
     Ok(())
 }
 
