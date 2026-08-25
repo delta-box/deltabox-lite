@@ -81,9 +81,9 @@ async function main() {
     await native.writeFile(session.session_id, file, content)
     assert.equal((await native.abort(session.session_id, generic.id)).restored, 1)
 
-    const accepted = await native.checkpoint(session.session_id, 'generic commit')
+    await native.checkpoint(session.session_id, 'generic commit')
     await native.writeFile(session.session_id, file, content)
-    const committed = await native.commit(session.session_id, accepted.id)
+    const committed = await native.commit(session.session_id)
     assert.equal(typeof committed.checkpoint_id, 'string')
     assert.equal(Number.isInteger(committed.applied), true)
     assert.deepEqual(await readFile(file), content)
