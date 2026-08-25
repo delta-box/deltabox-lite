@@ -1095,3 +1095,45 @@ fn commit_ours_never_overrides_strangers() {
         "stranger-version"
     );
 }
+
+// Raising the digest cap widens in-lock ours coverage: a mid-sized file
+// (above the old 4 MiB cap, below the current one) published by a sibling is
+// digest-endorsed, so --sync --ours resolves the conflict inside the lock
+// instead of failing closed as an unendorsed change.
+#[test]
+fn commit_ours_covers_midsized_files() {
+    let env = SharedProject::new();
+    let a = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let b = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let project = env.project.path().to_str().unwrap().to_string();
+    for (sid, fill) in [(&a, "a"), (&b, "b")] {
+        let script = format!(
+            "yes {fill} 2>/dev/null | head -c 6291456 > big.bin"
+        );
+        let out = command(
+            env.project.path(),
+            env.state.path(),
+            ["exec", sid, "--project", &project, "--", "/bin/sh", "-c", &script],
+        );
+        assert_ok(&out);
+    }
+    assert_ok(&command(env.project.path(), env.state.path(), ["commit", &a, "--project", &project]));
+
+    let out = command(
+        env.project.path(),
+        env.state.path(),
+        ["commit", &b, "--sync", "--ours", "--project", &project],
+    );
+    assert_ok(&out);
+    let host = std::fs::read(env.project.path().join("big.bin")).unwrap();
+    assert_eq!(host.len(), 6291456);
+    assert_eq!(&host[..2], b"b\n");
+}

@@ -230,11 +230,18 @@ pub(crate) fn is_publishable(path: &str) -> bool {
         .is_some_and(|name| name.ends_with(THEIRS_DRAFT_SUFFIX))
 }
 
-/// Files above this size publish without a digest: hashing is ~2ms/MiB at
-/// commit time, and digest endorsement only ever benefits merge-sized files.
-/// An absent digest fails closed — the path simply conflicts as it would
-/// have before the publication log existed.
-pub(crate) const DIGEST_CAP_BYTES: u64 = 4 * 1024 * 1024;
+/// Files above this size publish without a digest. An absent digest fails
+/// closed — the path conflicts exactly as it did before the publication log
+/// existed — so the cap trades commit-time cost for endorsement coverage:
+/// only digest-carrying paths can be recognized as sibling publications and
+/// resolved in-lock by the `ours` policy. With hardware SHA-256 (the sha2
+/// `asm` feature) a boundary-sized commit measures ~32ms p50 — slightly
+/// below what the old 4 MiB cap cost with software hashing (~38ms) — so
+/// this is 4x the coverage inside the same time budget. The content is
+/// still read and hashed twice (publog digest plus the accepted-index
+/// fingerprint); deduplicating those two sites is the next lever if the
+/// cap should rise again.
+pub(crate) const DIGEST_CAP_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Capped digest for publog entries; None when the file exceeds the cap.
 pub(crate) fn file_digest_capped(path: &Path) -> Result<Option<String>> {
@@ -261,6 +268,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(state_root(dir.path()).unwrap()).unwrap();
         dir
+    }
+
+    #[test]
+    fn digest_cap_fails_closed_above_the_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let under = dir.path().join("under.bin");
+        let over = dir.path().join("over.bin");
+        fs::write(&under, vec![0u8; DIGEST_CAP_BYTES as usize]).unwrap();
+        fs::write(&over, vec![0u8; DIGEST_CAP_BYTES as usize + 1]).unwrap();
+        assert!(file_digest_capped(&under).unwrap().is_some());
+        assert!(file_digest_capped(&over).unwrap().is_none());
     }
 
     fn change(path: &str) -> PublogChange {
