@@ -124,9 +124,40 @@ pub fn copy_tree(src: &Path, dst: &Path) -> Result<usize> {
     Ok(copied)
 }
 
-/// Clone a regular file with copy-on-write when the filesystem supports it.
-/// Unsupported filesystems transparently fall back to an ordinary byte copy.
-pub fn clone_or_copy_file(src: &Path, dst: &Path) -> Result<u64> {
+/// Whether the destination's metadata arrived together with its content.
+/// `ClonedWithMetadata` is the macOS `clonefile` path: measured on APFS, a
+/// CLONE_ACL clone carries mode, uid, timestamps, BSD flags, xattrs, and the
+/// ACL; the one gap is the group, which the clone inherits from the
+/// destination directory, so the caller repairs gid and nothing else.
+/// Everything else — Linux FICLONE reflinks, sparse copies, plain copies —
+/// moves content only, and the caller must copy metadata by hand.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CopyMechanism {
+    ClonedWithMetadata,
+    ContentOnly,
+}
+
+/// Clone a regular file with copy-on-write when the filesystem supports it,
+/// falling back to an ordinary byte copy, and leave the destination
+/// owner-writable. Callers that repair metadata themselves use
+/// `clone_or_copy_file_with_mechanism` instead.
+pub fn clone_or_copy_file(src: &Path, dst: &Path) -> Result<()> {
+    let mechanism = clone_or_copy_file_with_mechanism(src, dst)?;
+    // Kept out of the mechanism-reporting path on purpose: callers that
+    // repair metadata afterwards would immediately overwrite this widened
+    // mode, and the stat+chmod pair is measurable at scan scale. Only the
+    // macOS clone path can report ClonedWithMetadata, so this arm does not
+    // exist elsewhere.
+    #[cfg(target_os = "macos")]
+    if mechanism == CopyMechanism::ClonedWithMetadata {
+        make_owner_writable(dst)?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = mechanism;
+    Ok(())
+}
+
+pub fn clone_or_copy_file_with_mechanism(src: &Path, dst: &Path) -> Result<CopyMechanism> {
     #[cfg(target_os = "macos")]
     {
         use std::ffi::CString;
@@ -138,16 +169,14 @@ pub fn clone_or_copy_file(src: &Path, dst: &Path) -> Result<u64> {
             .map_err(|_| Error::Backend("target path contains a NUL byte".into()))?;
         const CLONE_ACL: libc::c_uint = 0x0004;
         if unsafe { libc::clonefile(source.as_ptr(), target.as_ptr(), CLONE_ACL) } == 0 {
-            make_owner_writable(dst)?;
-            return Ok(std::fs::metadata(dst)?.len());
+            return Ok(CopyMechanism::ClonedWithMetadata);
         }
         match std::io::Error::last_os_error().raw_os_error() {
             Some(libc::ENOTSUP | libc::EXDEV | libc::EINVAL) => {}
             Some(libc::EEXIST) => {
                 std::fs::remove_file(dst)?;
                 if unsafe { libc::clonefile(source.as_ptr(), target.as_ptr(), CLONE_ACL) } == 0 {
-                    make_owner_writable(dst)?;
-                    return Ok(std::fs::metadata(dst)?.len());
+                    return Ok(CopyMechanism::ClonedWithMetadata);
                 }
             }
             _ => {}
@@ -169,11 +198,11 @@ pub fn clone_or_copy_file(src: &Path, dst: &Path) -> Result<u64> {
         let cloned = unsafe { libc::ioctl(target.as_raw_fd(), FICLONE, source.as_raw_fd()) } == 0;
         drop(target);
         if cloned {
-            return Ok(std::fs::metadata(dst)?.len());
+            return Ok(CopyMechanism::ContentOnly);
         }
         std::fs::remove_file(dst)?;
-        if let Some(copied) = copy_sparse_file(src, dst)? {
-            return Ok(copied);
+        if copy_sparse_file(src, dst)?.is_some() {
+            return Ok(CopyMechanism::ContentOnly);
         }
     }
     let mut source = File::open(src)?;
@@ -182,7 +211,8 @@ pub fn clone_or_copy_file(src: &Path, dst: &Path) -> Result<u64> {
         .create(true)
         .truncate(true)
         .open(dst)?;
-    Ok(copy(&mut source, &mut target)?)
+    copy(&mut source, &mut target)?;
+    Ok(CopyMechanism::ContentOnly)
 }
 
 #[cfg(target_os = "linux")]

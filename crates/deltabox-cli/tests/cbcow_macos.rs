@@ -1137,3 +1137,66 @@ fn commit_ours_covers_midsized_files() {
     assert_eq!(host.len(), 6291456);
     assert_eq!(&host[..2], b"b\n");
 }
+
+// The cloned private LIVE tree must carry the project's metadata exactly:
+// fingerprint validation depends on it, and the clone fast path skips the
+// manual per-file metadata pass, so this pins — end to end — what the
+// CLONE_ACL clone carries plus the gid/mode repairs. Covers an unusual mode,
+// an xattr, the hidden BSD flag, an ACL, a non-now mtime, and a hard-link
+// pair (whose second entry skips the metadata pass entirely).
+#[test]
+fn private_start_clones_metadata_exactly() {
+    let env = SharedProject::new();
+    let host = |args: &[&str]| {
+        let out = std::process::Command::new(args[0])
+            .args(&args[1..])
+            .current_dir(env.project.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    std::fs::write(env.project.path().join("meta.txt"), "m").unwrap();
+    host(&["/bin/chmod", "604", "meta.txt"]);
+    host(&["/usr/bin/xattr", "-w", "user.demo", "42", "meta.txt"]);
+    host(&["/bin/chmod", "+a", "everyone deny delete", "meta.txt"]);
+    host(&["/usr/bin/chflags", "hidden", "meta.txt"]);
+    host(&["/usr/bin/touch", "-t", "202001011212.30", "meta.txt"]);
+    std::fs::write(env.project.path().join("h1.txt"), "link").unwrap();
+    host(&["/bin/ln", "h1.txt", "h2.txt"]);
+
+    let sid = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let project = env.project.path().to_str().unwrap().to_string();
+    let in_session = |script: &str| {
+        let out = command(
+            env.project.path(),
+            env.state.path(),
+            ["exec", &sid, "--project", &project, "--", "/bin/sh", "-c", script],
+        );
+        assert_ok(&out);
+        let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+        value["stdout"].as_str().unwrap().trim().to_string()
+    };
+
+    let probe = "stat -f '%p %u %g %m %f' meta.txt";
+    assert_eq!(in_session(probe), host(&["/bin/sh", "-c", probe]));
+    assert_eq!(in_session("xattr -l meta.txt"), host(&["/bin/sh", "-c", "xattr -l meta.txt"]));
+    let acl = in_session("ls -le meta.txt");
+    assert!(acl.contains("everyone deny delete"), "{acl}");
+    let inodes = in_session("stat -f '%i' h1.txt; stat -f '%i' h2.txt");
+    let inodes: Vec<&str> = inodes.lines().collect();
+    assert_eq!(inodes[0], inodes[1], "hard links must stay linked");
+
+    let diff = command(env.project.path(), env.state.path(), ["diff", &sid, "--project", &project]);
+    assert_ok(&diff);
+    let diff = String::from_utf8_lossy(&diff.stdout);
+    assert!(diff.trim().starts_with("0 file(s) changed"), "{diff}");
+    let commit = command(env.project.path(), env.state.path(), ["commit", &sid, "--project", &project]);
+    assert_ok(&commit);
+    let commit: Value = serde_json::from_slice(&commit.stdout).unwrap();
+    assert_eq!(commit["applied"], 0, "{commit}");
+}

@@ -1,5 +1,4 @@
 use crate::error::{Error, Result};
-use crate::snapshot::clone_or_copy_file;
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};
 use std::fs::{self, File};
@@ -34,12 +33,26 @@ pub(crate) fn clone_path(
     if metadata.is_file() {
         let identity = (metadata.dev(), metadata.ino());
         if let Some(existing) = links.get(&identity) {
+            // Hard links share the inode: the first link's metadata pass
+            // already covered this entry.
             fs::hard_link(existing, destination)?;
         } else {
-            clone_or_copy_file(source, destination)?;
+            match crate::snapshot::clone_or_copy_file_with_mechanism(source, destination)? {
+                crate::snapshot::CopyMechanism::ClonedWithMetadata => {
+                    // The clone already carries mode, uid, timestamps, BSD
+                    // flags, xattrs, and the ACL (see CopyMechanism). One gap
+                    // remains: the clone inherits the destination directory's
+                    // group instead of the source's. Skipping the full
+                    // per-file metadata pass here is what keeps large-project
+                    // session starts fast.
+                    set_owner(destination, metadata.uid(), metadata.gid(), false)?;
+                }
+                crate::snapshot::CopyMechanism::ContentOnly => {
+                    copy_metadata(source, destination)?;
+                }
+            }
             links.insert(identity, destination.to_path_buf());
         }
-        copy_metadata(source, destination)?;
     } else if metadata.is_dir() {
         fs::create_dir_all(destination)?;
         for entry in fs::read_dir(source)? {
