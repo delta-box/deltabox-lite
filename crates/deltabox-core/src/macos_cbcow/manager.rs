@@ -125,6 +125,7 @@ impl Manager {
             FilesystemMode::CopyPrivate => {
                 return Err(Error::Backend("invalid macOS CB-CoW mode".into()))
             }
+            FilesystemMode::Git => return Err(Error::Backend("invalid macOS CB-CoW mode".into())),
         };
         let _project_lock = Lock::acquire(&self.root.join("cbcow.lock"))?;
         self.require_available_project()?;
@@ -167,7 +168,7 @@ impl Manager {
             durability,
         };
         save_json(&store.join(RECORD_FILE), &record, durable)?;
-        let filesystem = filesystem_info(mode, &state, durability);
+        let filesystem = filesystem_info(mode, &state, durability, self.execution_mode);
         let meta = SessionMeta {
             session_id: session_id.clone(),
             project: self.project.clone(),
@@ -236,7 +237,12 @@ impl Manager {
                 status: session.meta.status.clone(),
                 checkpoint_count: status.checkpoints,
                 pending_changes: status.pending,
-                filesystem: filesystem_info(status.mode, &session.state, session.record.durability),
+                filesystem: filesystem_info(
+                    status.mode,
+                    &session.state,
+                    session.record.durability,
+                    self.execution_mode,
+                ),
             });
         }
         let _lock = self.lock(session_id)?;
@@ -249,7 +255,8 @@ impl Manager {
         self.reconcile_history(&mut state)?;
         self.enforce_storage_limit(&meta, &state)?;
         let status = state.status();
-        let filesystem = filesystem_info(status.mode, &state, record.durability);
+        let filesystem =
+            filesystem_info(status.mode, &state, record.durability, self.execution_mode);
         if meta.filesystem != filesystem {
             meta.filesystem = filesystem.clone();
             self.save_meta(&meta)?;
@@ -283,6 +290,7 @@ impl Manager {
                     session.state.status().mode,
                     &session.state,
                     session.record.durability,
+                    self.execution_mode,
                 );
                 self.save_meta(&session.meta)?;
                 if fs::read_to_string(self.root.join(PROJECT_LEASE))
@@ -319,7 +327,12 @@ impl Manager {
         let _ = stop_event_helper(&state.event_socket());
         self.save_review(session_id, None)?;
         meta.status = SessionStatus::Stopped;
-        meta.filesystem = filesystem_info(state.status().mode, &state, record.durability);
+        meta.filesystem = filesystem_info(
+            state.status().mode,
+            &state,
+            record.durability,
+            self.execution_mode,
+        );
         self.save_meta(&meta)?;
         if fs::read_to_string(self.root.join(PROJECT_LEASE))
             .is_ok_and(|value| value.trim() == session_id)
@@ -1420,13 +1433,22 @@ fn probe_clonefile(project_state: &Path, state_root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn filesystem_info(mode: Mode, state: &State, durability: DurabilityMode) -> FilesystemInfo {
+fn filesystem_info(
+    mode: Mode,
+    state: &State,
+    durability: DurabilityMode,
+    execution_mode: CommandExecutionMode,
+) -> FilesystemInfo {
     let mut info = FilesystemInfo::macos_native(match mode {
         Mode::Through => FilesystemMode::CbcowThrough,
         Mode::Private => FilesystemMode::CbcowPrivate,
     });
     info.tainted = state.status().tainted;
     info.mountpoint = Some(state.live());
+    if execution_mode == CommandExecutionMode::Trusted {
+        info.isolation = "none".into();
+        info.isolation_provider = None;
+    }
     info.with_durability(durability, None)
 }
 

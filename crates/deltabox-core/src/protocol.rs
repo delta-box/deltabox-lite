@@ -57,6 +57,8 @@ pub struct SessionStartParams {
     #[serde(default)]
     pub require_fs_mode: bool,
     #[serde(default)]
+    pub isolation: Option<String>,
+    #[serde(default)]
     pub durability: DurabilityMode,
     #[serde(default)]
     pub group_commit_ms: Option<u64>,
@@ -214,6 +216,7 @@ pub enum FilesystemMode {
     CbcowPrivate,
     #[default]
     CopyPrivate,
+    Git,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -233,6 +236,8 @@ pub struct FilesystemInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_commit_ms: Option<u64>,
     pub isolation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolation_provider: Option<String>,
     #[serde(default, alias = "fuse_provider")]
     pub state_provider: Option<String>,
     pub fallback_reason: Option<String>,
@@ -276,7 +281,8 @@ impl FilesystemInfo {
             host_visibility: "on-commit".into(),
             durability: "process-crash".into(),
             group_commit_ms: None,
-            isolation: platform_isolation().into(),
+            isolation: "deltabox".into(),
+            isolation_provider: Some(platform_isolation().into()),
             state_provider: None,
             fallback_reason,
             rollback_guarantee: "private-working-tree".into(),
@@ -295,7 +301,8 @@ impl FilesystemInfo {
             host_visibility: "immediate".into(),
             durability: "process-crash".into(),
             group_commit_ms: None,
-            isolation: platform_isolation().into(),
+            isolation: "deltabox".into(),
+            isolation_provider: Some(platform_isolation().into()),
             state_provider: Some("linux-fuse3".into()),
             fallback_reason: None,
             rollback_guarantee: "fuse-routed-writes-only".into(),
@@ -314,7 +321,8 @@ impl FilesystemInfo {
             host_visibility: "on-commit".into(),
             durability: "process-crash".into(),
             group_commit_ms: None,
-            isolation: platform_isolation().into(),
+            isolation: "deltabox".into(),
+            isolation_provider: Some(platform_isolation().into()),
             state_provider: Some("linux-fuse3".into()),
             fallback_reason: None,
             rollback_guarantee: "private-live-tree".into(),
@@ -334,7 +342,8 @@ impl FilesystemInfo {
             host_visibility: if private { "on-commit" } else { "immediate" }.into(),
             durability: "process-crash".into(),
             group_commit_ms: None,
-            isolation: "seatbelt".into(),
+            isolation: "deltabox".into(),
+            isolation_provider: Some("seatbelt".into()),
             state_provider: Some("macos-apfs-fsevents".into()),
             fallback_reason: None,
             rollback_guarantee: if private {
@@ -362,9 +371,10 @@ fn platform_isolation() -> &'static str {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
+    #[default]
     Running,
     Stopped,
 }
@@ -430,6 +440,7 @@ mod tests {
                 policy: None,
                 fs_mode: None,
                 require_fs_mode: false,
+                isolation: None,
                 durability: DurabilityMode::Fast,
                 group_commit_ms: None,
             }),
@@ -473,9 +484,23 @@ mod tests {
             Method::SessionStart(params) => {
                 assert_eq!(params.fs_mode, None);
                 assert!(!params.require_fs_mode);
+                assert_eq!(params.isolation, None);
             }
             other => panic!("unexpected method: {other:?}"),
         }
+    }
+
+    #[test]
+    fn git_start_request_accepts_bubblewrap_isolation() {
+        let parsed: Request = serde_json::from_str(
+            r#"{"id":1,"method":"session.start","params":{"project":"/tmp/proj","fs_mode":"git","isolation":"bubblewrap"}}"#,
+        )
+        .unwrap();
+        let Method::SessionStart(params) = parsed.method else {
+            panic!("unexpected method");
+        };
+        assert_eq!(params.fs_mode, Some(FilesystemMode::Git));
+        assert_eq!(params.isolation.as_deref(), Some("bubblewrap"));
     }
 
     #[test]
@@ -486,6 +511,8 @@ mod tests {
         assert_eq!(value["resolved_fs_mode"], "cbcow-through");
         assert_eq!(value["host_visibility"], "immediate");
         assert_eq!(value["durability"], "process-crash");
+        assert_eq!(value["isolation"], "deltabox");
+        assert_eq!(value["isolation_provider"], platform_isolation());
         assert_eq!(value["helper_restarts"], 3);
         assert_eq!(value["mount_namespace"], false);
 

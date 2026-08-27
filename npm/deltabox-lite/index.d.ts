@@ -5,6 +5,13 @@ export interface NativeEnvironmentEntry {
   value: string
 }
 
+export interface NativeDeltaboxOptions {
+  stateDir?: string
+  runtimeDir?: string
+  fsMode: 'cbcow-through' | 'cbcow-private' | 'copy-private' | 'git'
+  isolation: 'deltabox' | 'bubblewrap' | 'docker' | 'none'
+}
+
 export interface NativeSessionInfo {
   session_id: string
   project: string
@@ -12,12 +19,13 @@ export interface NativeSessionInfo {
   status: 'running' | 'stopped'
   checkpoint_count: number
   pending_changes: number
-  requested_fs_mode: 'cbcow-through' | 'cbcow-private' | 'copy-private'
-  resolved_fs_mode: 'cbcow-through' | 'cbcow-private' | 'copy-private'
+  requested_fs_mode: NativeDeltaboxOptions['fsMode']
+  resolved_fs_mode: NativeDeltaboxOptions['fsMode']
   host_visibility: 'immediate' | 'on-commit'
   durability: string
   group_commit_ms?: number
-  isolation: string
+  isolation: NativeDeltaboxOptions['isolation']
+  isolation_provider?: 'sandlock' | 'seatbelt' | 'bubblewrap' | 'docker'
   state_provider: string | null
   fallback_reason: string | null
   rollback_guarantee: string
@@ -77,13 +85,7 @@ export interface NativeAbortResult {
 }
 
 export interface NativeDeltaboxInstance {
-  startSession(
-    policy?: string,
-    durability?: 'fast' | 'strict',
-    groupCommitMs?: number,
-    filesystemMode?: 'auto' | 'cbcow-through' | 'cbcow-private' | 'copy-private',
-    requireFilesystemMode?: boolean,
-  ): Promise<NativeSessionInfo>
+  startSession(policy?: string, durability?: 'fast' | 'strict', groupCommitMs?: number): Promise<NativeSessionInfo>
   stopSession(sessionId: string): Promise<NativeSessionInfo>
   sessionStatus(sessionId: string): Promise<NativeSessionInfo>
   exec(
@@ -112,9 +114,7 @@ export interface NativeDeltaboxConstructor {
   new(
     projectRoot: string,
     helperBinary: string,
-    trusted?: boolean,
-    stateDir?: string,
-    runtimeDir?: string,
+    options: NativeDeltaboxOptions,
   ): NativeDeltaboxInstance
 }
 

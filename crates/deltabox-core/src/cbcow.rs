@@ -149,6 +149,9 @@ impl Manager {
             crate::protocol::FilesystemMode::CopyPrivate => {
                 return Err(Error::Backend("invalid CB-CoW mode".into()))
             }
+            crate::protocol::FilesystemMode::Git => {
+                return Err(Error::Backend("invalid CB-CoW mode".into()))
+            }
         };
         save_json(&store.join(DENY_PATHS), &deny_paths)?;
         let state_root = self.state_base.join(&session_id);
@@ -202,7 +205,7 @@ impl Manager {
             };
         }
 
-        let filesystem = filesystem_info(&record);
+        let filesystem = filesystem_info(&record, self.execution_mode);
         let meta = SessionMeta {
             session_id: session_id.clone(),
             project: self.project.clone(),
@@ -288,7 +291,7 @@ impl Manager {
             status: meta.status,
             checkpoint_count: status.checkpoints.len().saturating_sub(1),
             pending_changes: status.touched_paths,
-            filesystem: filesystem_info(&record),
+            filesystem: filesystem_info(&record, self.execution_mode),
         })
     }
 
@@ -317,7 +320,7 @@ impl Manager {
             wait_unmounted(&record.mountpoint)?;
         }
         meta.status = SessionStatus::Stopped;
-        meta.filesystem = filesystem_info(&record);
+        meta.filesystem = filesystem_info(&record, self.execution_mode);
         meta.filesystem.helper_pid = None;
         self.save_meta(&meta)?;
         if fs::read_to_string(self.root.join(PROJECT_LEASE))
@@ -1309,8 +1312,8 @@ fn default_record_mode() -> crate::protocol::FilesystemMode {
     crate::protocol::FilesystemMode::CbcowThrough
 }
 
-fn filesystem_info(record: &MountRecord) -> FilesystemInfo {
-    let info = match record.mode {
+fn filesystem_info(record: &MountRecord, execution_mode: CommandExecutionMode) -> FilesystemInfo {
+    let mut info = match record.mode {
         crate::protocol::FilesystemMode::CbcowThrough => FilesystemInfo::cbcow_through(
             record.mountpoint.clone(),
             record.helper_pid,
@@ -1322,7 +1325,12 @@ fn filesystem_info(record: &MountRecord) -> FilesystemInfo {
             record.restarts,
         ),
         crate::protocol::FilesystemMode::CopyPrivate => unreachable!("CB-CoW mount record mode"),
+        crate::protocol::FilesystemMode::Git => unreachable!("CB-CoW mount record mode"),
     };
+    if execution_mode == CommandExecutionMode::Trusted {
+        info.isolation = "none".into();
+        info.isolation_provider = None;
+    }
     info.with_durability(record.durability, record.group_commit_ms)
 }
 
