@@ -457,6 +457,7 @@ fn publication_recovers_each_process_crash_boundary() {
     }
     for durable in [false, true] {
         for point in [
+            "private_publish_staged",
             "private_publish_prepared",
             "private_publish_path_applied",
             "private_publish_host_applied",
@@ -484,7 +485,9 @@ fn publication_recovers_each_process_crash_boundary() {
             );
             if matches!(
                 point,
-                "private_publish_prepared" | "private_publish_path_applied"
+                "private_publish_staged"
+                    | "private_publish_prepared"
+                    | "private_publish_path_applied"
             ) {
                 assert_eq!(status["pending_changes"], 1);
                 assert_eq!(
@@ -501,6 +504,77 @@ fn publication_recovers_each_process_crash_boundary() {
             );
         }
     }
+}
+
+// The interleaving the pre-lock staging half creates: while one commit is
+// staged-and-digested but has not requested the publish lock, a disjoint
+// sibling publishes completely. The paused commit must then fold that
+// publication and land — publog order sibling-first — instead of conflicting.
+#[test]
+fn sibling_publishes_inside_anothers_staging_window() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("seed.txt"), "seed").unwrap();
+    let a = Session::start(project.path());
+    let b = Session::start(project.path());
+    for path in ["a-1.txt", "a-2.txt", "a-3.txt", "a-4.txt"] {
+        a.write(path, "from-a");
+    }
+    b.write("b.txt", "from-b");
+
+    let pause = tempfile::tempdir().unwrap();
+    let commit_a = Command::new(env!("CARGO_BIN_EXE_deltabox"))
+        .args(["commit", a.id.as_str(), "--project"])
+        .arg(project.path())
+        .env("DELTABOX_TEST_PAUSE_AT", "commit_staged")
+        .env("DELTABOX_TEST_PAUSE_DIR", pause.path())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let arrived = pause.path().join("commit_staged.arrived");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !arrived.exists() {
+        assert!(Instant::now() < deadline, "commit A never finished staging");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    // A is packed but lockless: B's whole publication goes through now.
+    let commit_b = b.commit();
+    assert_ok(&commit_b);
+    let commit_b: Value = serde_json::from_slice(&commit_b.stdout).unwrap();
+    assert_eq!(commit_b["applied"], 1);
+
+    std::fs::write(pause.path().join("commit_staged.release"), b"").unwrap();
+    let commit_a = commit_a.wait_with_output().unwrap();
+    assert_ok(&commit_a);
+    let commit_a: Value = serde_json::from_slice(&commit_a.stdout).unwrap();
+    assert_eq!(commit_a["applied"], 4);
+    assert_eq!(commit_a["folded_publications"], 1);
+
+    for path in ["a-1.txt", "a-2.txt", "a-3.txt", "a-4.txt"] {
+        assert_eq!(
+            std::fs::read_to_string(project.path().join(path)).unwrap(),
+            "from-a"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("b.txt")).unwrap(),
+        "from-b"
+    );
+
+    // The publog serialized them sibling-first, digests intact.
+    let publog =
+        std::fs::read_to_string(project.path().join(".deltabox").join("publog.jsonl")).unwrap();
+    let entries: Vec<Value> = publog
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["session_id"], b.id.as_str());
+    assert_eq!(entries[1]["session_id"], a.id.as_str());
+    assert_eq!(entries[1]["digests"].as_object().unwrap().len(), 4);
 }
 
 #[test]

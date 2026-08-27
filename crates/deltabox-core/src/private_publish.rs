@@ -225,6 +225,9 @@ impl AcceptedIndex {
         })
     }
 
+    /// `validate_with_endorsement` without an endorsement set, kept for unit
+    /// tests; production validation always flows through `complete`.
+    #[cfg(test)]
     pub fn validate(&self, project: &Path, paths: impl IntoIterator<Item = String>) -> Result<()> {
         self.validate_with_endorsement(project, paths, None)
     }
@@ -567,7 +570,65 @@ impl AcceptedIndex {
     }
 }
 
+/// A publication frozen before the publish lock: the collapsed publish set,
+/// its staged tree under `publish/<id>/staged`, and digests of that frozen
+/// copy. Everything here is session-private on disk. `complete` performs the
+/// in-lock half; `discard` releases one that never publishes.
+pub struct StagedPublication {
+    id: String,
+    changes: Vec<StagedChange>,
+    /// sha256 per staged regular file at or below the digest cap — the
+    /// publog digests for this publication. `apply` renames these exact
+    /// files into the host, so a staged digest is a digest of what lands.
+    digests: BTreeMap<String, String>,
+    durable: bool,
+}
+
+struct StagedChange {
+    path: String,
+    kind: ChangeKind,
+    namespace_changed: bool,
+}
+
 impl Publication {
+    /// Session-private half of a publication, safe to run without the
+    /// publish lock: collapses the publish set and freezes it as the staged
+    /// tree, digesting that frozen copy. Reads only the live tree and the
+    /// accepted index. Failures clean up after themselves; a staged
+    /// publication that never publishes must be released with `discard`.
+    pub fn stage(
+        store: &Path,
+        live: &Path,
+        accepted: &AcceptedIndex,
+        changes: &[Change],
+        durable: bool,
+    ) -> Result<StagedPublication> {
+        let collapsed = collapse_changes(changes, accepted, live)?;
+        let id = Uuid::new_v4().to_string();
+        sweep_stale_transactions(store, &id);
+        let transaction = store.join(PUBLISH_DIR).join(&id);
+        match stage_changes(&transaction, live, accepted, &collapsed, durable) {
+            Ok((changes, digests)) => {
+                maybe_crash("private_publish_staged");
+                maybe_pause("commit_staged");
+                Ok(StagedPublication {
+                    id,
+                    changes,
+                    digests,
+                    durable,
+                })
+            }
+            Err(error) => {
+                let _ = remove_path(&transaction);
+                Err(error)
+            }
+        }
+    }
+
+    /// Both halves back to back, for unit tests that need no lock between
+    /// them. Production runs `stage` before the publish lock and `complete`
+    /// under it.
+    #[cfg(test)]
     pub fn prepare(
         store: &Path,
         project: &Path,
@@ -578,61 +639,22 @@ impl Publication {
         engine_accepted_checkpoint: u64,
         durable: bool,
     ) -> Result<Self> {
-        let changes = collapse_changes(changes, accepted, live)?;
-        accepted.validate_with_endorsement(
+        let staged = Self::stage(store, live, accepted, changes, durable)?;
+        match staged.complete(
+            store,
             project,
-            changes.iter().map(|change| change.path.clone()),
+            live,
+            accepted,
+            changes,
             endorsed,
-        )?;
-        let base_seq = crate::publog::head_seq(project)?;
-        let id = Uuid::new_v4().to_string();
-        let transaction = store.join(PUBLISH_DIR).join(&id);
-        let backup = transaction.join("backup");
-        let staged = transaction.join("staged");
-        fs::create_dir_all(&backup)?;
-        fs::create_dir_all(&staged)?;
-        let mut links = HashMap::new();
-        let mut backup_links = HashMap::new();
-        let mut plan = Vec::new();
-        for change in changes {
-            validate_relative(&change.path)?;
-            let host = project.join(&change.path);
-            let existed = fs::symlink_metadata(&host).is_ok();
-            let namespace_changed = accepted.entry(&change.path)?.map(|entry| entry.path_kind())
-                != path_kind(&live.join(&change.path))?;
-            if existed {
-                clone_path(&host, &backup.join(&change.path), &mut backup_links)?;
-            }
-            if change.kind != ChangeKind::Deleted {
-                clone_path(
-                    &live.join(&change.path),
-                    &staged.join(&change.path),
-                    &mut links,
-                )?;
-            }
-            plan.push(PublishChange {
-                path: change.path,
-                kind: change.kind,
-                existed,
-                namespace_changed,
-            });
-        }
-        let publication = Self {
-            id,
-            phase: PublicationPhase::Prepared,
             engine_accepted_checkpoint,
-            changes: plan,
-            durable,
-            base_seq,
-        };
-        if durable {
-            sync_tree(&backup)?;
-            sync_tree(&staged)?;
-            sync_dir(&transaction)?;
-            sync_dir(&store.join(PUBLISH_DIR))?;
+        ) {
+            Ok(publication) => Ok(publication),
+            Err(error) => {
+                staged.discard(store);
+                Err(error)
+            }
         }
-        publication.save(store)?;
-        Ok(publication)
     }
 
     pub fn load(store: &Path) -> Result<Option<Self>> {
@@ -782,6 +804,190 @@ pub fn materialize_with_durability(
         }
     }
     AcceptedState::capture(project)
+}
+
+impl StagedPublication {
+    /// In-lock half of a publication; the caller must hold the publish lock.
+    /// Recomputes the publish set against the (by now fast-forwarded)
+    /// accepted index and refuses to publish if it drifted from the staged
+    /// set: collapse expands hardlink peers, and a sibling publication
+    /// landing between staging and this lock can break a peer relationship,
+    /// so publishing the stale expansion could override work this session
+    /// never saw. Then validates against the host, captures the host
+    /// backups, and records the prepared publication.
+    pub fn complete(
+        &self,
+        store: &Path,
+        project: &Path,
+        live: &Path,
+        accepted: &AcceptedIndex,
+        changes: &[Change],
+        endorsed: Option<&BTreeMap<String, String>>,
+        engine_accepted_checkpoint: u64,
+    ) -> Result<Publication> {
+        let fresh = collapse_changes(changes, accepted, live)?;
+        let staged: BTreeMap<&str, ChangeKind> = self
+            .changes
+            .iter()
+            .map(|change| (change.path.as_str(), change.kind.clone()))
+            .collect();
+        let current: BTreeMap<&str, ChangeKind> = fresh
+            .iter()
+            .map(|change| (change.path.as_str(), change.kind.clone()))
+            .collect();
+        if staged != current {
+            let conflicts = staged
+                .keys()
+                .chain(current.keys())
+                .filter(|path| staged.get(**path) != current.get(**path))
+                .map(|path| PathConflict {
+                    path: (*path).to_string(),
+                    host_change: crate::changeset::ChangeKind::Modified,
+                })
+                .collect();
+            return Err(Error::ProjectConflict(ConflictReport::new(
+                "publish set changed while staging; retry the commit",
+                conflicts,
+            )));
+        }
+        accepted.validate_with_endorsement(
+            project,
+            self.changes.iter().map(|change| change.path.clone()),
+            endorsed,
+        )?;
+        let base_seq = crate::publog::head_seq(project)?;
+        let transaction = store.join(PUBLISH_DIR).join(&self.id);
+        let backup = transaction.join("backup");
+        fs::create_dir_all(&backup)?;
+        let mut backup_links = HashMap::new();
+        let mut plan = Vec::new();
+        for change in &self.changes {
+            let host = project.join(&change.path);
+            let existed = fs::symlink_metadata(&host).is_ok();
+            if existed {
+                clone_path(&host, &backup.join(&change.path), &mut backup_links)?;
+            }
+            plan.push(PublishChange {
+                path: change.path.clone(),
+                kind: change.kind.clone(),
+                existed,
+                namespace_changed: change.namespace_changed,
+            });
+        }
+        let publication = Publication {
+            id: self.id.clone(),
+            phase: PublicationPhase::Prepared,
+            engine_accepted_checkpoint,
+            changes: plan,
+            durable: self.durable,
+            base_seq,
+        };
+        if self.durable {
+            sync_tree(&backup)?;
+            sync_dir(&transaction)?;
+            sync_dir(&store.join(PUBLISH_DIR))?;
+        }
+        publication.save(store)?;
+        Ok(publication)
+    }
+
+    /// The publog digests computed from the staged tree, consumed once the
+    /// publication lands.
+    pub fn take_digests(&mut self) -> BTreeMap<String, String> {
+        std::mem::take(&mut self.digests)
+    }
+
+    /// Best-effort release of a staged publication that will not publish.
+    /// If `publication.json` names this id, the in-lock publication already
+    /// began and recovery owns the directory — leave it alone.
+    pub fn discard(&self, store: &Path) {
+        let owned = Publication::load(store)
+            .ok()
+            .flatten()
+            .is_some_and(|publication| publication.id == self.id);
+        if !owned {
+            let _ = remove_path(&store.join(PUBLISH_DIR).join(&self.id));
+        }
+    }
+}
+
+fn stage_changes(
+    transaction: &Path,
+    live: &Path,
+    accepted: &AcceptedIndex,
+    changes: &[Change],
+    durable: bool,
+) -> Result<(Vec<StagedChange>, BTreeMap<String, String>)> {
+    let staged_dir = transaction.join("staged");
+    fs::create_dir_all(&staged_dir)?;
+    let mut links = HashMap::new();
+    let mut staged = Vec::new();
+    for change in changes {
+        validate_relative(&change.path)?;
+        let namespace_changed = accepted.entry(&change.path)?.map(|entry| entry.path_kind())
+            != path_kind(&live.join(&change.path))?;
+        if change.kind != ChangeKind::Deleted {
+            clone_path(
+                &live.join(&change.path),
+                &staged_dir.join(&change.path),
+                &mut links,
+            )?;
+        }
+        staged.push(StagedChange {
+            path: change.path.clone(),
+            kind: change.kind.clone(),
+            namespace_changed,
+        });
+    }
+    // Digest the frozen staged copy, not the live tree: a live write after
+    // hashing would otherwise record a digest for content that never lands.
+    // Regular files only — the publog documents that directories and
+    // symlinks carry no digest and fail closed.
+    let mut digests = BTreeMap::new();
+    for change in &staged {
+        if change.kind == ChangeKind::Deleted {
+            continue;
+        }
+        let path = staged_dir.join(&change.path);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        if let Some(digest) = crate::publog::file_digest_capped(&path)? {
+            digests.insert(change.path.clone(), digest);
+        }
+    }
+    if durable {
+        sync_tree(&staged_dir)?;
+        sync_dir(transaction)?;
+    }
+    Ok((staged, digests))
+}
+
+/// Removes transaction directories no publication references: leftovers of a
+/// crash between staging and the publish lock. The store is session-private
+/// and the caller holds the session lock, so nothing else owns these. The
+/// active transaction (named by `publication.json`) and the one being staged
+/// are kept.
+fn sweep_stale_transactions(store: &Path, staging_id: &str) {
+    let active = Publication::load(store)
+        .ok()
+        .flatten()
+        .map(|publication| publication.id);
+    let Ok(entries) = fs::read_dir(store.join(PUBLISH_DIR)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name != staging_id && active.as_deref() != Some(name) {
+            let _ = remove_path(&entry.path());
+        }
+    }
 }
 
 fn collapse_changes(
@@ -1359,5 +1565,102 @@ mod tests {
         assert_eq!(fs::read_to_string(project.join("a")).unwrap(), "old");
         assert!(!project.join("added").exists());
         assert_eq!(fs::read_to_string(project.join("gone")).unwrap(), "old");
+    }
+
+    // Digests come from the frozen staged copy, cover regular files only, and
+    // the split halves still publish end to end.
+    #[test]
+    fn staged_digests_cover_regular_files_only() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let live = root.path().join("live");
+        let store = root.path().join("store");
+        fs::create_dir(&project).unwrap();
+        fs::create_dir(&store).unwrap();
+        fs::write(project.join("f"), "old").unwrap();
+        fs::write(project.join("gone"), "old").unwrap();
+        let accepted = materialize(&project, &live).unwrap();
+        let accepted = AcceptedIndex::create(&store.join(ACCEPTED_INDEX), accepted).unwrap();
+        fs::write(live.join("f"), "new-content").unwrap();
+        std::os::unix::fs::symlink("f", live.join("ln")).unwrap();
+        fs::remove_file(live.join("gone")).unwrap();
+        let changes = vec![
+            change("f", ChangeKind::Modified),
+            change("ln", ChangeKind::Added),
+            change("gone", ChangeKind::Deleted),
+        ];
+        let mut staged = Publication::stage(&store, &live, &accepted, &changes, false).unwrap();
+        let expected = crate::publog::file_digest(&live.join("f")).unwrap();
+        assert_eq!(
+            staged.digests,
+            std::collections::BTreeMap::from([("f".to_string(), expected)]),
+            "one digest for the regular file; none for the symlink or deletion"
+        );
+        let publication = staged
+            .complete(&store, &project, &live, &accepted, &changes, None, 0)
+            .unwrap();
+        publication.apply(&store, &project).unwrap();
+        assert_eq!(fs::read_to_string(project.join("f")).unwrap(), "new-content");
+        assert!(project.join("ln").is_symlink());
+        assert!(!project.join("gone").exists());
+        assert_eq!(staged.take_digests().len(), 1);
+        assert!(staged.take_digests().is_empty());
+    }
+
+    // Collapse expands hardlink peers from the accepted index. If a sibling
+    // publication rewrites a peer between staging and the publish lock, the
+    // staged expansion is stale and publishing it would override work this
+    // session never saw — complete must refuse instead.
+    #[test]
+    fn complete_refuses_a_drifted_publish_set() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let live = root.path().join("live");
+        let store = root.path().join("store");
+        fs::create_dir(&project).unwrap();
+        fs::create_dir(&store).unwrap();
+        fs::write(project.join("a"), "linked").unwrap();
+        fs::hard_link(project.join("a"), project.join("b")).unwrap();
+        let accepted = materialize(&project, &live).unwrap();
+        let mut accepted = AcceptedIndex::create(&store.join(ACCEPTED_INDEX), accepted).unwrap();
+        fs::write(live.join("a"), "rewritten").unwrap();
+        let changes = vec![change("a", ChangeKind::Modified)];
+        let staged = Publication::stage(&store, &live, &accepted, &changes, false).unwrap();
+        assert_eq!(
+            staged
+                .changes
+                .iter()
+                .map(|change| change.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"],
+            "staging expanded the hardlink peer"
+        );
+        // A sibling publication replaces the peer with an independent file
+        // and the in-lock fast-forward refreshes its index entry.
+        fs::remove_file(project.join("b")).unwrap();
+        fs::write(project.join("b"), "sibling").unwrap();
+        accepted
+            .refresh(
+                &project,
+                &[PublishChange {
+                    path: "b".into(),
+                    kind: ChangeKind::Modified,
+                    existed: true,
+                    namespace_changed: false,
+                }],
+            )
+            .unwrap();
+        let drifted = staged.complete(&store, &project, &live, &accepted, &changes, None, 0);
+        assert!(
+            matches!(drifted, Err(Error::ProjectConflict(_))),
+            "stale hardlink expansion must be refused: {drifted:?}"
+        );
+        staged.discard(&store);
+        assert_eq!(
+            fs::read_dir(store.join(PUBLISH_DIR)).unwrap().count(),
+            0,
+            "discard removed the staged transaction"
+        );
+        assert_eq!(fs::read_to_string(project.join("b")).unwrap(), "sibling");
     }
 }

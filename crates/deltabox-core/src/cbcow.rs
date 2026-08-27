@@ -6,8 +6,8 @@ use crate::journal::{Journal, JournalEntry, JournalKind};
 use crate::pathmap::PathMapper;
 use crate::policy::Policy;
 use crate::private_publish::{
-    materialize_with_durability, retire_orphans, AcceptedIndex, Publication, PublicationPhase, PublishChange,
-    ACCEPTED_INDEX, LIVE_DIR, PUBLISH_DIR, RETIRED_DIR,
+    materialize_with_durability, retire_orphans, AcceptedIndex, Publication, PublicationPhase,
+    PublishChange, StagedPublication, ACCEPTED_INDEX, LIVE_DIR, PUBLISH_DIR, RETIRED_DIR,
 };
 use crate::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
@@ -697,12 +697,76 @@ impl Manager {
             });
         }
         let strict = record.durability == DurabilityMode::Strict;
-        // Publication window: validation, host application, and retirement
-        // must be atomic against sibling publications and recoveries.
-        let _publish = Lock::acquire(&publish_lock_path(&self.project)?)?;
-        crate::test_hooks::maybe_pause("publish_lock_held");
+        // Session-private preparation runs before the publish lock: filter
+        // the publish set, freeze it as the staged tree, and digest that
+        // frozen copy. None of it reads the host or the publog, so siblings
+        // publish freely while this commit packs — and a digest failure now
+        // aborts before anything was published. `complete` re-checks the
+        // publish set under the lock, so a sibling landing in between is
+        // still arbitrated by validation, never silently overridden.
         let mut accepted =
             AcceptedIndex::open_with_durability(&store.join(ACCEPTED_INDEX), strict)?;
+        // `.deltabox-theirs` drafts stay in the private engine view — the agent
+        // merges against them — but must never cross into the host project.
+        // Filtering the publish set here keeps them out of the staged tree, the
+        // host application, and the publog in one move; the engine commit below
+        // still retains them for the session, so abort/undo are unaffected.
+        let publish_changes: Vec<_> = changes
+            .iter()
+            .filter(|change| crate::publog::is_publishable(&change.path))
+            .cloned()
+            .collect();
+        let status = self.engine_status(record)?;
+        let mut staged = Publication::stage(
+            &store,
+            &record.source,
+            &accepted,
+            &publish_changes,
+            strict,
+        )?;
+        let (checkpoint_id, applied, folded) = match self.publish_staged(
+            &params,
+            record,
+            &store,
+            &mut accepted,
+            &publish_changes,
+            status.accepted_checkpoint,
+            &mut staged,
+        ) {
+            Ok(published) => published,
+            Err(error) => {
+                staged.discard(&store);
+                return Err(error);
+            }
+        };
+        self.save_review(&params.session_id, None)?;
+        self.append(&params.session_id, JournalKind::Commit, None)?;
+        Ok(CommitResult {
+            checkpoint_id,
+            applied,
+            folded_publications: (folded > 0).then_some(folded),
+        })
+    }
+
+    /// The publication window: validation, host application, retirement, and
+    /// the publog append must be atomic against sibling publications and
+    /// recoveries, so they all run under one exclusive hold of the publish
+    /// lock. Everything session-private already happened in
+    /// `Publication::stage`; on a publishing success the staged digests are
+    /// consumed into the publog entry.
+    #[allow(clippy::too_many_arguments)]
+    fn publish_staged(
+        &self,
+        params: &CommitParams,
+        record: &MountRecord,
+        store: &Path,
+        accepted: &mut AcceptedIndex,
+        publish_changes: &[deltafs_fuse::engine::Change],
+        engine_accepted_checkpoint: u64,
+        staged: &mut StagedPublication,
+    ) -> Result<(String, usize, u64)> {
+        let _publish = Lock::acquire(&publish_lock_path(&self.project)?)?;
+        crate::test_hooks::maybe_pause("publish_lock_held");
         // Fast-forward the baseline over sibling publications for every path
         // this commit does not touch: their host changes are accepted state,
         // not drift. Contested paths stay stale so validation still rejects.
@@ -710,8 +774,10 @@ impl Manager {
             crate::publog::entries_since(&self.project, self.publog_seen(&params.session_id))?;
         let folded = sibling_entries.len() as u64;
         if folded > 0 {
-            let mine: std::collections::BTreeSet<&str> =
-                changes.iter().map(|change| change.path.as_str()).collect();
+            let mine: std::collections::BTreeSet<&str> = publish_changes
+                .iter()
+                .map(|change| change.path.as_str())
+                .collect();
             let mut seen_paths = std::collections::BTreeSet::new();
             let mut forward = Vec::new();
             for entry in sibling_entries.iter().rev() {
@@ -732,17 +798,6 @@ impl Manager {
                 accepted.refresh(&self.project, &forward)?;
             }
         }
-        let status = self.engine_status(record)?;
-        // `.deltabox-theirs` drafts stay in the private engine view — the agent
-        // merges against them — but must never cross into the host project.
-        // Filtering the publish set here keeps them out of the staged tree, the
-        // host application, and the publog in one move; the engine commit below
-        // still retains them for the session, so abort/undo are unaffected.
-        let publish_changes: Vec<_> = changes
-            .iter()
-            .filter(|change| crate::publog::is_publishable(&change.path))
-            .cloned()
-            .collect();
         // Pre-declared `ours` policy: contested paths whose current host
         // content is digest-endorsed by the publog are sibling publications
         // and may be overridden without a prior sync, inside this same lock
@@ -759,20 +814,19 @@ impl Manager {
         } else {
             None
         };
-        let mut publication = Publication::prepare(
-            &store,
+        let mut publication = staged.complete(
+            store,
             &self.project,
             &record.source,
-            &accepted,
-            &publish_changes,
+            accepted,
+            publish_changes,
             endorsed.as_ref(),
-            status.accepted_checkpoint,
-            strict,
+            engine_accepted_checkpoint,
         )?;
         maybe_crash("private_publish_prepared");
-        publication.apply(&store, &self.project)?;
+        publication.apply(store, &self.project)?;
         publication.phase = PublicationPhase::HostApplied;
-        publication.save(&store)?;
+        publication.save(store)?;
         maybe_crash("private_publish_host_applied");
 
         let checkpoint = match self.request(record, ControlCommand::Commit { target: None })? {
@@ -780,13 +834,13 @@ impl Manager {
             _ => return Err(Error::Backend("unexpected commit response".into())),
         };
         publication.phase = PublicationPhase::EngineCommitted;
-        publication.save(&store)?;
+        publication.save(store)?;
         maybe_crash("private_publish_engine_committed");
         accepted.refresh(&self.project, &publication.changes)?;
         maybe_crash("private_publish_state_updated");
         let applied = publication.changes.len();
-        self.finish_publication(&store, record, &publication)?;
-        let mut digests = std::collections::BTreeMap::new();
+        self.finish_publication(store, record, &publication)?;
+        let digests = staged.take_digests();
         let mut published = Vec::new();
         for change in &publication.changes {
             published.push(crate::publog::PublogChange {
@@ -795,22 +849,10 @@ impl Manager {
                 existed: change.existed,
                 namespace_changed: change.namespace_changed,
             });
-            let host_path = self.project.join(&change.path);
-            if change.kind != deltafs_fuse::engine::ChangeKind::Deleted && host_path.is_file() {
-                if let Some(digest) = crate::publog::file_digest_capped(&host_path)? {
-                    digests.insert(change.path.clone(), digest);
-                }
-            }
         }
         let seq = crate::publog::append(&self.project, &params.session_id, &published, digests)?;
         fs::write(store.join("publog.seq"), format!("{seq}\n"))?;
-        self.save_review(&params.session_id, None)?;
-        self.append(&params.session_id, JournalKind::Commit, None)?;
-        Ok(CommitResult {
-            checkpoint_id: checkpoint.id.to_string(),
-            applied,
-            folded_publications: (folded > 0).then_some(folded),
-        })
+        Ok((checkpoint.id.to_string(), applied, folded))
     }
 
     pub fn sync(&self, session_id: &str) -> Result<crate::protocol::SyncResult> {
