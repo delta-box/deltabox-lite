@@ -1,7 +1,8 @@
-use super::state::{Mode, State};
+use super::state::{Mode, PreparedCommit, State};
 use crate::command_executor::{self, Endpoint as CommandEndpoint};
 use crate::error::{Error, Result};
 use crate::journal::{Journal, JournalEntry, JournalKind};
+use crate::locks::Lock;
 use crate::policy::Policy;
 use crate::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
@@ -10,7 +11,6 @@ use crate::protocol::{
     SessionStatus,
 };
 use crate::session::{now_ms, SessionMeta, SessionRegistry};
-use crate::locks::Lock;
 use crate::state_layout;
 use base64::Engine;
 use deltafs_fuse::macos::{
@@ -164,9 +164,8 @@ impl Manager {
             // sibling publication can land between the scans or before the
             // event boundary pins the baseline, exactly as under the old
             // exclusive hold.
-            let publish = Lock::acquire_shared(&crate::state_layout::publish_lock_path(
-                &self.project,
-            )?)?;
+            let publish =
+                Lock::acquire_shared(&crate::state_layout::publish_lock_path(&self.project)?)?;
             crate::test_hooks::maybe_pause("start_scan_shared");
             let mut state = State::create(
                 &self.project,
@@ -220,11 +219,7 @@ impl Manager {
                 let _ = self.save_meta(&meta);
             }
             if let Ok(leases) = crate::state_layout::leases_dir(&self.project) {
-                crate::project_lease::release(
-                    &leases,
-                    &self.root.join(PROJECT_LEASE),
-                    &session_id,
-                );
+                crate::project_lease::release(&leases, &self.root.join(PROJECT_LEASE), &session_id);
             }
             let _ = fs::remove_dir_all(&state_root);
         }
@@ -281,9 +276,7 @@ impl Manager {
             // No engine record: the start is either still scanning or died
             // before writing it. The admission pin decides which — a live
             // start holds it; a dead one's was released by the kernel.
-            let Some(_pin) =
-                Lock::try_acquire(&self.store(session_id).join("start.lock"))?
-            else {
+            let Some(_pin) = Lock::try_acquire(&self.store(session_id).join("start.lock"))? else {
                 return Err(Error::SessionBusy(session_id.into()));
             };
             if !self.store(session_id).join(RECORD_FILE).exists() {
@@ -496,8 +489,7 @@ impl Manager {
                 "session.sync requires a cbcow-private session".into(),
             ));
         }
-        let _publish =
-            Lock::acquire(&crate::state_layout::publish_lock_path(&self.project)?)?;
+        let _publish = Lock::acquire(&crate::state_layout::publish_lock_path(&self.project)?)?;
         let seen = fs::read_to_string(self.store(session_id).join("publog.seq"))
             .ok()
             .and_then(|raw| raw.trim().parse().ok())
@@ -613,15 +605,48 @@ impl Manager {
         // transaction, so it must complete before this commit's own lock:
         // flock does not re-enter within one process.
         let mut state = self.open_state(&record)?;
-        // Publication window: staging, host application, and manifest update
-        // must be atomic against sibling publications and recoveries. A
-        // sibling landing between recovery and here is caught by validation.
-        let _publish =
-            Lock::acquire(&crate::state_layout::publish_lock_path(&self.project)?)?;
-        crate::test_hooks::maybe_pause("publish_lock_held");
         let target = parse_checkpoint(params.checkpoint.as_deref())?;
+        // Session-private preparation runs before the publish lock: reconcile
+        // live-tree events, roll back to the checkpoint target, freeze the
+        // publish set as the staged tree, and digest that frozen copy. None
+        // of it reads the host or the publog, so siblings publish freely
+        // while this commit packs — and a digest failure now aborts before
+        // anything was published, instead of after the host moved.
         let tracker = self.prepare_events(&mut state, true)?;
         self.enforce_storage_limit(&meta, &state)?;
+        let mut prepared = state.prepare_commit(target)?;
+        let (id, applied, folded) =
+            match self.publish_prepared(&params, &mut state, &tracker, &mut prepared) {
+                Ok(published) => published,
+                Err(error) => {
+                    state.discard_prepared(&prepared);
+                    return Err(error);
+                }
+            };
+        self.save_review(&params.session_id, None)?;
+        self.append(&record, &params.session_id, JournalKind::Commit, None)?;
+        Ok(CommitResult {
+            checkpoint_id: id.to_string(),
+            applied,
+            folded_publications: (folded > 0).then_some(folded),
+        })
+    }
+
+    /// The publication window: validation, host application, manifest update,
+    /// and the publog append must be atomic against sibling publications and
+    /// recoveries, so they all run under one exclusive hold of the publish
+    /// lock. A sibling landing between recovery and here is caught by
+    /// validation. On a publishing success the prepared digests are consumed
+    /// into the publog entry.
+    fn publish_prepared(
+        &self,
+        params: &CommitParams,
+        state: &mut State,
+        tracker: &EventTracker,
+        prepared: &mut PreparedCommit,
+    ) -> Result<(u64, usize, u64)> {
+        let _publish = Lock::acquire(&crate::state_layout::publish_lock_path(&self.project)?)?;
+        crate::test_hooks::maybe_pause("publish_lock_held");
         let seen = fs::read_to_string(self.store(&params.session_id).join("publog.seq"))
             .ok()
             .and_then(|raw| raw.trim().parse().ok())
@@ -634,41 +659,19 @@ impl Manager {
         // digest-endorsed sibling publication is accepted and overridden,
         // while stranger changes keep failing closed.
         let endorsed_until = if params.ours { u64::MAX } else { seen };
-        let result = state.commit(target, endorsed_until)?;
-        self.finish_events(&mut state, &tracker, false)?;
-        let (id, published) = result;
+        let (id, published) = state.commit_prepared(prepared, endorsed_until)?;
+        self.finish_events(state, tracker, false)?;
         let applied = published.len();
         if applied > 0 {
-            let mut digests = std::collections::BTreeMap::new();
-            for change in &published {
-                if change.kind == crate::changeset::ChangeKind::Deleted {
-                    continue;
-                }
-                let host_path = self.project.join(&change.path);
-                if host_path.is_file() {
-                    if let Some(digest) = crate::publog::file_digest_capped(&host_path)? {
-                        digests.insert(change.path.clone(), digest);
-                    }
-                }
-            }
-            let seq = crate::publog::append(
-                &self.project,
-                &params.session_id,
-                &published,
-                digests,
-            )?;
+            let digests = std::mem::take(&mut prepared.digests);
+            let seq =
+                crate::publog::append(&self.project, &params.session_id, &published, digests)?;
             fs::write(
                 self.store(&params.session_id).join("publog.seq"),
                 format!("{seq}\n"),
             )?;
         }
-        self.save_review(&params.session_id, None)?;
-        self.append(&record, &params.session_id, JournalKind::Commit, None)?;
-        Ok(CommitResult {
-            checkpoint_id: id.to_string(),
-            applied,
-            folded_publications: (folded > 0).then_some(folded),
-        })
+        Ok((id, applied, folded))
     }
 
     pub fn abort(&self, params: AbortParams) -> Result<AbortResult> {

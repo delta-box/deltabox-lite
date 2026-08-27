@@ -1,11 +1,11 @@
 use crate::changeset::{describe_change, Change, ChangeKind, DEFAULT_TEXT_SIZE_LIMIT};
 use crate::error::{ConflictReport, Error, PathConflict, Result};
-use crate::test_hooks::maybe_pause;
 use crate::macos_tree::{
     clone_path, copy_metadata, read_acl, remove_path, replace_path, sync_dir, sync_tree,
     tracked_xattr,
 };
 use crate::snapshot::read_capped_file;
+use crate::test_hooks::maybe_pause;
 use deltafs_fuse::macos::{
     EventBatch, ITEM_CLONED, ITEM_CREATED, ITEM_IS_HARDLINK, ITEM_REMOVED, ITEM_RENAMED,
 };
@@ -498,11 +498,34 @@ impl State {
         Ok((target, paths.len()))
     }
 
+    /// Both commit halves back to back, for unit tests that need no lock
+    /// between them. Production runs the halves separately: `prepare_commit`
+    /// before the publish lock, `commit_prepared` under it.
+    #[cfg(test)]
     pub fn commit(
         &mut self,
         target: Option<u64>,
         endorsed_until: u64,
     ) -> Result<(u64, Vec<crate::publog::PublogChange>)> {
+        let prepared = self.prepare_commit(target)?;
+        match self.commit_prepared(&prepared, endorsed_until) {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                self.discard_prepared(&prepared);
+                Err(error)
+            }
+        }
+    }
+
+    /// Session-private half of a commit, safe to run without the publish
+    /// lock: rolls back to the checkpoint target, selects the publish set,
+    /// freezes it as the transaction's staged tree, and digests that frozen
+    /// copy. `apply_snapshot` later publishes exactly these staged bytes, so
+    /// the digests stay authoritative for the publog no matter what happens
+    /// to the live tree in between. Failures clean up after themselves; a
+    /// prepared commit that never publishes must be released with
+    /// `discard_prepared`.
+    pub fn prepare_commit(&mut self, target: Option<u64>) -> Result<PreparedCommit> {
         if let Some(target) = target {
             self.abort(Some(target))?;
         }
@@ -510,8 +533,8 @@ impl State {
         // view for the agent to merge against, but never cross into the host or
         // the accepted baseline: dropping them from the publish set here excludes
         // them from staging, both applies (host and base), and the publog at once.
-        // `pending_paths` itself is cleared below, so they simply stop being
-        // pending — they are not deleted from the working tree.
+        // `pending_paths` itself is cleared on publication, so they simply stop
+        // being pending — they are not deleted from the working tree.
         let paths: BTreeSet<String> = self
             .manifest
             .pending_paths
@@ -519,11 +542,71 @@ impl State {
             .filter(|path| crate::publog::is_publishable(path.as_str()))
             .cloned()
             .collect();
+        let id = Uuid::new_v4().to_string();
+        let transaction_root = self.root.join(TRANSACTIONS_DIR).join(&id);
+        match self.stage_commit(&transaction_root, &paths) {
+            Ok(digests) => {
+                maybe_crash("macos_commit_staged");
+                // Staged and digested, publish lock not yet requested: the
+                // window in which sibling publications interleave freely.
+                maybe_pause("commit_staged");
+                Ok(PreparedCommit { id, paths, digests })
+            }
+            Err(error) => {
+                let _ = remove_path(&transaction_root);
+                Err(error)
+            }
+        }
+    }
+
+    fn stage_commit(
+        &self,
+        transaction_root: &Path,
+        paths: &BTreeSet<String>,
+    ) -> Result<std::collections::BTreeMap<String, String>> {
+        fs::create_dir_all(transaction_root)?;
+        capture_snapshot(
+            &self.live(),
+            &transaction_root.join("staged"),
+            paths,
+            self.manifest.durable,
+        )?;
+        // Digest the frozen staged copy, not the live tree: a live write
+        // after hashing would otherwise record a digest for content that
+        // never lands on the host. Regular files only — the publog documents
+        // that directories and symlinks carry no digest and fail closed.
+        let mut digests = std::collections::BTreeMap::new();
+        for path in paths {
+            let staged = transaction_root.join("staged").join("objects").join(path);
+            let metadata = match fs::symlink_metadata(&staged) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if !metadata.is_file() {
+                continue;
+            }
+            if let Some(digest) = crate::publog::file_digest_capped(&staged)? {
+                digests.insert(path.clone(), digest);
+            }
+        }
+        Ok(digests)
+    }
+
+    /// Publication half of a commit; the caller must hold the publish lock.
+    /// Validates against the host, backs up what the applies will overwrite,
+    /// and applies the staged tree that `prepare_commit` captured.
+    pub fn commit_prepared(
+        &mut self,
+        prepared: &PreparedCommit,
+        endorsed_until: u64,
+    ) -> Result<(u64, Vec<crate::publog::PublogChange>)> {
+        let paths = &prepared.paths;
         if self.manifest.mode == Mode::Private {
             validate_paths(
                 &self.root.join(BASE_DIR),
                 &self.project,
-                &paths,
+                paths,
                 endorsed_until,
             )?;
         }
@@ -532,11 +615,14 @@ impl State {
         // pre-apply host (base for through mode, whose host already carries
         // the live view) yields `existed`. Sampling after apply would misread
         // additions as modifications and cannot see checkpoint-target aborts.
-        let live_root = self.live();
+        // The staged tree — not the live one — is what apply publishes, so it
+        // is also what the publog must describe.
+        let transaction_root = self.root.join(TRANSACTIONS_DIR).join(&prepared.id);
+        let staged_root = transaction_root.join("staged").join("objects");
         let base_root = self.root.join(BASE_DIR);
         let mut published = Vec::new();
-        for path in &paths {
-            let staged = fs::symlink_metadata(live_root.join(path)).ok();
+        for path in paths {
+            let staged = fs::symlink_metadata(staged_root.join(path)).ok();
             let base = fs::symlink_metadata(base_root.join(path)).ok();
             let host = if self.manifest.mode == Mode::Private {
                 fs::symlink_metadata(self.project.join(path)).ok()
@@ -559,33 +645,28 @@ impl State {
                 namespace_changed,
             });
         }
-        let id = Uuid::new_v4().to_string();
-        let transaction_root = self.root.join(TRANSACTIONS_DIR).join(&id);
-        fs::create_dir_all(&transaction_root)?;
-        capture_snapshot(
-            &self.live(),
-            &transaction_root.join("staged"),
-            &paths,
-            self.manifest.durable,
-        )?;
+        // The staged tree was captured by `prepare_commit` before the publish
+        // lock was taken; the backups read trees only this lock keeps still
+        // (the host a publication rewrites, the base a recovery rewrites), so
+        // they stay inside the lock.
         capture_snapshot(
             &self.root.join(BASE_DIR),
             &transaction_root.join("base-backup"),
-            &paths,
+            paths,
             self.manifest.durable,
         )?;
         if self.manifest.mode == Mode::Private {
             capture_snapshot(
                 &self.project,
                 &transaction_root.join("host-backup"),
-                &paths,
+                paths,
                 self.manifest.durable,
             )?;
         }
         save_json(
             &self.root.join(TRANSACTION_FILE),
             &Transaction {
-                id: id.clone(),
+                id: prepared.id.clone(),
                 mode: self.manifest.mode,
                 paths: paths.clone(),
             },
@@ -614,7 +695,7 @@ impl State {
         self.manifest.pending_paths.clear();
         self.manifest.epoch_paths.clear();
         self.manifest.tainted = false;
-        self.manifest.last_transaction = Some(id.clone());
+        self.manifest.last_transaction = Some(prepared.id.clone());
         // Commit changes the accepted/base trees, but the live tree and its
         // already-persisted index are unchanged.
         self.save_manifest()?;
@@ -623,6 +704,19 @@ impl State {
         remove_path(&transaction_root)?;
         self.cleanup_orphans()?;
         Ok((checkpoint_id, published))
+    }
+
+    /// Best-effort release of a prepared commit that will not publish. If the
+    /// transaction file names this id, the in-lock publication already began
+    /// and recovery owns the directory — leave it alone.
+    pub fn discard_prepared(&self, prepared: &PreparedCommit) {
+        let owned = fs::read(self.root.join(TRANSACTION_FILE))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Transaction>(&bytes).ok())
+            .is_some_and(|transaction| transaction.id == prepared.id);
+        if !owned {
+            let _ = remove_path(&self.root.join(TRANSACTIONS_DIR).join(&prepared.id));
+        }
     }
 
     fn require_checkpoint(&self, id: u64) -> Result<()> {
@@ -944,6 +1038,19 @@ impl Entry {
     }
 }
 
+/// A commit frozen before publication: `prepare_commit` selected the publish
+/// set, captured it as the transaction's staged tree, and digested that
+/// frozen copy. On disk it is session-private until `commit_prepared`
+/// publishes it under the publish lock; `discard_prepared` releases one that
+/// never will.
+pub struct PreparedCommit {
+    pub(crate) id: String,
+    pub(crate) paths: BTreeSet<String>,
+    /// sha256 per staged regular file at or below the digest cap — the
+    /// publog digests for this publication.
+    pub(crate) digests: std::collections::BTreeMap<String, String>,
+}
+
 fn capture_snapshot(
     source: &Path,
     destination: &Path,
@@ -1138,7 +1245,9 @@ fn validate_paths(
         "host path changed after session start: {}",
         conflicts[0].path
     );
-    Err(Error::ProjectConflict(ConflictReport::new(message, conflicts)))
+    Err(Error::ProjectConflict(ConflictReport::new(
+        message, conflicts,
+    )))
 }
 
 fn paths_equal(left: Option<&Path>, right: Option<&Path>) -> Result<bool> {
