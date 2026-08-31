@@ -1051,6 +1051,11 @@ fn collapse_changes(
         .collect();
     for change in changes {
         for path in accepted.hardlink_peers(&change.path)? {
+            // Peer expansion must not smuggle unpublishable paths into the
+            // publish set (git object stores hardlink aggressively).
+            if !crate::publog::is_publishable(&path) {
+                continue;
+            }
             expanded.entry(path.clone()).or_insert_with(|| Change {
                 path: path.clone(),
                 kind: ChangeKind::Modified,
@@ -1140,7 +1145,14 @@ fn project_walk(root: &Path) -> impl Iterator<Item = Result<walkdir::DirEntry>> 
         .follow_links(false)
         .sort_by_file_name()
         .into_iter()
-        .filter_entry(|entry| entry.depth() != 1 || entry.file_name() != ".deltabox")
+        .filter_entry(|entry| {
+            // `.git` is session-private and never published, so the accepted
+            // baseline has no use for its entries — and hashing a repository's
+            // object store (often larger than the working tree) would dominate
+            // session start for nothing.
+            (entry.depth() != 1 || entry.file_name() != ".deltabox")
+                && entry.file_name() != ".git"
+        })
         .map(|entry| entry.map_err(|error| Error::Io(std::io::Error::other(error))))
 }
 
