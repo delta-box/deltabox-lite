@@ -944,3 +944,55 @@ fn commit_ours_never_overrides_strangers() {
         "stranger-version"
     );
 }
+
+// A sibling that adds a new directory next to an existing subtree must not
+// invalidate that subtree: refreshing the shared parent used to rebuild its
+// index entry with a fresh generation, which orphaned every existing
+// descendant entry. A session that had also edited a file inside the
+// existing subtree then saw its own untouched-by-the-sibling path reported
+// as a host change (a phantom conflict), and the fold could later panic over
+// the orphaned parent. Two sessions each running `git commit` hit exactly
+// this shape through `.git/objects/`.
+#[test]
+fn fold_of_new_sibling_directory_keeps_existing_subtree_committable() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(project.path().join("dir/existing")).unwrap();
+    std::fs::write(project.path().join("dir/existing/keep.txt"), "base").unwrap();
+    std::fs::write(project.path().join("shared.txt"), "base").unwrap();
+    let a = Session::start(project.path());
+    let b = Session::start(project.path());
+    assert_ok(&a.exec_shell("mkdir dir/new && echo n > dir/new/n.txt"));
+    a.write("shared.txt", "A-version");
+    b.write("dir/existing/keep.txt", "B-keep");
+    b.write("shared.txt", "B-version");
+    assert_ok(&a.commit());
+
+    // The only legitimate conflict is shared.txt; the sibling never touched
+    // dir/existing, so nothing under it may be reported.
+    let plain = b.commit();
+    assert!(!plain.status.success(), "commit must report the real conflict");
+    let stderr = String::from_utf8_lossy(&plain.stderr);
+    assert!(stderr.contains("shared.txt"), "{stderr}");
+    assert!(
+        !stderr.contains("dir/existing/keep.txt"),
+        "phantom conflict on an untouched subtree: {stderr}"
+    );
+
+    let out = b.command(["commit", &b.id, "--sync", "--ours"]);
+    assert_ok(&out);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("dir/existing/keep.txt")).unwrap(),
+        "B-keep"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("shared.txt")).unwrap(),
+        "B-version"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("dir/new/n.txt")).unwrap(),
+        "n\n"
+    );
+}

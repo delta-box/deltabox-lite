@@ -431,9 +431,32 @@ impl AcceptedIndex {
                     self.manifest.root = fingerprint(project, true)?
                         .ok_or_else(|| Error::Backend("project root is unavailable".into()))?;
                 } else {
-                    self.remove_entry(&parent)?;
-                    if let Some(value) = fingerprint(&path, false)? {
-                        self.add_entry(&parent, value)?;
+                    // A namespace change means this directory's CONTENTS
+                    // changed, not its identity. Removing and re-adding the
+                    // entry would issue a fresh generation and silently
+                    // invalidate every descendant entry (untouched baseline
+                    // subtrees included, and ones captured moments ago in the
+                    // loop above); a later add_entry under such an orphaned
+                    // subtree then found no indexed parent and panicked.
+                    // Update the entry in place so descendants stay valid;
+                    // only a vanished directory or a type flip tears it down.
+                    let prior_is_dir = {
+                        let file = entry_path(&self.directory, &parent);
+                        file.exists()
+                            && serde_json::from_slice::<AcceptedEntry>(&fs::read(&file)?)
+                                .ok()
+                                .is_some_and(|e| {
+                                    e.path == parent && e.fingerprint.is_directory()
+                                })
+                    };
+                    match fingerprint(&path, false)? {
+                        Some(value) => {
+                            if !(prior_is_dir && value.is_directory()) {
+                                self.remove_entry(&parent)?;
+                            }
+                            self.add_entry(&parent, value)?;
+                        }
+                        None => self.remove_entry(&parent)?,
                     }
                 }
             }
@@ -525,12 +548,38 @@ impl AcceptedIndex {
             self.manifest.root_generation.clone()
         } else {
             self.stored_entry(&path_string(parent)?)?
+                .filter(|entry| entry.fingerprint.is_directory())
                 .and_then(|entry| entry.generation)
-                .expect("captured path has an indexed parent")
+                .ok_or_else(|| {
+                    Error::Backend(format!(
+                        "accepted index has no valid parent entry for {path}"
+                    ))
+                })?
         };
-        let generation = fingerprint
-            .is_directory()
-            .then(|| Uuid::new_v4().to_string());
+        let generation = if fingerprint.is_directory() {
+            // Updating a directory entry must not change its identity: the
+            // generation is what keeps every descendant entry valid, and a
+            // content change (new or removed children) does not make it a
+            // different directory. Reuse the stored generation when the entry
+            // file still describes a directory; only a truly torn-down entry
+            // (removed via remove_subtree, or a type flip) gets a fresh one.
+            // Raw read on purpose: an ancestor may have been re-captured, and
+            // we only need this directory's own identity here.
+            let prior = {
+                let file = entry_path(&self.directory, path);
+                if file.exists() {
+                    serde_json::from_slice::<AcceptedEntry>(&fs::read(&file)?)
+                        .ok()
+                        .filter(|e| e.path == path && e.fingerprint.is_directory())
+                        .and_then(|e| e.generation)
+                } else {
+                    None
+                }
+            };
+            Some(prior.unwrap_or_else(|| Uuid::new_v4().to_string()))
+        } else {
+            None
+        };
         save_entry(
             &self.directory,
             path,
@@ -1486,6 +1535,60 @@ mod tests {
             old_bytes: None,
             new_bytes: None,
         }
+    }
+
+
+    #[test]
+    fn refresh_namespace_change_keeps_sibling_subtrees_valid() {
+        // Regression: refreshing a namespace-changed path used to rebuild the
+        // parent directory's entry with a fresh generation, implicitly
+        // invalidating every existing descendant entry (untouched baseline
+        // subtrees included). Validation then reported those paths as host
+        // changes, and a later refresh beneath such an orphaned subtree found
+        // no valid parent entry and panicked. Two sessions each running
+        // `git commit` hit exactly this shape through `.git/objects/`.
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let index = root.path().join("accepted");
+        fs::create_dir_all(project.join("dir/existing")).unwrap();
+        fs::write(project.join("dir/existing/keep.txt"), "base").unwrap();
+        let state = AcceptedState::capture(&project).unwrap();
+        let mut accepted = AcceptedIndex::create(&index, state).unwrap();
+
+        // A sibling publication adds a new subdirectory next to `existing`.
+        fs::create_dir(project.join("dir/new")).unwrap();
+        fs::write(project.join("dir/new/n.txt"), "sibling").unwrap();
+        accepted
+            .refresh(
+                &project,
+                &[PublishChange {
+                    path: "dir/new".into(),
+                    kind: ChangeKind::Added,
+                    existed: false,
+                    namespace_changed: true,
+                }],
+            )
+            .unwrap();
+
+        // The untouched sibling subtree must still validate cleanly...
+        accepted
+            .validate(&project, ["dir/existing/keep.txt".into()])
+            .expect("untouched sibling subtree stays valid after a fold");
+
+        // ...and refreshing a path beneath it must succeed rather than fail
+        // over a missing parent entry.
+        fs::write(project.join("dir/existing/keep.txt"), "next").unwrap();
+        accepted
+            .refresh(
+                &project,
+                &[PublishChange {
+                    path: "dir/existing/keep.txt".into(),
+                    kind: ChangeKind::Modified,
+                    existed: true,
+                    namespace_changed: false,
+                }],
+            )
+            .expect("refresh under an existing sibling subtree succeeds");
     }
 
     #[test]
