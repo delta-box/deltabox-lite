@@ -176,8 +176,16 @@ fn private_view_commit_abort_and_checkpoints_cross_processes() {
     );
 }
 
+// `.git` is session-private: the worktree edits publish, the repository
+// metadata never does. The session keeps a fully working private clone (git
+// log/commit work inside), the reviewed diff shows only what a commit would
+// land, and the host's git history is untouched — writing it belongs to the
+// orchestration layer. This test previously asserted the opposite contract
+// (git commits publishing together with the worktree); that contract made two
+// sessions running `git commit` conflict on `.git` metadata even with
+// disjoint edits, and let `--ours` discard the other session's commits.
 #[test]
-fn git_commit_and_worktree_publish_together() {
+fn git_worktree_publishes_while_git_dir_stays_private() {
     if !available() || Command::new("git").arg("--version").output().is_err() {
         return;
     }
@@ -216,14 +224,16 @@ fn git_commit_and_worktree_publish_together() {
     );
     assert_exec_ok(&output);
     assert_eq!(git_head(project.path()), host_head);
-    assert_eq!(
-        std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
-        "base\n"
-    );
-    assert!(!project.path().join("new.txt").exists());
+
+    // The reviewed diff shows the worktree edits and nothing from `.git`.
+    let diff = session.command(["diff", &session.id, "--json"]);
+    assert_ok(&diff);
+    let stdout = String::from_utf8_lossy(&diff.stdout);
+    assert!(stdout.contains("tracked.txt"), "{stdout}");
+    assert!(stdout.contains("new.txt"), "{stdout}");
+    assert!(!stdout.contains(".git/"), "diff leaked git metadata: {stdout}");
 
     assert_ok(&session.commit());
-    assert_ne!(git_head(project.path()), host_head);
     assert_eq!(
         std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
         "changed\n"
@@ -232,13 +242,96 @@ fn git_commit_and_worktree_publish_together() {
         std::fs::read_to_string(project.path().join("new.txt")).unwrap(),
         "new\n"
     );
-    assert!(Command::new("git")
-        .args(["status", "--porcelain", "--untracked-files=no"])
+    // The host repository is untouched: same HEAD, and git sees the published
+    // worktree edits as ordinary uncommitted changes.
+    assert_eq!(git_head(project.path()), host_head);
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
         .current_dir(project.path())
         .output()
+        .unwrap();
+    let status = String::from_utf8_lossy(&status.stdout);
+    assert!(status.contains("tracked.txt"), "{status}");
+    // The session's private history keeps its commit.
+    let log = session.exec_shell("git log --oneline");
+    let log_payload: Value = serde_json::from_slice(&log.stdout).unwrap();
+    assert!(
+        log_payload["stdout"].as_str().unwrap().contains("private"),
+        "{log_payload}"
+    );
+}
+
+// The flagship multiagent scenario: two sessions on one real repository, each
+// editing a different file and committing it with git inside its own view.
+// With `.git` session-private the publications are truly disjoint — the
+// second commit lands directly, with no conflict to recover from at all.
+// Before this contract both sessions rewrote `.git/index` and the refs, so
+// the second commit was rejected on git metadata despite disjoint edits.
+#[test]
+fn concurrent_git_commits_publish_disjoint_work_cleanly() {
+    if !available() || Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    assert!(Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(project.path())
+        .status()
         .unwrap()
-        .stdout
-        .is_empty());
+        .success());
+    std::fs::write(project.path().join("a.txt"), "base\n").unwrap();
+    std::fs::write(project.path().join("b.txt"), "base\n").unwrap();
+    assert!(Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(project.path())
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args([
+            "-c",
+            "user.name=DeltaFS",
+            "-c",
+            "user.email=deltafs@example.invalid",
+            "commit",
+            "-qm",
+            "base",
+        ])
+        .current_dir(project.path())
+        .status()
+        .unwrap()
+        .success());
+    let host_head = git_head(project.path());
+    let one = Session::start(project.path());
+    let two = Session::start(project.path());
+    assert_exec_ok(&one.exec_shell(
+        "printf 'one\\n' > a.txt; git add a.txt; git -c user.name=DeltaFS -c user.email=deltafs@example.invalid commit -qm one",
+    ));
+    assert_exec_ok(&two.exec_shell(
+        "printf 'two\\n' > b.txt; git add b.txt; git -c user.name=DeltaFS -c user.email=deltafs@example.invalid commit -qm two",
+    ));
+    assert_ok(&one.commit());
+    // A host-side status probe between the publications rewrites git's stat
+    // cache; it must not disturb either session.
+    assert!(Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(project.path())
+        .status()
+        .unwrap()
+        .success());
+    // No conflict, no sync, no retry: the second commit lands directly.
+    assert_ok(&two.commit());
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("a.txt")).unwrap(),
+        "one\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("b.txt")).unwrap(),
+        "two\n"
+    );
+    assert_eq!(git_head(project.path()), host_head);
+    assert_ok(&one.command(["session", "status", &one.id]));
+    assert_ok(&two.command(["session", "status", &two.id]));
 }
 
 #[test]
@@ -942,5 +1035,57 @@ fn commit_ours_never_overrides_strangers() {
     assert_eq!(
         std::fs::read_to_string(project.path().join("shared.txt")).unwrap(),
         "stranger-version"
+    );
+}
+
+// A sibling that adds a new directory next to an existing subtree must not
+// invalidate that subtree: refreshing the shared parent used to rebuild its
+// index entry with a fresh generation, which orphaned every existing
+// descendant entry. A session that had also edited a file inside the
+// existing subtree then saw its own untouched-by-the-sibling path reported
+// as a host change (a phantom conflict), and the fold could later panic over
+// the orphaned parent. Two sessions each running `git commit` hit exactly
+// this shape through `.git/objects/`.
+#[test]
+fn fold_of_new_sibling_directory_keeps_existing_subtree_committable() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(project.path().join("dir/existing")).unwrap();
+    std::fs::write(project.path().join("dir/existing/keep.txt"), "base").unwrap();
+    std::fs::write(project.path().join("shared.txt"), "base").unwrap();
+    let a = Session::start(project.path());
+    let b = Session::start(project.path());
+    assert_ok(&a.exec_shell("mkdir dir/new && echo n > dir/new/n.txt"));
+    a.write("shared.txt", "A-version");
+    b.write("dir/existing/keep.txt", "B-keep");
+    b.write("shared.txt", "B-version");
+    assert_ok(&a.commit());
+
+    // The only legitimate conflict is shared.txt; the sibling never touched
+    // dir/existing, so nothing under it may be reported.
+    let plain = b.commit();
+    assert!(!plain.status.success(), "commit must report the real conflict");
+    let stderr = String::from_utf8_lossy(&plain.stderr);
+    assert!(stderr.contains("shared.txt"), "{stderr}");
+    assert!(
+        !stderr.contains("dir/existing/keep.txt"),
+        "phantom conflict on an untouched subtree: {stderr}"
+    );
+
+    let out = b.command(["commit", &b.id, "--sync", "--ours"]);
+    assert_ok(&out);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("dir/existing/keep.txt")).unwrap(),
+        "B-keep"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("shared.txt")).unwrap(),
+        "B-version"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("dir/new/n.txt")).unwrap(),
+        "n\n"
     );
 }

@@ -616,8 +616,12 @@ impl Manager {
         let record = self.ensure_helper(&params.session_id)?;
         let from = parse_checkpoint(params.from.as_deref())?;
         let changes = match self.request(&record, ControlCommand::Diff { from })? {
+            // Session-private `.git` mutations never publish, so the diff a
+            // human or agent reviews must not show them either: what you see
+            // is what a commit would land.
             ResultValue::Diff(changes) => changes
                 .into_iter()
+                .filter(|change| !crate::publog::is_git_path(&change.path))
                 .map(|change| {
                     let kind = match change.kind {
                         deltafs_fuse::engine::ChangeKind::Added => ChangeKind::Added,
@@ -782,6 +786,12 @@ impl Manager {
             let mut forward = Vec::new();
             for entry in sibling_entries.iter().rev() {
                 for change in &entry.changes {
+                    // Publications recorded before `.git` became
+                    // session-private may still carry git metadata paths;
+                    // never fold those into the accepted baseline.
+                    if crate::publog::is_git_path(&change.path) {
+                        continue;
+                    }
                     if !mine.contains(change.path.as_str())
                         && seen_paths.insert(change.path.clone())
                     {
@@ -897,6 +907,11 @@ impl Manager {
         let mut conflicts = Vec::new();
         let mut forward = Vec::new();
         for (path, change) in &latest {
+            // Legacy publications may still record `.git` paths; they are
+            // session-private now and neither stale nor contested.
+            if crate::publog::is_git_path(path) {
+                continue;
+            }
             if !mine.contains(path) {
                 stale_paths.push(path.clone());
                 continue;
@@ -1163,7 +1178,14 @@ impl Manager {
         from: Option<u64>,
     ) -> Result<Vec<deltafs_fuse::engine::Change>> {
         match self.request(record, ControlCommand::Diff { from })? {
-            ResultValue::Diff(changes) => Ok(changes),
+            // The engine tracks `.git` writes like any other session edit (so
+            // abort restores them), but they stop existing at this boundary:
+            // the publish set and sync's own-changes set are built from here,
+            // and git metadata never crosses into the host.
+            ResultValue::Diff(mut changes) => {
+                changes.retain(|change| !crate::publog::is_git_path(&change.path));
+                Ok(changes)
+            }
             _ => Err(Error::Backend("unexpected diff response".into())),
         }
     }

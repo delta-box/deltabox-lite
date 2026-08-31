@@ -222,12 +222,30 @@ pub(crate) const THEIRS_DRAFT_SUFFIX: &str = ".deltabox-theirs";
 /// worse — it also doubles the publication set on a wide conflict). The draft
 /// stays in the private view; this only gates the crossing into the host.
 /// Mirrors the existing `.deltabox` ignore rule, matched on the final segment
-/// so drafts at any depth are caught.
+/// so drafts at any depth are caught. Also excludes `.git`: see `is_git_path`.
 pub(crate) fn is_publishable(path: &str) -> bool {
-    !Path::new(path)
+    let theirs_draft = Path::new(path)
         .file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with(THEIRS_DRAFT_SUFFIX))
+        .is_some_and(|name| name.ends_with(THEIRS_DRAFT_SUFFIX));
+    !theirs_draft && !is_git_path(path)
+}
+
+/// Whether a path lives inside a git repository's metadata. `.git` is
+/// session-private: git metadata is content-addressed and rewritten wholesale
+/// by every git command, so two sessions each running `git commit` collide on
+/// `.git/index` and the refs even when their working-tree changes are
+/// disjoint — and resolving that conflict by taking either side wholesale
+/// silently discards the other session's commits. The session keeps a fully
+/// working private copy of `.git` (materialized at start) for `git log`,
+/// `git diff`, and local commits, but its mutations never cross into the
+/// host: writing the host's git history is the orchestration layer's job.
+/// Matching any component also covers nested repositories and `.git` gitlink
+/// files, mirroring copy-private's long-standing exclusion.
+pub(crate) fn is_git_path(path: &str) -> bool {
+    Path::new(path)
+        .components()
+        .any(|component| component.as_os_str() == ".git")
 }
 
 /// Files above this size publish without a digest. An absent digest fails
