@@ -137,6 +137,7 @@ fn commit_applies_to_host() {
         .commit(CommitParams {
             session_id: sid.clone(),
             checkpoint: None,
+            ours: false,
         })
         .unwrap();
     assert!(result.applied >= 1);
@@ -264,6 +265,7 @@ fn delete_then_checkpoint_then_commit_applies_deletion() {
         .commit(CommitParams {
             session_id: sid.clone(),
             checkpoint: None,
+            ours: false,
         })
         .unwrap();
     assert!(
@@ -372,6 +374,7 @@ fn fs_read_write_roundtrip() {
         .commit(CommitParams {
             session_id: sid.clone(),
             checkpoint: None,
+            ours: false,
         })
         .unwrap();
     assert!(path.exists());

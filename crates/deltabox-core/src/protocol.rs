@@ -33,6 +33,8 @@ pub enum Method {
     ChangesCommit(CommitParams),
     #[serde(rename = "changes.abort")]
     ChangesAbort(AbortParams),
+    #[serde(rename = "session.sync")]
+    SessionSync(SyncParams),
     #[serde(rename = "review.begin")]
     ReviewBegin(ReviewBeginParams),
     #[serde(rename = "review.status")]
@@ -124,6 +126,12 @@ pub struct CommitParams {
     pub session_id: String,
     #[serde(default)]
     pub checkpoint: Option<String>,
+    /// Pre-declared conflict policy: publications by sibling sessions may be
+    /// overridden by this session's version without a prior sync, resolved
+    /// inside the publish-lock window. Only digest-endorsed sibling content
+    /// qualifies — changes made outside deltabox still fail closed.
+    #[serde(default)]
+    pub ours: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,6 +183,11 @@ pub struct Response {
 pub struct ProtocolError {
     pub code: i32,
     pub message: String,
+    /// Structured error payload; today only commit conflicts populate it
+    /// (`{"type":"project-conflict", ...ConflictReport}`). Absent otherwise so
+    /// pre-existing consumers see byte-identical errors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -246,6 +259,11 @@ pub struct FilesystemInfo {
     pub helper_restarts: u64,
     #[serde(default)]
     pub mount_namespace: bool,
+    /// Landlock protections the running kernel cannot enforce (Linux only).
+    /// Absent means full enforcement; consumers must not assume signal or
+    /// abstract-socket confinement when this lists the matching scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degraded_protections: Option<Vec<String>>,
 }
 
 impl Default for FilesystemInfo {
@@ -269,6 +287,16 @@ impl FilesystemInfo {
         self
     }
 
+    #[cfg(target_os = "linux")]
+    fn linux_degraded() -> Option<Vec<String>> {
+        crate::backend::linux_sandlock::degraded_protections()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn linux_degraded() -> Option<Vec<String>> {
+        None
+    }
+
     pub fn copy_private(requested: FilesystemMode, fallback_reason: Option<String>) -> Self {
         Self {
             requested_fs_mode: requested,
@@ -285,6 +313,7 @@ impl FilesystemInfo {
             helper_pid: None,
             helper_restarts: 0,
             mount_namespace: false,
+            degraded_protections: Self::linux_degraded(),
         }
     }
 
@@ -304,6 +333,7 @@ impl FilesystemInfo {
             helper_pid: Some(helper_pid),
             helper_restarts: restarts,
             mount_namespace: false,
+            degraded_protections: None,
         }
     }
 
@@ -323,6 +353,7 @@ impl FilesystemInfo {
             helper_pid: Some(helper_pid),
             helper_restarts: restarts,
             mount_namespace: false,
+            degraded_protections: None,
         }
     }
 
@@ -348,6 +379,7 @@ impl FilesystemInfo {
             helper_pid: None,
             helper_restarts: 0,
             mount_namespace: false,
+            degraded_protections: None,
         }
     }
 }
@@ -406,9 +438,41 @@ pub struct DiffResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncParams {
+    pub session_id: String,
+}
+
+/// One path where this session's pending work collides with a sibling's
+/// publication. `theirs` names the materialized copy of the current host
+/// content inside the session view (absent when the sibling deleted it).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncConflict {
+    pub path: String,
+    pub host_kind: crate::changeset::ChangeKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theirs: Option<String>,
+}
+
+/// Result of session.sync: the loser's one-command path back into the game.
+/// Baseline advances over sibling publications; contested paths get their
+/// `theirs` material; `stale_paths` are sibling-changed paths this session
+/// never touched (its view of them is outdated but nothing blocks commit).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncResult {
+    pub folded_publications: u64,
+    pub stale_paths: Vec<String>,
+    pub conflicts: Vec<SyncConflict>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitResult {
     pub checkpoint_id: String,
     pub applied: usize,
+    /// How many sibling publications this commit's baseline was fast-forwarded
+    /// over. Non-zero means the host moved legitimately since this session's
+    /// baseline: orchestrators must re-verify (build/test) after integration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folded_publications: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -513,6 +577,7 @@ mod tests {
             id: 2,
             result: None,
             error: Some(ProtocolError {
+                data: None,
                 code: -32000,
                 message: "boom".into(),
             }),

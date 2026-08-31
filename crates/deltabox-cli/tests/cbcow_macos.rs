@@ -179,6 +179,254 @@ where
         .unwrap()
 }
 
+/// A project/state pair that several sessions can target, for multi-session
+/// tests. `Session` above owns one directory pair per session and stays as-is.
+struct SharedProject {
+    project: tempfile::TempDir,
+    state: tempfile::TempDir,
+}
+
+impl SharedProject {
+    fn new() -> Self {
+        let project = tempfile::Builder::new()
+            .prefix("deltabox-macos-shared-project-")
+            .tempdir_in("/private/tmp")
+            .unwrap();
+        let state = tempfile::Builder::new()
+            .prefix("deltabox-macos-shared-state-")
+            .tempdir_in("/private/tmp")
+            .unwrap();
+        std::fs::write(project.path().join("a.txt"), "accepted").unwrap();
+        Self { project, state }
+    }
+
+    fn try_start(&self, mode: &str) -> Output {
+        command(
+            self.project.path(),
+            self.state.path(),
+            [
+                "session",
+                "start",
+                self.project.path().to_str().unwrap(),
+                "--fs-mode",
+                mode,
+                "--require-fs-mode",
+            ],
+        )
+    }
+}
+
+fn sid_of(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+// Mode-aware admission: private sessions coexist; through, which writes the
+// host tree directly, excludes everything and is excluded by anything live.
+#[test]
+fn private_sessions_coexist_and_through_stays_exclusive() {
+    let env = SharedProject::new();
+    let a = env.try_start("cbcow-private");
+    assert_ok(&a);
+    let b = env.try_start("cbcow-private");
+    assert_ok(&b);
+    let through = env.try_start("cbcow-through");
+    assert!(!through.status.success());
+    assert!(
+        String::from_utf8_lossy(&through.stderr).contains("session busy"),
+        "{through:?}"
+    );
+}
+
+#[test]
+fn through_session_excludes_everyone() {
+    let env = SharedProject::new();
+    assert_ok(&env.try_start("cbcow-through"));
+    let second = env.try_start("cbcow-through");
+    assert!(!second.status.success());
+    let private = env.try_start("cbcow-private");
+    assert!(!private.status.success());
+}
+
+// Deterministic lock proof: while one commit holds the publish lock, a
+// sibling's commit must block instead of interleaving host mutations.
+#[test]
+fn racing_commits_serialize_under_publish_lock() {
+    let env = SharedProject::new();
+    let a = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let b = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let project = env.project.path().to_str().unwrap().to_string();
+    for (sid, path) in [(&a, "race-a.txt"), (&b, "race-b.txt")] {
+        let out = command(
+            env.project.path(),
+            env.state.path(),
+            ["write", sid, path, "--content", "x", "--project", &project],
+        );
+        assert_ok(&out);
+    }
+
+    let pause = tempfile::tempdir().unwrap();
+    let mut commit_a = std::process::Command::new(bin());
+    commit_a
+        .env("DELTABOX_STATE_DIR", env.state.path())
+        .env("DELTABOX_TEST_PAUSE_AT", "publish_lock_held")
+        .env("DELTABOX_TEST_PAUSE_DIR", pause.path())
+        .args(["commit", &a, "--project", &project]);
+    let mut commit_a = commit_a.spawn().unwrap();
+    let arrived = pause.path().join("publish_lock_held.arrived");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !arrived.exists() {
+        assert!(std::time::Instant::now() < deadline, "commit A never took the lock");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let mut commit_b = std::process::Command::new(bin());
+    commit_b
+        .env("DELTABOX_STATE_DIR", env.state.path())
+        .args(["commit", &b, "--project", &project]);
+    let mut commit_b = commit_b.spawn().unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(
+        commit_b.try_wait().unwrap().is_none(),
+        "commit B finished while A held the publish lock"
+    );
+
+    std::fs::write(pause.path().join("publish_lock_held.release"), b"").unwrap();
+    assert!(commit_a.wait().unwrap().success());
+    assert!(commit_b.wait().unwrap().success());
+    assert!(env.project.path().join("race-a.txt").exists());
+    assert!(env.project.path().join("race-b.txt").exists());
+}
+
+// Stage-3 north star: the losing session recovers with one sync — merges
+// against the materialized theirs copy and lands on the second attempt. The
+// private `.deltabox-theirs` draft must never leak into the real project, even
+// when the agent leaves it in place at commit time.
+#[test]
+fn conflicting_session_recovers_via_sync_and_lands() {
+    let env = SharedProject::new();
+    let a = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let b = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let project = env.project.path().to_str().unwrap().to_string();
+    let run = |args: Vec<&str>| command(env.project.path(), env.state.path(), args);
+
+    assert_ok(&run(vec!["write", &a, "shared.txt", "--content", "a-version", "--project", &project]));
+    assert_ok(&run(vec!["write", &b, "shared.txt", "--content", "b-version", "--project", &project]));
+    assert_ok(&run(vec!["write", &b, "b-only.txt", "--content", "from-b", "--project", &project]));
+
+    assert_ok(&run(vec!["commit", &a, "--project", &project]));
+    let rejected = run(vec!["commit", &b, "--project", &project]);
+    assert!(!rejected.status.success());
+
+    let sync = run(vec!["sync", &b, "--project", &project]);
+    assert_ok(&sync);
+    let sync: Value = serde_json::from_slice(&sync.stdout).unwrap();
+    assert!(sync["folded_publications"].as_u64().unwrap() >= 1);
+    assert_eq!(sync["conflicts"][0]["path"], "shared.txt");
+    assert_eq!(sync["conflicts"][0]["theirs"], "shared.txt.deltabox-theirs");
+
+    let theirs = run(vec!["read", &b, "shared.txt.deltabox-theirs", "--project", &project]);
+    assert_ok(&theirs);
+
+    assert_ok(&run(vec!["write", &b, "shared.txt", "--content", "merged: a-version + b-version", "--project", &project]));
+
+    // Commit with the draft still present: the tool, not the agent, is
+    // responsible for keeping `.deltabox-theirs` out of the host project.
+    assert_ok(&run(vec!["commit", &b, "--project", &project]));
+    assert_eq!(
+        std::fs::read_to_string(env.project.path().join("shared.txt")).unwrap(),
+        "merged: a-version + b-version"
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.project.path().join("b-only.txt")).unwrap(),
+        "from-b"
+    );
+    // The draft never crosses into the real project...
+    assert!(!env.project.path().join("shared.txt.deltabox-theirs").exists());
+    // ...yet stays in the private view: it was gated at the host boundary, not
+    // deleted from the session.
+    assert_ok(&run(vec!["read", &b, "shared.txt.deltabox-theirs", "--project", &project]));
+}
+
+// The multi-agent north star: disjoint private commits both land; an
+// overlapping commit is rejected whole with a structured conflict listing.
+#[test]
+fn disjoint_private_commits_land_and_overlap_conflicts() {
+    let env = SharedProject::new();
+    let a = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let b = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let project = env.project.path().to_str().unwrap().to_string();
+    let write = |sid: &str, path: &str, content: &str| {
+        let out = command(
+            env.project.path(),
+            env.state.path(),
+            ["write", sid, path, "--content", content, "--project", &project],
+        );
+        assert_ok(&out);
+    };
+    write(&a, "a-only.txt", "from-a");
+    write(&a, "shared.txt", "a-version");
+    write(&b, "b-only.txt", "from-b");
+    write(&b, "shared.txt", "b-version");
+
+    let commit_a = command(
+        env.project.path(),
+        env.state.path(),
+        ["commit", &a, "--project", &project],
+    );
+    assert_ok(&commit_a);
+
+    let commit_b = command(
+        env.project.path(),
+        env.state.path(),
+        ["commit", &b, "--project", &project],
+    );
+    assert!(!commit_b.status.success());
+    let stderr = String::from_utf8_lossy(&commit_b.stderr);
+    assert!(stderr.contains("commit blocked"), "{stderr}");
+    assert!(stderr.contains("shared.txt"), "{stderr}");
+
+    assert_eq!(
+        std::fs::read_to_string(env.project.path().join("a-only.txt")).unwrap(),
+        "from-a"
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.project.path().join("shared.txt")).unwrap(),
+        "a-version"
+    );
+    assert!(
+        !env.project.path().join("b-only.txt").exists(),
+        "a rejected commit must publish nothing"
+    );
+}
+
 #[test]
 fn strict_private_mode_is_durable_across_cli_processes() {
     let session = Session::start_with("cbcow-private", true);
@@ -427,4 +675,465 @@ fn private_commit_recovers_process_crash_boundaries() {
         }
         session.stop();
     }
+}
+
+// docs/protocol.md: session.sync requires cbcow-private. A through session
+// must be rejected outright -- a silent empty result would mask client bugs.
+#[test]
+fn sync_rejects_through_sessions() {
+    let session = Session::start("cbcow-through");
+    let sync = session.run([
+        "sync",
+        &session.id,
+        "--project",
+        session.project.path().to_str().unwrap(),
+    ]);
+    assert!(!sync.status.success());
+    assert!(
+        String::from_utf8_lossy(&sync.stderr).contains("requires a cbcow-private session"),
+        "{sync:?}"
+    );
+    session.stop();
+}
+
+// Publog entries must describe what a commit actually published: a fresh
+// file is `added` with existed=false, a pre-existing one `modified` with
+// existed=true -- not post-commit guesswork that labels every path as an
+// existing modification.
+#[test]
+fn commit_publog_records_real_change_kinds() {
+    let session = Session::start("cbcow-private");
+    let project = session.project.path().to_str().unwrap().to_string();
+    assert_ok(&session.run([
+        "write",
+        &session.id,
+        "fresh.txt",
+        "--content",
+        "new",
+        "--project",
+        &project,
+    ]));
+    assert_ok(&session.run([
+        "write",
+        &session.id,
+        "a.txt",
+        "--content",
+        "changed",
+        "--project",
+        &project,
+    ]));
+    assert_ok(&session.commit());
+
+    let projects = session.state.path().join("projects");
+    let store = std::fs::read_dir(&projects)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let log = std::fs::read_to_string(store.join("publog.jsonl")).unwrap();
+    let entry: Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+    let changes = entry["changes"].as_array().unwrap().clone();
+    let lookup = |path: &str| {
+        changes
+            .iter()
+            .find(|change| change["path"] == path)
+            .unwrap()
+            .clone()
+    };
+    let fresh = lookup("fresh.txt");
+    assert_eq!(fresh["kind"], "added");
+    assert_eq!(fresh["existed"], false);
+    let existing = lookup("a.txt");
+    assert_eq!(existing["kind"], "modified");
+    assert_eq!(existing["existed"], true);
+    session.stop();
+}
+
+// Multiagent start overlap: while one start is parked inside its shared-mode
+// publish-lock scan, a sibling start must run to completion instead of
+// queueing behind it. Under the old whole-start cbcow.lock plus exclusive
+// publish hold, B would block until A released and this test would fail on
+// the pause hook's 30s abort.
+#[test]
+fn concurrent_private_starts_overlap_scans() {
+    let env = SharedProject::new();
+    let project = env.project.path().to_str().unwrap().to_string();
+    let pause = tempfile::tempdir().unwrap();
+    let mut start_a = std::process::Command::new(bin());
+    start_a
+        .current_dir(env.project.path())
+        .env("DELTABOX_STATE_DIR", env.state.path())
+        .env("DELTABOX_TEST_PAUSE_AT", "start_scan_shared")
+        .env("DELTABOX_TEST_PAUSE_DIR", pause.path())
+        .args([
+            "session",
+            "start",
+            &project,
+            "--fs-mode",
+            "cbcow-private",
+            "--require-fs-mode",
+        ])
+        .stdout(std::process::Stdio::piped());
+    let mut start_a = start_a.spawn().unwrap();
+    let arrived = pause.path().join("start_scan_shared.arrived");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !arrived.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "start A never reached its scan"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let b = env.try_start("cbcow-private");
+    assert_ok(&b);
+    let b = sid_of(&b);
+
+    std::fs::write(pause.path().join("start_scan_shared.release"), b"").unwrap();
+    let out_a = start_a.wait_with_output().unwrap();
+    assert!(out_a.status.success(), "{out_a:?}");
+    let a = sid_of(&out_a);
+
+    for sid in [&a, &b] {
+        let status = command(
+            env.project.path(),
+            env.state.path(),
+            ["session", "status", sid, "--project", &project],
+        );
+        assert_ok(&status);
+    }
+}
+
+// The other direction of the shared/exclusive split: publication stays fully
+// excluded from a start's scan window, so no sibling publication can land
+// between the start's two host scans — and the started session's baseline
+// snapshot therefore predates the publication, which folds for it later.
+#[test]
+fn start_scan_excludes_publication() {
+    let env = SharedProject::new();
+    let a = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let project = env.project.path().to_str().unwrap().to_string();
+    let out = command(
+        env.project.path(),
+        env.state.path(),
+        ["write", &a, "pending.txt", "--content", "x", "--project", &project],
+    );
+    assert_ok(&out);
+
+    let pause = tempfile::tempdir().unwrap();
+    let mut start_b = std::process::Command::new(bin());
+    start_b
+        .current_dir(env.project.path())
+        .env("DELTABOX_STATE_DIR", env.state.path())
+        .env("DELTABOX_TEST_PAUSE_AT", "start_scan_shared")
+        .env("DELTABOX_TEST_PAUSE_DIR", pause.path())
+        .args([
+            "session",
+            "start",
+            &project,
+            "--fs-mode",
+            "cbcow-private",
+            "--require-fs-mode",
+        ])
+        .stdout(std::process::Stdio::piped());
+    let mut start_b = start_b.spawn().unwrap();
+    let arrived = pause.path().join("start_scan_shared.arrived");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !arrived.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "start B never reached its scan"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let mut commit_a = std::process::Command::new(bin());
+    commit_a
+        .current_dir(env.project.path())
+        .env("DELTABOX_STATE_DIR", env.state.path())
+        .args(["commit", &a, "--project", &project]);
+    let mut commit_a = commit_a.spawn().unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(
+        commit_a.try_wait().unwrap().is_none(),
+        "a publication landed inside a start's scan window"
+    );
+
+    std::fs::write(pause.path().join("start_scan_shared.release"), b"").unwrap();
+    let out_b = start_b.wait_with_output().unwrap();
+    assert!(out_b.status.success(), "{out_b:?}");
+    let b = sid_of(&out_b);
+    assert!(commit_a.wait().unwrap().success());
+    assert_eq!(
+        std::fs::read_to_string(env.project.path().join("pending.txt")).unwrap(),
+        "x"
+    );
+
+    let sync = command(
+        env.project.path(),
+        env.state.path(),
+        ["sync", &b, "--project", &project],
+    );
+    assert_ok(&sync);
+    let sync: Value = serde_json::from_slice(&sync.stdout).unwrap();
+    assert_eq!(sync["folded_publications"], 1);
+}
+
+// A start killed inside its scan window leaves its admission pin behind: a
+// Running record plus a lease, with no engine record. The zombie must stay
+// visible (the through rejection names it) and be clearable with a single
+// `session stop`, which finalizes the rollback the dead start never ran.
+#[test]
+fn killed_start_leaves_stoppable_admission_pin() {
+    let env = SharedProject::new();
+    let project = env.project.path().to_str().unwrap().to_string();
+    let pause = tempfile::tempdir().unwrap();
+    let mut start_a = std::process::Command::new(bin());
+    start_a
+        .current_dir(env.project.path())
+        .env("DELTABOX_STATE_DIR", env.state.path())
+        .env("DELTABOX_TEST_PAUSE_AT", "start_scan_shared")
+        .env("DELTABOX_TEST_PAUSE_DIR", pause.path())
+        .args([
+            "session",
+            "start",
+            &project,
+            "--fs-mode",
+            "cbcow-private",
+            "--require-fs-mode",
+        ])
+        .stdout(std::process::Stdio::piped());
+    let mut start_a = start_a.spawn().unwrap();
+    let arrived = pause.path().join("start_scan_shared.arrived");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !arrived.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "start never reached its scan"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // While the start is alive its admission pin is held: the busy error
+    // names it, and stop refuses to roll back a living start.
+    let through_live = env.try_start("cbcow-through");
+    assert!(!through_live.status.success());
+    let stderr = String::from_utf8_lossy(&through_live.stderr).to_string();
+    assert!(stderr.contains("session busy: "), "{stderr}");
+    let live_sid = stderr
+        .split("session busy: ")
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    let stop_live = command(
+        env.project.path(),
+        env.state.path(),
+        ["session", "stop", &live_sid, "--project", &project],
+    );
+    assert!(!stop_live.status.success(), "stopped a live start");
+    assert!(
+        String::from_utf8_lossy(&stop_live.stderr).contains("session busy"),
+        "{stop_live:?}"
+    );
+
+    start_a.kill().unwrap();
+    start_a.wait().unwrap();
+
+    let through = env.try_start("cbcow-through");
+    assert!(!through.status.success());
+    let stderr = String::from_utf8_lossy(&through.stderr).to_string();
+    assert!(stderr.contains("session busy: "), "{stderr}");
+    let sid = stderr
+        .split("session busy: ")
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+
+    let stop = command(
+        env.project.path(),
+        env.state.path(),
+        ["session", "stop", &sid, "--project", &project],
+    );
+    assert_ok(&stop);
+    assert_ok(&env.try_start("cbcow-through"));
+}
+
+// commit --sync keeps the reject -> fold -> report recovery inside one
+// invocation: stdout carries the sync payload with the conflict list and
+// theirs locations, and the baseline is already refreshed, so a plain commit
+// right after lands without a separate sync round-trip.
+#[test]
+fn commit_sync_recovers_in_one_invocation() {
+    let env = SharedProject::new();
+    let a = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let b = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let project = env.project.path().to_str().unwrap().to_string();
+    assert_ok(&command(
+        env.project.path(),
+        env.state.path(),
+        ["write", &a, "a.txt", "--content", "A-version", "--project", &project],
+    ));
+    assert_ok(&command(
+        env.project.path(),
+        env.state.path(),
+        ["write", &b, "a.txt", "--content", "B-version", "--project", &project],
+    ));
+    assert_ok(&command(env.project.path(), env.state.path(), ["commit", &a, "--project", &project]));
+
+    let out = command(
+        env.project.path(),
+        env.state.path(),
+        ["commit", &b, "--sync", "--project", &project],
+    );
+    assert!(!out.status.success());
+    let payload: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(payload["committed"], false);
+    assert_eq!(payload["folded_publications"], 1);
+    assert_eq!(payload["conflicts"][0]["path"], "a.txt");
+    assert_eq!(payload["conflicts"][0]["theirs"], "a.txt.deltabox-theirs");
+
+    assert_ok(&command(env.project.path(), env.state.path(), ["commit", &b, "--project", &project]));
+    assert_eq!(
+        std::fs::read_to_string(env.project.path().join("a.txt")).unwrap(),
+        "B-version"
+    );
+    assert!(!env.project.path().join("a.txt.deltabox-theirs").exists());
+}
+
+// commit --sync --ours automates the whole recovery: fold, keep the session's
+// version, and recommit inside the same invocation, reporting how many sync
+// retries it took.
+#[test]
+fn commit_sync_ours_lands_in_one_invocation() {
+    let env = SharedProject::new();
+    let a = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let b = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let project = env.project.path().to_str().unwrap().to_string();
+    assert_ok(&command(
+        env.project.path(),
+        env.state.path(),
+        ["write", &a, "a.txt", "--content", "A-version", "--project", &project],
+    ));
+    assert_ok(&command(
+        env.project.path(),
+        env.state.path(),
+        ["write", &b, "a.txt", "--content", "B-version", "--project", &project],
+    ));
+    assert_ok(&command(env.project.path(), env.state.path(), ["commit", &a, "--project", &project]));
+
+    let out = command(
+        env.project.path(),
+        env.state.path(),
+        ["commit", &b, "--sync", "--ours", "--project", &project],
+    );
+    assert_ok(&out);
+    let payload: Value = serde_json::from_slice(&out.stdout).unwrap();
+    // In-lock ours: the commit resolves the sibling publication inside its
+    // own publish-lock window, so no CLI-level sync retry happens at all.
+    assert!(payload.get("sync_retries").is_none(), "{payload}");
+    assert_eq!(payload["folded_publications"], 1);
+    assert_eq!(
+        std::fs::read_to_string(env.project.path().join("a.txt")).unwrap(),
+        "B-version"
+    );
+    assert!(!env.project.path().join("a.txt.deltabox-theirs").exists());
+}
+
+// The ours policy only overrides digest-endorsed sibling publications: a
+// change made outside deltabox has no publog digest and must keep failing
+// closed, even with --sync --ours.
+#[test]
+fn commit_ours_never_overrides_strangers() {
+    let env = SharedProject::new();
+    let s = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let project = env.project.path().to_str().unwrap().to_string();
+    assert_ok(&command(
+        env.project.path(),
+        env.state.path(),
+        ["write", &s, "a.txt", "--content", "session-version", "--project", &project],
+    ));
+    std::fs::write(env.project.path().join("a.txt"), "stranger-version").unwrap();
+
+    let out = command(
+        env.project.path(),
+        env.state.path(),
+        ["commit", &s, "--sync", "--ours", "--project", &project],
+    );
+    assert!(!out.status.success(), "ours overrode a stranger change");
+    assert_eq!(
+        std::fs::read_to_string(env.project.path().join("a.txt")).unwrap(),
+        "stranger-version"
+    );
+}
+
+// Raising the digest cap widens in-lock ours coverage: a mid-sized file
+// (above the old 4 MiB cap, below the current one) published by a sibling is
+// digest-endorsed, so --sync --ours resolves the conflict inside the lock
+// instead of failing closed as an unendorsed change.
+#[test]
+fn commit_ours_covers_midsized_files() {
+    let env = SharedProject::new();
+    let a = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let b = sid_of(&{
+        let out = env.try_start("cbcow-private");
+        assert_ok(&out);
+        out
+    });
+    let project = env.project.path().to_str().unwrap().to_string();
+    for (sid, fill) in [(&a, "a"), (&b, "b")] {
+        let script = format!(
+            "yes {fill} 2>/dev/null | head -c 6291456 > big.bin"
+        );
+        let out = command(
+            env.project.path(),
+            env.state.path(),
+            ["exec", sid, "--project", &project, "--", "/bin/sh", "-c", &script],
+        );
+        assert_ok(&out);
+    }
+    assert_ok(&command(env.project.path(), env.state.path(), ["commit", &a, "--project", &project]));
+
+    let out = command(
+        env.project.path(),
+        env.state.path(),
+        ["commit", &b, "--sync", "--ours", "--project", &project],
+    );
+    assert_ok(&out);
+    let host = std::fs::read(env.project.path().join("big.bin")).unwrap();
+    assert_eq!(host.len(), 6291456);
+    assert_eq!(&host[..2], b"b\n");
 }

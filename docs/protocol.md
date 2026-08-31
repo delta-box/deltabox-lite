@@ -29,6 +29,7 @@ each response is one JSON object per line.
 | `diff.list` | `{session_id, from?, to?}` | `DiffResult` |
 | `changes.commit` | `{session_id, checkpoint?}` | `CommitResult` |
 | `changes.abort` | `{session_id, checkpoint?}` | `AbortResult` |
+| `session.sync` | `{session_id}` | `SyncResult` |
 | `review.begin` | `{session_id, kind, label?}` | `ActiveReview` |
 | `review.status` | `{session_id}` | `ActiveReview \| null` |
 | `review.diff` | `{session_id}` | `DiffResult` |
@@ -61,7 +62,13 @@ original session-ID stdout format for shell compatibility.
 `SessionInfo` = `{session_id, project, started_at_ms, status, checkpoint_count,
 pending_changes, requested_fs_mode, resolved_fs_mode, host_visibility,
 durability, group_commit_ms?, isolation, state_provider, fallback_reason, rollback_guarantee,
-tainted, mountpoint?, helper_pid?, helper_restarts, mount_namespace}`.
+tainted, mountpoint?, helper_pid?, helper_restarts, mount_namespace,
+degraded_protections?}`. On Linux kernels that cannot enforce every Landlock
+protection, `degraded_protections` lists the dropped scopes (for example
+`signal-scope` below ABI v6); consumers must not assume those confinements.
+
+`session.start` over `serve` must name the project `serve` was started in;
+a mismatching `project` is rejected instead of being silently ignored.
 
 For `cbcow-through`, `host_visibility` is `immediate`: commit accepts the
 current host-visible state and abort reverts it. `cbcow-private` and
@@ -71,6 +78,23 @@ recovery while the session and its durable state remain valid. The macOS native
 provider has no mountpoint and does not expose its restartable event helper PID.
 
 `ExecResult` = `{exit_code, stdout, stderr, duration_ms, truncated}`.
+
+`CommitResult` may carry `folded_publications`: how many sibling publications
+the commit's baseline was fast-forwarded over. Orchestrators must re-verify
+(build/test) after any commit that folded sibling work.
+
+`session.sync` is the losing side of a commit conflict: it advances the
+session's baseline over sibling publications, reports sibling-changed paths
+the session never touched (`stale_paths`), and for each contested path
+materializes a `<path>.deltabox-theirs` copy of the current host content
+inside the session view (`SyncResult` = `{folded_publications, stale_paths,
+conflicts: [{path, host_kind, theirs?}]}`). Merge, remove the theirs file,
+and commit again. Requires `cbcow-private`: through and copy-private
+sessions are rejected with an unsupported-operation error.
+
+A commit rejected because the host moved returns error `data` =
+`{"type": "project-conflict", message, conflicts: [{path, host_change}],
+truncated}` alongside the unchanged error `message`.
 
 `label` on `session.exec` is optional free-form attribution (e.g. the Pi tool
 name); it is recorded in the session journal so change sets can be grouped by

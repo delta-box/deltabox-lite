@@ -17,7 +17,11 @@ similar.workspace = true
 walkdir = "2"
 base64 = "0.22"
 libc.workspace = true
-sha2 = "0.10"
+# `asm` selects the hardware SHA-256 implementation (ARMv8 crypto
+# extensions / x86 SHA-NI): content digests power publog sibling
+# endorsement and fingerprint scans, and the digest cap is sized to a
+# fixed time budget, so digest coverage scales with this throughput.
+sha2 = { version = "0.10", features = ["asm"] }
 xattr = "1"
 deltafs-fuse.workspace = true
 

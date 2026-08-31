@@ -67,9 +67,34 @@ impl SessionRegistry {
         Ok(serde_json::from_str(&raw)?)
     }
 
+    /// Locked read-modify-write. Every mutation of sessions.json must go
+    /// through here: concurrent sessions otherwise overwrite each other's
+    /// registry updates. registry.lock is the innermost lock in the global
+    /// order (see locks.rs) — do no other lock acquisition inside `mutate`.
+    pub(crate) fn update(root: &Path, mutate: impl FnOnce(&mut Self)) -> Result<()> {
+        let _lock = crate::locks::Lock::acquire(&root.join("registry.lock"))?;
+        // Reap tmp files a crashed writer left behind; every live writer
+        // holds this lock, so nothing here is in use.
+        if let Ok(entries) = std::fs::read_dir(root) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name
+                    .to_string_lossy()
+                    .starts_with("sessions.json.tmp")
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        let mut registry = Self::load(root)?;
+        crate::test_hooks::maybe_pause("registry_loaded");
+        mutate(&mut registry);
+        registry.save(root)
+    }
+
     pub fn save(&self, root: &Path) -> Result<()> {
         let path = root.join(SESSION_REGISTRY_FILE);
-        let tmp = root.join(format!("{SESSION_REGISTRY_FILE}.tmp"));
+        let tmp = root.join(format!("{SESSION_REGISTRY_FILE}.tmp.{}", std::process::id()));
         let mut file = File::create(&tmp)?;
         file.write_all(&serde_json::to_vec_pretty(self)?)?;
         file.sync_all()?;
@@ -176,8 +201,8 @@ impl SessionManager {
             status: SessionStatus::Running,
             filesystem: crate::protocol::FilesystemInfo::default(),
         };
-        self.registry.upsert(meta);
-        self.registry.save(&self.root)?;
+        self.registry.upsert(meta.clone());
+        SessionRegistry::update(&self.root, |registry| registry.upsert(meta))?;
         self.info_from_meta(&session_id)
     }
 
@@ -195,11 +220,12 @@ impl SessionManager {
             data: None,
         })?;
         self.sync_journal(&mut journal)?;
-        self.registry.upsert(SessionMeta {
+        let stopped = SessionMeta {
             status: SessionStatus::Stopped,
             ..meta
-        });
-        self.registry.save(&self.root)?;
+        };
+        self.registry.upsert(stopped.clone());
+        SessionRegistry::update(&self.root, |registry| registry.upsert(stopped))?;
         self.info_from_meta(session_id)
     }
 
@@ -695,6 +721,7 @@ mod tests {
             Ok(CommitResult {
                 checkpoint_id: checkpoint_id.to_string(),
                 applied: 1,
+                folded_publications: None,
             })
         }
         fn abort_changes(
@@ -759,6 +786,7 @@ mod tests {
             .commit(CommitParams {
                 session_id: info.session_id.clone(),
                 checkpoint: None,
+                ours: false,
             })
             .unwrap();
         assert_eq!(committed.checkpoint_id, ckpt.id);

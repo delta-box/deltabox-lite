@@ -1,5 +1,6 @@
 use crate::changeset::{describe_change, Change, ChangeKind, DEFAULT_TEXT_SIZE_LIMIT};
-use crate::error::{Error, Result};
+use crate::error::{ConflictReport, Error, PathConflict, Result};
+use crate::test_hooks::maybe_pause;
 use crate::macos_tree::{
     clone_path, copy_metadata, read_acl, remove_path, replace_path, sync_dir, sync_tree,
     tracked_xattr,
@@ -150,6 +151,7 @@ impl State {
         fs::create_dir_all(root.join(TRANSACTIONS_DIR))?;
         materialize(project, &root.join(BASE_DIR), durable)
             .map_err(|error| Error::Backend(format!("create accepted APFS base: {error}")))?;
+        maybe_pause("macos_base_materialized");
         let live = match mode {
             Mode::Through => project.to_path_buf(),
             Mode::Private => {
@@ -211,6 +213,10 @@ impl State {
         }
         state.cleanup_orphans()?;
         Ok(state)
+    }
+
+    pub fn pending_set(&self) -> std::collections::BTreeSet<String> {
+        self.manifest.pending_paths.clone()
     }
 
     pub fn live(&self) -> PathBuf {
@@ -492,13 +498,66 @@ impl State {
         Ok((target, paths.len()))
     }
 
-    pub fn commit(&mut self, target: Option<u64>) -> Result<(u64, usize)> {
+    pub fn commit(
+        &mut self,
+        target: Option<u64>,
+        endorsed_until: u64,
+    ) -> Result<(u64, Vec<crate::publog::PublogChange>)> {
         if let Some(target) = target {
             self.abort(Some(target))?;
         }
-        let paths = self.manifest.pending_paths.clone();
+        // `.deltabox-theirs` drafts that `sync` materialized stay in the live
+        // view for the agent to merge against, but never cross into the host or
+        // the accepted baseline: dropping them from the publish set here excludes
+        // them from staging, both applies (host and base), and the publog at once.
+        // `pending_paths` itself is cleared below, so they simply stop being
+        // pending — they are not deleted from the working tree.
+        let paths: BTreeSet<String> = self
+            .manifest
+            .pending_paths
+            .iter()
+            .filter(|path| crate::publog::is_publishable(path.as_str()))
+            .cloned()
+            .collect();
         if self.manifest.mode == Mode::Private {
-            validate_paths(&self.root.join(BASE_DIR), &self.project, &paths)?;
+            validate_paths(
+                &self.root.join(BASE_DIR),
+                &self.project,
+                &paths,
+                endorsed_until,
+            )?;
+        }
+        // Describe what this commit publishes while the trees are still
+        // pre-apply: staged-vs-base presence yields the change kind, and the
+        // pre-apply host (base for through mode, whose host already carries
+        // the live view) yields `existed`. Sampling after apply would misread
+        // additions as modifications and cannot see checkpoint-target aborts.
+        let live_root = self.live();
+        let base_root = self.root.join(BASE_DIR);
+        let mut published = Vec::new();
+        for path in &paths {
+            let staged = fs::symlink_metadata(live_root.join(path)).ok();
+            let base = fs::symlink_metadata(base_root.join(path)).ok();
+            let host = if self.manifest.mode == Mode::Private {
+                fs::symlink_metadata(self.project.join(path)).ok()
+            } else {
+                base.clone()
+            };
+            let kind = match (&staged, &base) {
+                (Some(_), None) => crate::changeset::ChangeKind::Added,
+                (Some(_), Some(_)) => crate::changeset::ChangeKind::Modified,
+                (None, _) => crate::changeset::ChangeKind::Deleted,
+            };
+            let namespace_changed = matches!(
+                (&staged, &base),
+                (Some(staged), Some(base)) if staged.file_type() != base.file_type()
+            );
+            published.push(crate::publog::PublogChange {
+                path: path.clone(),
+                kind,
+                existed: host.is_some(),
+                namespace_changed,
+            });
         }
         let id = Uuid::new_v4().to_string();
         let transaction_root = self.root.join(TRANSACTIONS_DIR).join(&id);
@@ -540,6 +599,7 @@ impl State {
                 self.manifest.durable,
             )?;
         }
+        maybe_pause("publish_host_partially_applied");
         apply_snapshot(
             &transaction_root.join("staged"),
             &self.root.join(BASE_DIR),
@@ -562,7 +622,7 @@ impl State {
         remove_path(&self.root.join(TRANSACTION_FILE))?;
         remove_path(&transaction_root)?;
         self.cleanup_orphans()?;
-        Ok((checkpoint_id, paths.len()))
+        Ok((checkpoint_id, published))
     }
 
     fn require_checkpoint(&self, id: u64) -> Result<()> {
@@ -1023,18 +1083,62 @@ fn apply_snapshot(snapshot: &Path, target: &Path, durable: bool) -> Result<()> {
     Ok(())
 }
 
-fn validate_paths(base: &Path, host: &Path, paths: &BTreeSet<String>) -> Result<()> {
-    for path in paths {
-        if !paths_equal(
-            existing(base.join(path)).as_deref(),
-            existing(host.join(path)).as_deref(),
-        )? {
-            return Err(Error::ProjectConflict(format!(
-                "host path changed after session start: {path}"
-            )));
+fn validate_paths(
+    base: &Path,
+    host: &Path,
+    paths: &BTreeSet<String>,
+    endorsed_until: u64,
+) -> Result<()> {
+    // Digests of publications this session has ACKNOWLEDGED (its publog
+    // cursor covers them, i.e. it synced or started after they landed). A
+    // mismatching host file whose content is such a publication is accepted
+    // baseline movement. Publications past the cursor stay conflicts: the
+    // session has not seen them, so first-committer-wins must hold. Anything
+    // without a digest match (dirs, symlinks, strangers) fails closed.
+    let mut endorsed = std::collections::BTreeMap::new();
+    for entry in crate::publog::entries_since(host, 0)? {
+        if entry.seq > endorsed_until {
+            continue;
+        }
+        for (path, digest) in entry.digests {
+            endorsed.insert(path, digest);
         }
     }
-    Ok(())
+    let mut conflicts = Vec::new();
+    for path in paths {
+        let base_entry = existing(base.join(path));
+        let host_entry = existing(host.join(path));
+        if paths_equal(base_entry.as_deref(), host_entry.as_deref())? {
+            continue;
+        }
+        let host_path = host.join(path);
+        if host_path.is_file() {
+            if let Some(expected) = endorsed.get(path) {
+                if crate::publog::file_digest(&host_path)? == *expected {
+                    continue;
+                }
+            }
+        }
+        {
+            let host_change = match (&base_entry, &host_entry) {
+                (None, Some(_)) => ChangeKind::Added,
+                (Some(_), None) => ChangeKind::Deleted,
+                _ => ChangeKind::Modified,
+            };
+            conflicts.push(PathConflict {
+                path: path.clone(),
+                host_change,
+            });
+        }
+    }
+    if conflicts.is_empty() {
+        return Ok(());
+    }
+    let message = format!(
+        "host path changed after session start: {}",
+        conflicts[0].path
+    );
+    Err(Error::ProjectConflict(ConflictReport::new(message, conflicts)))
 }
 
 fn paths_equal(left: Option<&Path>, right: Option<&Path>) -> Result<bool> {
@@ -1363,7 +1467,7 @@ mod tests {
             reopened.index.as_ref().unwrap().entries.get("a.txt"),
             Some(&Entry::read(&project.path().join("a.txt")).unwrap())
         );
-        reopened.commit(None).unwrap();
+        reopened.commit(None, 0).unwrap();
         assert_eq!(reopened.manifest.index_generation, base_generation);
         assert_eq!(
             reopened.manifest.index_deltas,
@@ -1440,7 +1544,7 @@ mod tests {
             fs::read_to_string(project.path().join("a.txt")).unwrap(),
             "v1"
         );
-        state.commit(None).unwrap();
+        state.commit(None, 0).unwrap();
         fs::write(project.path().join("a.txt"), "pending").unwrap();
         state.mark_paths(["a.txt".into()]).unwrap();
         state.abort(None).unwrap();
@@ -1466,7 +1570,7 @@ mod tests {
         );
         fs::write(state.live().join("a.txt"), "committed").unwrap();
         state.mark_paths(["a.txt".into()]).unwrap();
-        state.commit(None).unwrap();
+        state.commit(None, 0).unwrap();
         assert_eq!(
             fs::read_to_string(project.path().join("a.txt")).unwrap(),
             "committed"
@@ -1484,7 +1588,7 @@ mod tests {
         state
             .mark_paths(["a.txt".into(), "peer.txt".into()])
             .unwrap();
-        state.commit(None).unwrap();
+        state.commit(None, 0).unwrap();
         fs::remove_file(project.path().join("a.txt")).unwrap();
         fs::remove_file(project.path().join("peer.txt")).unwrap();
         state
@@ -1587,7 +1691,7 @@ mod tests {
         fs::write(project.path().join("a.txt"), "three").unwrap();
         state.mark_paths(["a.txt".into()]).unwrap();
 
-        state.commit(Some(one)).unwrap();
+        state.commit(Some(one), 0).unwrap();
         assert_eq!(
             fs::read_to_string(project.path().join("a.txt")).unwrap(),
             "one"

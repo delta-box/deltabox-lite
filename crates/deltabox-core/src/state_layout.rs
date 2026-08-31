@@ -6,18 +6,32 @@ use std::path::{Path, PathBuf};
 
 const PROJECTS_DIR: &str = "projects";
 
-/// Session-record root for one canonical project. Defaults to the project-local
-/// `.deltabox` directory; `DELTABOX_STATE_DIR` relocates records to an
-/// arbitrary path, keyed by project hash.
+/// Session-record root for one canonical project. Defaults to the
+/// project-local `.deltabox` directory so each project stays self-contained;
+/// `DELTABOX_STATE_DIR` relocates records to an arbitrary path, keyed by
+/// project hash.
 pub(crate) fn state_root(project: &Path) -> Result<PathBuf> {
     state_root_with_override(project, std::env::var_os("DELTABOX_STATE_DIR").as_deref())
 }
 
 fn state_root_with_override(project: &Path, override_dir: Option<&OsStr>) -> Result<PathBuf> {
     match override_dir {
-        Some(dir) => Ok(PathBuf::from(dir)
-            .join(PROJECTS_DIR)
-            .join(project_key(project))),
+        Some(dir) => {
+            let base = canonical_base(PathBuf::from(dir))?;
+            // The project-local `.deltabox` default is safe because every
+            // scanner and copier skips that name; an arbitrary override
+            // inside the project has no such exemption, so whole-tree copies
+            // would include their own output and recurse until
+            // ENAMETOOLONG. Refuse the layout up front.
+            if base.starts_with(project) {
+                return Err(Error::Backend(format!(
+                    "state directory {} must live outside the project {}",
+                    base.display(),
+                    project.display()
+                )));
+            }
+            Ok(base.join(PROJECTS_DIR).join(project_key(project)))
+        }
         None => Ok(project.join(".deltabox")),
     }
 }
@@ -45,6 +59,17 @@ fn canonical_base(path: PathBuf) -> Result<PathBuf> {
     Ok(path.canonicalize()?)
 }
 
+/// Serializes host publication and publication recovery for one project.
+pub(crate) fn publish_lock_path(project: &Path) -> Result<PathBuf> {
+    Ok(state_root(project)?.join("publish.lock"))
+}
+
+/// Project admission leases: `exclusive` for cbcow-through, one file per
+/// session under `shared/` for cbcow-private.
+pub(crate) fn leases_dir(project: &Path) -> Result<PathBuf> {
+    Ok(state_root(project)?.join("leases"))
+}
+
 /// External base for reconstructible runtime files, keyed by session id.
 pub(crate) fn runtime_base() -> PathBuf {
     if let Some(path) = std::env::var_os("DELTABOX_RUNTIME_DIR") {
@@ -61,27 +86,4 @@ fn project_key(project: &Path) -> String {
     digest.update(project.as_os_str().as_bytes());
     let hex = format!("{:x}", digest.finalize());
     hex[..16].to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_root_is_project_local_deltabox() {
-        let project = tempfile::tempdir().unwrap();
-        let root = state_root_with_override(project.path(), None).unwrap();
-        assert_eq!(root, project.path().join(".deltabox"));
-    }
-
-    #[test]
-    fn override_root_relocates_outside_project() {
-        let project = tempfile::tempdir().unwrap();
-        let override_dir = tempfile::tempdir().unwrap();
-        let root = state_root_with_override(project.path(), Some(override_dir.path().as_os_str()))
-            .unwrap();
-        assert!(root.starts_with(override_dir.path().join("projects")));
-        assert!(!root.starts_with(project.path()));
-        assert_ne!(root, project.path().join(".deltabox"));
-    }
 }

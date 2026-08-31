@@ -1,5 +1,7 @@
-use crate::error::{Error, Result};
+use crate::changeset::ChangeKind as HostChangeKind;
+use crate::error::{ConflictReport, Error, PathConflict, Result};
 use crate::snapshot::clone_or_copy_file;
+use crate::test_hooks::maybe_pause;
 use deltafs_fuse::engine::{Change, ChangeKind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -107,6 +109,10 @@ pub struct Publication {
     pub changes: Vec<PublishChange>,
     #[serde(default)]
     durable: bool,
+    /// publog head at prepare time: restore() must not roll back a path a
+    /// sibling republished after this publication (its backup is stale).
+    #[serde(default)]
+    pub base_seq: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,6 +226,20 @@ impl AcceptedIndex {
     }
 
     pub fn validate(&self, project: &Path, paths: impl IntoIterator<Item = String>) -> Result<()> {
+        self.validate_with_endorsement(project, paths, None)
+    }
+
+    /// `validate`, with an optional pre-declared endorsement set: a conflict
+    /// on a path whose current host content digest-matches an endorsed publog
+    /// digest is accepted baseline movement (a sibling publication the caller
+    /// has chosen to override). Anything without a matching digest — dirs,
+    /// symlinks, deletions, oversized files, strangers — keeps failing closed.
+    pub fn validate_with_endorsement(
+        &self,
+        project: &Path,
+        paths: impl IntoIterator<Item = String>,
+        endorsed: Option<&BTreeMap<String, String>>,
+    ) -> Result<()> {
         let mut checked = BTreeSet::new();
         let mut targets = Vec::new();
         checked.insert(String::new());
@@ -236,8 +256,23 @@ impl AcceptedIndex {
                 parent = value.parent();
             }
         }
-        for relative in checked {
-            self.validate_path(project, &relative)?;
+        let target_set: BTreeSet<&str> = targets.iter().map(String::as_str).collect();
+        let mut conflicts = Vec::new();
+        let mut probe_error = None;
+        for relative in &checked {
+            let strict = target_set.contains(relative.as_str());
+            match self.validate_path(project, relative, strict) {
+                Ok(found) => conflicts.extend(found),
+                Err(error) => {
+                    // A drifting host can make later probes fail outright;
+                    // already-confirmed conflicts are the more useful answer.
+                    probe_error = Some(error);
+                    break;
+                }
+            }
+        }
+        if let (Some(error), true) = (probe_error, conflicts.is_empty()) {
+            return Err(error);
         }
         for target in targets {
             if self
@@ -247,15 +282,45 @@ impl AcceptedIndex {
                 for entry in fs::read_dir(self.directory.join("entries"))? {
                     let entry: AcceptedEntry = serde_json::from_slice(&fs::read(entry?.path())?)?;
                     if is_ancestor(&target, &entry.path) {
-                        self.validate_path(project, &entry.path)?;
+                        conflicts.extend(self.validate_path(project, &entry.path, true)?);
                     }
                 }
             }
         }
-        Ok(())
+        if let Some(endorsed) = endorsed {
+            let mut kept = Vec::new();
+            for conflict in conflicts {
+                let host_path = project.join(&conflict.path);
+                let overridden = host_path.is_file()
+                    && endorsed.get(&conflict.path).is_some_and(|expected| {
+                        crate::publog::file_digest(&host_path)
+                            .map(|digest| digest == *expected)
+                            .unwrap_or(false)
+                    });
+                if !overridden {
+                    kept.push(conflict);
+                }
+            }
+            conflicts = kept;
+        }
+        if conflicts.is_empty() {
+            return Ok(());
+        }
+        conflicts.sort_by(|a, b| a.path.cmp(&b.path));
+        conflicts.dedup_by(|a, b| a.path == b.path);
+        let message = format!(
+            "host path changed after session start: {}",
+            conflicts[0].path
+        );
+        Err(Error::ProjectConflict(ConflictReport::new(message, conflicts)))
     }
 
-    fn validate_path(&self, project: &Path, relative: &str) -> Result<()> {
+    fn validate_path(
+        &self,
+        project: &Path,
+        relative: &str,
+        strict: bool,
+    ) -> Result<Option<PathConflict>> {
         let expected = if relative.is_empty() {
             Some(self.manifest.root.clone())
         } else {
@@ -271,6 +336,35 @@ impl AcceptedIndex {
             relative.is_empty(),
         )?;
         let matches = match (&expected, &actual) {
+            // A shared parent that did not exist at this session's baseline
+            // was created by a sibling's publication; both sessions must be
+            // able to introduce files under it. Targets never take this arm.
+            (None, Some(Fingerprint::Directory { .. })) if !strict => true,
+            (
+                Some(Fingerprint::Directory {
+                    mode: expected_mode,
+                    uid: expected_uid,
+                    gid: expected_gid,
+                    xattrs: expected_xattrs,
+                    ..
+                }),
+                Some(Fingerprint::Directory {
+                    mode: actual_mode,
+                    uid: actual_uid,
+                    gid: actual_gid,
+                    xattrs: actual_xattrs,
+                    ..
+                }),
+            ) if !strict =>
+            {
+                // Ancestor directories: sibling publications legitimately bump
+                // membership and timestamps; identity, permissions, and ACLs
+                // (xattrs) are load-bearing. Targets never take this arm.
+                expected_mode == actual_mode
+                    && expected_uid == actual_uid
+                    && expected_gid == actual_gid
+                    && expected_xattrs == actual_xattrs
+            }
             (Some(Fingerprint::Directory { .. }), Some(actual)) => self
                 .manifest
                 .directories
@@ -281,12 +375,18 @@ impl AcceptedIndex {
             _ => false,
         };
         if matches {
-            Ok(())
+            Ok(None)
         } else {
+            let host_change = match (&expected, &actual) {
+                (None, Some(_)) => HostChangeKind::Added,
+                (Some(_), None) => HostChangeKind::Deleted,
+                _ => HostChangeKind::Modified,
+            };
             let label = if relative.is_empty() { "." } else { relative };
-            Err(Error::ProjectConflict(format!(
-                "host path changed after session start: {label}"
-            )))
+            Ok(Some(PathConflict {
+                path: label.to_string(),
+                host_change,
+            }))
         }
     }
 
@@ -474,11 +574,17 @@ impl Publication {
         live: &Path,
         accepted: &AcceptedIndex,
         changes: &[Change],
+        endorsed: Option<&BTreeMap<String, String>>,
         engine_accepted_checkpoint: u64,
         durable: bool,
     ) -> Result<Self> {
         let changes = collapse_changes(changes, accepted, live)?;
-        accepted.validate(project, changes.iter().map(|change| change.path.clone()))?;
+        accepted.validate_with_endorsement(
+            project,
+            changes.iter().map(|change| change.path.clone()),
+            endorsed,
+        )?;
+        let base_seq = crate::publog::head_seq(project)?;
         let id = Uuid::new_v4().to_string();
         let transaction = store.join(PUBLISH_DIR).join(&id);
         let backup = transaction.join("backup");
@@ -517,6 +623,7 @@ impl Publication {
             engine_accepted_checkpoint,
             changes: plan,
             durable,
+            base_seq,
         };
         if durable {
             sync_tree(&backup)?;
@@ -552,6 +659,7 @@ impl Publication {
         for change in deletions {
             remove_path(&project.join(&change.path))?;
             maybe_crash("private_publish_path_applied");
+            maybe_pause("publish_host_partially_applied");
         }
         let mut writes: Vec<&PublishChange> = self
             .changes
@@ -567,6 +675,7 @@ impl Publication {
             remove_path(&target)?;
             fs::rename(staged.join(&change.path), target)?;
             maybe_crash("private_publish_path_applied");
+            maybe_pause("publish_host_partially_applied");
         }
         if self.durable {
             sync_changes(project, &self.changes)?;
@@ -576,7 +685,20 @@ impl Publication {
 
     pub fn restore(&self, store: &Path, project: &Path) -> Result<()> {
         let backup = transaction_path(store, &self.id).join("backup");
-        let mut changes: Vec<&PublishChange> = self.changes.iter().collect();
+        // Paths a sibling republished after this publication carry NEWER data
+        // than this backup; rolling them back would silently destroy the
+        // sibling's accepted work. Leave them to the sibling's own history.
+        let mut superseded = std::collections::BTreeSet::new();
+        for entry in crate::publog::entries_since(project, self.base_seq)? {
+            for change in entry.changes {
+                superseded.insert(change.path);
+            }
+        }
+        let mut changes: Vec<&PublishChange> = self
+            .changes
+            .iter()
+            .filter(|change| !superseded.contains(&change.path))
+            .collect();
         changes.sort_by_key(|change| depth(&change.path));
         for change in &changes {
             remove_path(&project.join(&change.path))?;
@@ -1227,7 +1349,8 @@ mod tests {
             change("gone", ChangeKind::Deleted),
         ];
         let publication =
-            Publication::prepare(&store, &project, &live, &accepted, &changes, 0, false).unwrap();
+            Publication::prepare(&store, &project, &live, &accepted, &changes, None, 0, false)
+                .unwrap();
         publication.apply(&store, &project).unwrap();
         assert_eq!(fs::read_to_string(project.join("a")).unwrap(), "new");
         assert!(project.join("added").exists());

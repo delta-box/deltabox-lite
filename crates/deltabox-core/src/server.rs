@@ -7,12 +7,14 @@ use std::path::Path;
 
 /// Synchronous JSON-RPC dispatcher used by `deltabox serve` and tests.
 pub struct Server {
+    project: std::path::PathBuf,
     manager: SessionCoordinator,
 }
 
 impl Server {
     pub fn new(project: &Path, _backend: Box<dyn SandboxBackend>) -> CoreResult<Self> {
         Ok(Self {
+            project: project.canonicalize()?,
             manager: SessionCoordinator::new(project, None)?,
         })
     }
@@ -24,26 +26,50 @@ impl Server {
                 result: Some(value),
                 error: None,
             },
-            Err(e) => Response {
-                id: request.id,
-                result: None,
-                error: Some(ProtocolError {
-                    code: -32000,
-                    message: e.to_string(),
-                }),
-            },
+            Err(e) => {
+                let data = match &e {
+                    crate::error::Error::ProjectConflict(report) => {
+                        serde_json::to_value(report).ok().map(|mut value| {
+                            value["type"] = "project-conflict".into();
+                            value
+                        })
+                    }
+                    _ => None,
+                };
+                Response {
+                    id: request.id,
+                    result: None,
+                    error: Some(ProtocolError {
+                        code: -32000,
+                        message: e.to_string(),
+                        data,
+                    }),
+                }
+            }
         }
     }
 
     fn dispatch(&mut self, method: Method) -> CoreResult<Value> {
         let value = match method {
-            Method::SessionStart(p) => serde_json::to_value(self.manager.start_with_durability(
+            Method::SessionStart(p) => {
+                // serve is bound to one project at startup; silently ignoring
+                // the request's project misled adapters for a long time.
+                let requested = p.project.canonicalize().unwrap_or_else(|_| p.project.clone());
+                if requested != self.project {
+                    return Err(crate::error::Error::Backend(format!(
+                        "serve is bound to project {}; requested {}",
+                        self.project.display(),
+                        requested.display()
+                    )));
+                }
+                serde_json::to_value(self.manager.start_with_durability(
                 p.policy.as_deref(),
                 p.fs_mode,
                 p.require_fs_mode,
                 p.durability,
                 p.group_commit_ms,
-            )?)?,
+            )?)?
+            }
             Method::SessionStop(p) => serde_json::to_value(self.manager.stop(&p.session_id)?)?,
             Method::SessionStatus(p) => serde_json::to_value(self.manager.status(&p.session_id)?)?,
             Method::SessionExec(p) => serde_json::to_value(self.manager.exec(p)?)?,
@@ -62,6 +88,9 @@ impl Server {
             Method::DiffList(p) => serde_json::to_value(self.manager.diff(p)?)?,
             Method::ChangesCommit(p) => serde_json::to_value(self.manager.commit(p)?)?,
             Method::ChangesAbort(p) => serde_json::to_value(self.manager.abort(p)?)?,
+            Method::SessionSync(p) => {
+                serde_json::to_value(self.manager.sync(&p.session_id)?)?
+            }
             Method::ReviewBegin(p) => serde_json::to_value(self.manager.begin_review(p)?)?,
             Method::ReviewStatus(p) => {
                 serde_json::to_value(self.manager.review_status(&p.session_id)?)?

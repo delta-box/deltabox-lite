@@ -195,6 +195,18 @@ impl SessionCoordinator {
         }
     }
 
+    pub fn sync(&self, session_id: &str) -> Result<crate::protocol::SyncResult> {
+        match self.route(session_id)? {
+            Route::CopyPrivate(_) => Err(crate::error::Error::Unsupported(
+                "session.sync requires a cbcow-private session".into(),
+            )),
+            #[cfg(target_os = "linux")]
+            Route::Cbcow(manager) => manager.sync(session_id),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.sync(session_id),
+        }
+    }
+
     pub fn begin_review(&self, params: ReviewBeginParams) -> Result<ActiveReview> {
         match self.route(&params.session_id)? {
             Route::CopyPrivate(manager) => manager.begin_review(params),

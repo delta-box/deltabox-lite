@@ -43,6 +43,9 @@ enum Command {
     Diff(DiffArgs),
     /// Commit pending changes to the real project.
     Commit(CommitArgs),
+    /// Fold sibling publications into the session: refresh the baseline and
+    /// materialize `.deltabox-theirs` copies for conflicting paths.
+    Sync(SyncArgs),
     /// Abort pending changes back to a checkpoint.
     Abort(AbortArgs),
     /// Manage a persistent task/tool review scope.
@@ -254,6 +257,16 @@ struct CommitArgs {
     project: PathBuf,
     #[arg(long)]
     checkpoint: Option<String>,
+    /// On a host conflict, fold sibling publications and materialize
+    /// `.deltabox-theirs` drafts before returning, in this same invocation:
+    /// the baseline is already refreshed when the conflict is reported.
+    #[arg(long)]
+    sync: bool,
+    /// With --sync: after each fold, retry the commit so the session's own
+    /// version of every conflicted path wins. Bounded; exits non-zero with a
+    /// fresh baseline if siblings keep landing first.
+    #[arg(long, requires = "sync")]
+    ours: bool,
 }
 
 #[derive(clap::Args)]
@@ -318,6 +331,33 @@ struct FsHelperArgs {
     group_commit_ms: Option<NonZeroU64>,
     #[arg(long)]
     reclaim_dir: Option<PathBuf>,
+}
+
+
+/// On a structured commit conflict, list every conflicting path on stderr so
+/// callers (humans and agents) see the whole reconciliation surface at once.
+#[derive(clap::Args)]
+struct SyncArgs {
+    session: String,
+    #[arg(long, default_value = ".")]
+    project: std::path::PathBuf,
+}
+
+fn render_conflict(error: &deltabox_core::error::Error) {
+    if let deltabox_core::error::Error::ProjectConflict(report) = error {
+        eprintln!("deltabox: commit blocked: project changed outside deltabox");
+        for conflict in &report.conflicts {
+            let mark = match conflict.host_change {
+                deltabox_core::changeset::ChangeKind::Added => "A",
+                deltabox_core::changeset::ChangeKind::Modified => "M",
+                deltabox_core::changeset::ChangeKind::Deleted => "D",
+            };
+            eprintln!("  {mark} {} (changed on the host)", conflict.path);
+        }
+        let n = report.conflicts.len();
+        let suffix = if report.truncated { ", list truncated" } else { "" };
+        eprintln!("deltabox: {n} conflicting path(s){suffix}; nothing was committed.");
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -431,10 +471,73 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Commit(args) => {
             let manager = SessionCoordinator::new(&args.project, None)?;
-            let result = manager.commit(CommitParams {
-                session_id: args.session,
-                checkpoint: args.checkpoint,
-            })?;
+            // --sync keeps the reject -> fold -> retry recovery inside one
+            // invocation: no process respawn and no agent turnaround between
+            // the rejection and the refreshed baseline, which is where a
+            // sibling would otherwise land first and force another round.
+            const OURS_MAX_RETRIES: u64 = 10;
+            let mut sync_retries: u64 = 0;
+            loop {
+                let result = manager.commit(CommitParams {
+                    session_id: args.session.clone(),
+                    checkpoint: args.checkpoint.clone(),
+                    ours: args.ours,
+                });
+                match result {
+                    Ok(result) => {
+                        if sync_retries > 0 {
+                            let mut value = serde_json::to_value(&result)?;
+                            value["sync_retries"] = sync_retries.into();
+                            println!("{}", serde_json::to_string_pretty(&value)?);
+                        } else {
+                            println!("{}", serde_json::to_string_pretty(&result)?);
+                        }
+                        break;
+                    }
+                    Err(error @ deltabox_core::error::Error::ProjectConflict(_))
+                        if args.sync =>
+                    {
+                        let synced = match manager.sync(&args.session) {
+                            Ok(synced) => synced,
+                            Err(sync_error) => {
+                                render_conflict(&error);
+                                eprintln!("deltabox: --sync fallback failed: {sync_error}");
+                                return Err(error.into());
+                            }
+                        };
+                        // Retry only while folding made progress: with the
+                        // in-lock `ours` policy a surviving conflict means a
+                        // stranger change (or an unendorsed path), which no
+                        // amount of retrying resolves.
+                        if args.ours
+                            && synced.folded_publications > 0
+                            && sync_retries < OURS_MAX_RETRIES
+                        {
+                            sync_retries += 1;
+                            continue;
+                        }
+                        // Not committed, but the baseline is already folded
+                        // and the theirs drafts exist: the caller can merge
+                        // and recommit without another sync round-trip.
+                        let mut value = serde_json::to_value(&synced)?;
+                        value["committed"] = serde_json::Value::Bool(false);
+                        if sync_retries > 0 {
+                            value["sync_retries"] = sync_retries.into();
+                        }
+                        println!("{}", serde_json::to_string_pretty(&value)?);
+                        render_conflict(&error);
+                        return Err(error.into());
+                    }
+                    Err(error) => {
+                        render_conflict(&error);
+                        return Err(error.into());
+                    }
+                }
+            }
+        }
+        Command::Sync(args) => {
+            let manager = SessionCoordinator::new(&args.project, None)?;
+            let result = manager.sync(&args.session)?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Command::Abort(args) => {
@@ -668,6 +771,7 @@ fn run_transaction(args: RunArgs) -> anyhow::Result<i32> {
                 let committed = manager.commit(CommitParams {
                     session_id: session_id.clone(),
                     checkpoint: None,
+                    ours: false,
                 })?;
                 eprintln!("deltabox: committed {} path(s)", committed.applied);
             }

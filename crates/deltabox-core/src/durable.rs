@@ -7,7 +7,7 @@
 use crate::backend::SandboxBackend;
 use crate::changeset::{Change, ChangeKind};
 use crate::checkpoint::{CheckpointStore, DEFAULT_CHECKPOINT_CAP};
-use crate::error::{Error, Result};
+use crate::error::{ConflictReport, Error, PathConflict, Result};
 use crate::journal::{Journal, JournalEntry, JournalKind};
 use crate::policy::Policy;
 use crate::protocol::{
@@ -147,9 +147,7 @@ impl DurableSessionManager {
             filesystem,
         };
         save_session_meta(&store, &meta)?;
-        let mut registry = SessionRegistry::load(&self.root)?;
-        registry.upsert(meta);
-        registry.save(&self.root)?;
+        SessionRegistry::update(&self.root, |registry| registry.upsert(meta))?;
         drop(lock);
         self.status(&session_id)
     }
@@ -182,9 +180,7 @@ impl DurableSessionManager {
         let mut meta = self.require_meta(session_id)?;
         meta.status = SessionStatus::Stopped;
         save_session_meta(&self.store_dir(session_id), &meta)?;
-        let mut registry = SessionRegistry::load(&self.root)?;
-        registry.upsert(meta);
-        registry.save(&self.root)?;
+        SessionRegistry::update(&self.root, |registry| registry.upsert(meta))?;
         self.append_sync(session_id, JournalKind::SessionStop, None)?;
         drop(lock);
         self.status(session_id)
@@ -197,9 +193,7 @@ impl DurableSessionManager {
         if meta.status != SessionStatus::Stopped {
             return Err(Error::SessionBusy(session_id.into()));
         }
-        let mut registry = SessionRegistry::load(&self.root)?;
-        registry.remove(session_id);
-        registry.save(&self.root)?;
+        SessionRegistry::update(&self.root, |registry| registry.remove(session_id))?;
         drop(lock);
         std::fs::remove_dir_all(store)?;
         Ok(())
@@ -387,6 +381,11 @@ impl DurableSessionManager {
     }
 
     fn commit_locked(&self, params: CommitParams) -> Result<CommitResult> {
+        // Copy-private publishes into the host tree too: serialize against
+        // CB-CoW publications and recoveries on the same project.
+        let _publish = crate::locks::Lock::acquire(&crate::state_layout::publish_lock_path(
+            &self.project,
+        )?)?;
         let store = self.store_dir(&params.session_id);
         let accepted = store.join(ACCEPTED_DIR);
         let working = store.join(WORKING_DIR);
@@ -395,11 +394,21 @@ impl DurableSessionManager {
         let policy = self.policy(&params.session_id)?;
         validate_pending_scan(&policy, &expected, &working_scan)?;
         validate_tree_symlinks(&working, &policy)?;
+        let published_delta = diff_snapshots(&expected, &working_scan);
         let actual = scan_tree(&self.project)?;
-        if !diff_snapshots(&expected, &actual).is_empty() {
-            return Err(Error::ProjectConflict(
-                "real project no longer matches the accepted baseline".into(),
-            ));
+        let drift = diff_snapshots(&expected, &actual);
+        if !drift.is_empty() {
+            let conflicts = drift
+                .iter()
+                .map(|change| PathConflict {
+                    path: change.path.clone(),
+                    host_change: change.kind,
+                })
+                .collect();
+            return Err(Error::ProjectConflict(ConflictReport::new(
+                "real project no longer matches the accepted baseline",
+                conflicts,
+            )));
         }
         let transaction_id = Uuid::new_v4().to_string();
         let txn = store.join(TRANSACTIONS_DIR).join(&transaction_id);
@@ -455,9 +464,36 @@ impl DurableSessionManager {
         )?;
         self.save_active_review(&params.session_id, None)?;
         self.finish_transaction(&store, &txn)?;
+        let mut digests = std::collections::BTreeMap::new();
+        let mut published = Vec::new();
+        // Copy-private has no `session.sync`, so it never materializes a
+        // `.deltabox-theirs` merge draft. The shared publish gate is applied
+        // anyway to keep every backend's publog consistent: a draft-suffixed
+        // path is never recorded as a host publication.
+        for change in published_delta
+            .iter()
+            .filter(|change| crate::publog::is_publishable(&change.path))
+        {
+            published.push(crate::publog::PublogChange {
+                path: change.path.clone(),
+                kind: change.kind,
+                existed: change.kind != crate::changeset::ChangeKind::Added,
+                namespace_changed: false,
+            });
+            let host_path = self.project.join(&change.path);
+            if change.kind != crate::changeset::ChangeKind::Deleted && host_path.is_file() {
+                if let Some(digest) = crate::publog::file_digest_capped(&host_path)? {
+                    digests.insert(change.path.clone(), digest);
+                }
+            }
+        }
+        if !published.is_empty() {
+            crate::publog::append(&self.project, &params.session_id, &published, digests)?;
+        }
         Ok(CommitResult {
             checkpoint_id: id,
             applied,
+            folded_publications: None,
         })
     }
 
@@ -538,6 +574,7 @@ impl DurableSessionManager {
         let result = self.commit_locked(CommitParams {
             session_id: session_id.to_string(),
             checkpoint: None,
+            ours: false,
         })?;
         self.save_active_review(session_id, None)?;
         Ok(result)
@@ -885,6 +922,10 @@ impl DurableSessionManager {
         remove_path(&store.join(format!("{TRANSACTION_FILE}.tmp")))?;
         let marker_path = store.join(TRANSACTION_FILE);
         if marker_path.exists() {
+            // Rolling a torn transaction back mutates the host tree.
+            let _publish = crate::locks::Lock::acquire(
+                &crate::state_layout::publish_lock_path(&self.project)?,
+            )?;
             let marker: TransactionMarker = serde_json::from_slice(&std::fs::read(&marker_path)?)?;
             let txn = store.join(TRANSACTIONS_DIR).join(&marker.id);
             match marker.kind {
