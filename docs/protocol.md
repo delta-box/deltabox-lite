@@ -24,7 +24,7 @@ each response is one JSON object per line.
 | `session.start` | `{project, policy?, fs_mode?, isolation?, require_fs_mode?, durability?, group_commit_ms?}` | `SessionInfo` |
 | `session.stop` | `{session_id}` | `SessionInfo` |
 | `session.status` | `{session_id}` | `SessionInfo` |
-| `session.exec` | `{session_id, argv, cwd?, env?, label?}` | `ExecResult` |
+| `session.exec` | `{session_id, argv, cwd?, env?, label?, execution_profile?}` | `ExecResult` |
 | `checkpoint.create` | `{session_id, label?}` | `CheckpointInfo` |
 | `diff.list` | `{session_id, from?, to?}` | `DiffResult` |
 | `changes.commit` | `{session_id, checkpoint?}` | `CommitResult` |
@@ -84,6 +84,17 @@ provider has no mountpoint and does not expose its restartable event helper PID.
 `label` on `session.exec` is optional free-form attribution (e.g. the Pi tool
 name); it is recorded in the session journal so change sets can be grouped by
 the command that produced them.
+
+`execution_profile` on `session.exec` is optional and accepts
+`workspace-write` (the default) or `read-write`. It widens filesystem access
+for that one command without changing the session: `workspace-write` keeps
+writes inside the session workspace, and `read-write` additionally reaches the
+rest of the host filesystem. The workspace stays a Deltabox-owned tree either
+way, so its changes remain visible to diff, checkpoint, commit, and abort,
+while the backing project, engine state, and helper endpoints stay denied.
+Because `read-write` grants the filesystem root, it requires the session state
+to live outside the backing project; otherwise the backend rejects the command
+with `unsupported`. See [policy reference](policy.md#execution-profiles).
 
 `DiffResult` = `{from, to, pending_changes, changes}` where each `Change` is
 `{path, kind: added|modified|deleted, old_size, new_size, is_binary,

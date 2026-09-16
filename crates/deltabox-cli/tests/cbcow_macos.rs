@@ -234,6 +234,7 @@ mode = "deny_all"
                 cwd: Some(project.path().to_path_buf()),
                 env: None,
                 label: None,
+                execution_profile: Default::default(),
             })
             .unwrap()
     };

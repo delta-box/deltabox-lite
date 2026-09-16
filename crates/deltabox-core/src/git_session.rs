@@ -190,6 +190,13 @@ impl GitSessionManager {
 
     pub fn exec(&self, params: ExecParams) -> Result<ExecResult> {
         let (_lock, meta) = self.lock_running(&params.session_id)?;
+        if params.execution_profile == crate::protocol::ExecutionProfile::ReadWrite {
+            return Err(Error::Unsupported(
+                "read-write execution requires a CB-CoW session; Git isolation cannot widen \
+                 host access without dropping the workspace guarantee"
+                    .into(),
+            ));
+        }
         let isolation = meta.isolation.as_deref().unwrap_or("bubblewrap");
         self.isolation_provider(isolation)?
             .exec(params.argv, params.cwd, params.env)

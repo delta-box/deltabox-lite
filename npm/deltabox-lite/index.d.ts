@@ -41,6 +41,14 @@ export interface NativeExecResult {
   truncated: boolean
 }
 
+/**
+ * Filesystem breadth for one command. `workspace-write` (the default) keeps
+ * writes inside the session workspace; `read-write` additionally reaches the
+ * rest of the host filesystem while the workspace stays Deltabox-managed and
+ * the backing project stays denied.
+ */
+export type NativeExecutionProfile = 'workspace-write' | 'read-write'
+
 export interface NativeCheckpointInfo {
   id: string
   label: string | null
@@ -94,6 +102,7 @@ export interface NativeDeltaboxInstance {
     cwd?: string,
     environment?: NativeEnvironmentEntry[],
     label?: string,
+    executionProfile?: NativeExecutionProfile,
   ): Promise<NativeExecResult>
   readFile(sessionId: string, path: string): Promise<Buffer>
   writeFile(sessionId: string, path: string, content: Buffer): Promise<void>

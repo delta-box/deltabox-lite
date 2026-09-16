@@ -4,8 +4,8 @@ use deltabox_core::changeset::{Change, ChangeKind};
 use deltabox_core::coordinator::{CommandExecutionMode, CoordinatorOptions, SessionCoordinator};
 use deltabox_core::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
-    CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecResult, FilesystemMode,
-    ReviewBeginParams, ReviewKind, SessionInfo, SessionStatus,
+    CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecResult, ExecutionProfile,
+    FilesystemMode, ReviewBeginParams, ReviewKind, SessionInfo, SessionStatus,
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -266,8 +266,10 @@ impl NativeDeltabox {
         cwd: Option<String>,
         environment: Option<Vec<NativeEnvironmentEntry>>,
         label: Option<String>,
+        execution_profile: Option<String>,
     ) -> napi::Result<NativeExecResult> {
         let coordinator = Arc::clone(&self.coordinator);
+        let execution_profile = parse_execution_profile(execution_profile.as_deref())?;
         run_blocking(move || {
             coordinator
                 .exec(ExecParams {
@@ -281,6 +283,7 @@ impl NativeDeltabox {
                             .collect()
                     }),
                     label,
+                    execution_profile,
                 })
                 .map(exec_result)
                 .map_err(native_error)
@@ -499,6 +502,16 @@ fn parse_durability(value: Option<&str>) -> napi::Result<DurabilityMode> {
         "strict" => Ok(DurabilityMode::Strict),
         value => Err(napi::Error::from_reason(format!(
             "unsupported durability mode {value:?}"
+        ))),
+    }
+}
+
+fn parse_execution_profile(value: Option<&str>) -> napi::Result<ExecutionProfile> {
+    match value.unwrap_or("workspace-write") {
+        "workspace-write" => Ok(ExecutionProfile::WorkspaceWrite),
+        "read-write" => Ok(ExecutionProfile::ReadWrite),
+        value => Err(napi::Error::from_reason(format!(
+            "unsupported execution profile {value:?}"
         ))),
     }
 }

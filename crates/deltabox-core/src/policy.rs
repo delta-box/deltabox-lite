@@ -117,6 +117,20 @@ pub struct LimitsPolicy {
 }
 
 impl Policy {
+    /// Widen this policy for one command execution under `profile`.
+    ///
+    /// The widening is additive: `ExecutionProfile::ReadWrite` adds the
+    /// filesystem root to the read and write grants so a command may touch
+    /// paths outside the workspace. Protected denies (engine state, helper
+    /// endpoints, the backing project, and secret patterns) are handed to the
+    /// backend separately and keep winning over the widened grants.
+    pub fn apply_execution_profile(&mut self, profile: crate::protocol::ExecutionProfile) {
+        if profile == crate::protocol::ExecutionProfile::ReadWrite {
+            self.filesystem.read.push(PathBuf::from("/"));
+            self.filesystem.write.push(PathBuf::from("/"));
+        }
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)?;
         let policy: Policy =

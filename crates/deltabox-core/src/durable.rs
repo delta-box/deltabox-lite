@@ -225,6 +225,11 @@ impl DurableSessionManager {
     pub fn exec(&self, params: ExecParams) -> Result<ExecResult> {
         let _lock = self.lock_running(&params.session_id)?;
         let working = self.working_dir(&params.session_id);
+        let mut policy = self.policy(&params.session_id)?;
+        policy.apply_execution_profile(params.execution_profile);
+        params
+            .execution_profile
+            .ensure_backing_project_is_deniable(&working, &self.project)?;
         let cwd = params
             .cwd
             .as_deref()
@@ -237,7 +242,7 @@ impl DurableSessionManager {
         };
         let result = match self.execution_mode {
             CommandExecutionMode::Sandboxed => self
-                .run_and_materialize(&params.session_id, |backend, sid| {
+                .run_and_materialize(&params.session_id, policy, |backend, sid| {
                     backend.exec(sid, request)
                 })?,
             CommandExecutionMode::Trusted => {
@@ -598,12 +603,12 @@ impl DurableSessionManager {
     fn run_and_materialize<T>(
         &self,
         session_id: &str,
+        policy: Policy,
         operation: impl FnOnce(&mut dyn SandboxBackend, &str) -> Result<T>,
     ) -> Result<T> {
         let store = self.store_dir(session_id);
         let before = self.working_scan(&store)?;
         let accepted = self.accepted_scan(&store)?;
-        let policy = self.policy(session_id)?;
         self.update_working_copy_transaction(session_id, |candidate| {
             let spec = SessionSpec {
                 project: candidate.to_path_buf(),

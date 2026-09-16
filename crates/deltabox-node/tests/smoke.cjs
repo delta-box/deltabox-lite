@@ -88,6 +88,44 @@ async function main() {
     assert.equal(Number.isInteger(committed.applied), true)
     assert.deepEqual(await readFile(file), content)
     assert.equal((await native.sessionStatus(session.session_id)).status, 'running')
+
+    // A per-command execution profile widens host access for one call without
+    // relaxing the session: the workspace stays DeltaFS-managed and the
+    // backing project stays denied.
+    if (isolation === 'deltabox') {
+      const outside = await realpath(await mkdtemp(join(tmpdir(), 'deltabox-node-outside-')))
+      const outsideFile = join(outside, 'outside.txt')
+      const denied = await native.exec(
+        session.session_id,
+        ['/bin/sh', '-c', `printf nope > '${outsideFile}'`],
+        project,
+        undefined,
+        'workspace-write profile',
+      )
+      assert.notEqual(denied.exit_code, 0)
+      const widened = await native.exec(
+        session.session_id,
+        ['/bin/sh', '-c', `printf widened > '${outsideFile}'`],
+        project,
+        undefined,
+        'read-write profile',
+        'read-write',
+      )
+      assert.equal(widened.exit_code, 0)
+      assert.equal(await readFile(outsideFile, 'utf8'), 'widened')
+      const leak = join(project, 'native-direct.txt')
+      const bypass = await native.exec(
+        session.session_id,
+        ['/bin/sh', '-c', `printf hacked > '${leak}'`],
+        project,
+        undefined,
+        'backing-project probe',
+        'read-write',
+      )
+      assert.notEqual(bypass.exit_code, 0)
+      await rm(outside, { recursive: true, force: true })
+    }
+
     await native.stopSession(session.session_id)
     session = undefined
     console.log(JSON.stringify({ transport: 'native', mode, isolation, bytes: content.length }))
