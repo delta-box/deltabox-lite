@@ -5,7 +5,7 @@ use deltabox_core::coordinator::{CommandExecutionMode, CoordinatorOptions, Sessi
 use deltabox_core::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
     CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecResult, FilesystemMode,
-    ReviewBeginParams, ReviewKind, SessionInfo, SessionStatus,
+    ExecutionProfile, ReviewBeginParams, ReviewKind, SessionInfo, SessionStatus,
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -286,8 +286,10 @@ impl NativeDeltabox {
         cwd: Option<String>,
         environment: Option<Vec<NativeEnvironmentEntry>>,
         label: Option<String>,
+        execution_profile: Option<String>,
     ) -> napi::Result<NativeExecResult> {
         let coordinator = Arc::clone(&self.coordinator);
+        let execution_profile = parse_execution_profile(execution_profile.as_deref())?;
         run_blocking(move || {
             coordinator
                 .exec(ExecParams {
@@ -301,6 +303,7 @@ impl NativeDeltabox {
                             .collect()
                     }),
                     label,
+                    execution_profile,
                 })
                 .map(exec_result)
                 .map_err(native_error)
@@ -543,6 +546,22 @@ fn parse_filesystem_request(
         Some("copy-private") => Ok((Some(FilesystemMode::CopyPrivate), required.unwrap_or(false))),
         Some(value) => Err(napi::Error::from_reason(format!(
             "unsupported filesystem mode {value:?}"
+        ))),
+    }
+}
+
+/// Read the per-command filesystem breadth, defaulting to the session's own.
+///
+/// The profile widens one command only: `read-write` reaches the host while the
+/// workspace keeps routing through Deltabox, so its changes stay diffable and
+/// rollback-able, and the backing project stays denied. An unknown name fails
+/// instead of silently running the narrower profile the caller did not ask for.
+fn parse_execution_profile(value: Option<&str>) -> napi::Result<ExecutionProfile> {
+    match value.unwrap_or("workspace-write") {
+        "workspace-write" => Ok(ExecutionProfile::WorkspaceWrite),
+        "read-write" => Ok(ExecutionProfile::ReadWrite),
+        value => Err(napi::Error::from_reason(format!(
+            "unsupported execution profile {value:?}"
         ))),
     }
 }

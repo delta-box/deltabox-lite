@@ -984,3 +984,112 @@ fn sync_rejects_through_sessions() {
     let stop = session.command(["session", "stop", &session.id]);
     assert!(stop.status.success());
 }
+
+/// A per-command `read-write` profile widens host access without relaxing the
+/// session's protected denies: the workspace still routes through DeltaFS and
+/// the backing project stays unwritable.
+#[test]
+fn read_write_profile_widens_host_access_but_keeps_protected_denies() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let runtime = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+
+    let start = Command::new(env!("CARGO_BIN_EXE_deltabox"))
+        .args([
+            "session",
+            "start",
+            project.path().to_str().unwrap(),
+            "--fs-mode",
+            "cbcow-through",
+            "--require-fs-mode",
+        ])
+        .current_dir(project.path())
+        .env("DELTABOX_STATE_DIR", state.path())
+        .env("XDG_RUNTIME_DIR", runtime.path())
+        .output()
+        .unwrap();
+    assert_ok(&start);
+    let session = String::from_utf8(start.stdout).unwrap().trim().to_string();
+
+    let exec = |script: &str, profile: Option<&str>| -> Value {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_deltabox"));
+        command
+            .args(["exec", &session, "--project"])
+            .arg(project.path());
+        if let Some(profile) = profile {
+            command.args(["--execution-profile", profile]);
+        }
+        let output = command
+            .args(["--", "sh", "-c", script])
+            .current_dir(project.path())
+            .env("DELTABOX_STATE_DIR", state.path())
+            .env("XDG_RUNTIME_DIR", runtime.path())
+            .output()
+            .unwrap();
+        // `exec` reports the command's status in its JSON body and the CLI
+        // itself exits 0, so the result has to be parsed rather than inferred
+        // from the process status.
+        serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|error| panic!("exec did not return JSON: {error}"))
+    };
+
+    let escaped = outside.path().join("escaped.txt");
+    let escape_script = format!("printf widened > '{}'", escaped.display());
+    let denied = exec(&escape_script, None);
+    assert!(
+        denied["exit_code"].as_i64().unwrap_or(0) != 0,
+        "workspace-write must not write outside the workspace: {denied}"
+    );
+    assert!(!escaped.exists(), "workspace-write created a host file");
+
+    let widened = exec(&escape_script, Some("read-write"));
+    assert_eq!(
+        widened["exit_code"], 0,
+        "read-write must reach host paths: {widened}"
+    );
+    assert_eq!(std::fs::read_to_string(&escaped).unwrap(), "widened");
+
+    let tracked = exec("printf inside > tracked.txt", Some("read-write"));
+    assert_eq!(tracked["exit_code"], 0, "workspace write: {tracked}");
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
+        "inside"
+    );
+
+    let direct = project.path().join("direct.txt");
+    let bypass = format!("printf hacked > '{}'", direct.display());
+    let blocked = exec(&bypass, Some("read-write"));
+    assert!(
+        blocked["exit_code"].as_i64().unwrap_or(0) != 0,
+        "the backing project must stay denied under read-write: {blocked}"
+    );
+    assert!(!direct.exists(), "read-write bypassed the backing deny");
+
+    let abort = Command::new(env!("CARGO_BIN_EXE_deltabox"))
+        .args(["abort", &session, "--project"])
+        .arg(project.path())
+        .current_dir(project.path())
+        .env("DELTABOX_STATE_DIR", state.path())
+        .env("XDG_RUNTIME_DIR", runtime.path())
+        .output()
+        .unwrap();
+    assert_ok(&abort);
+    assert!(
+        !project.path().join("tracked.txt").exists(),
+        "abort must still roll back workspace writes made under read-write"
+    );
+
+    let stop = Command::new(env!("CARGO_BIN_EXE_deltabox"))
+        .args(["session", "stop", &session, "--project"])
+        .arg(project.path())
+        .current_dir(project.path())
+        .env("DELTABOX_STATE_DIR", state.path())
+        .env("XDG_RUNTIME_DIR", runtime.path())
+        .output()
+        .unwrap();
+    assert_ok(&stop);
+}

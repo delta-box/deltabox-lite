@@ -40,6 +40,7 @@ fn exec_sh(manager: &mut SessionManager, session_id: &str, script: &str) -> (i32
             cwd: None,
             env: None,
             label: None,
+            execution_profile: Default::default(),
         })
         .unwrap();
     (result.exit_code.unwrap_or(-1), result.stdout, result.stderr)
@@ -332,6 +333,7 @@ fn exec_cwd_and_env() {
             cwd: Some(dir.path().join("sub")),
             env: Some(vec![("DBX_VAR".into(), "hello-env".into())]),
             label: Some("cwd-env".into()),
+            execution_profile: Default::default(),
         })
         .unwrap();
     assert_eq!(result.exit_code, Some(0));
@@ -395,4 +397,59 @@ fn fs_ops_deny_secrets_and_outside_paths() {
     assert!(write.is_err(), "fs.write must deny secret paths");
     let outside = manager.read_file(&sid, &PathBuf::from("/etc/hostname"));
     assert!(outside.is_err(), "fs.read outside project must fail");
+}
+
+/// A rooted write grant must not be able to reach a resolved deny: this is the
+/// property the `read-write` execution profile leans on to widen host access
+/// while the backing project stays unreachable.
+#[cfg(target_os = "linux")]
+#[test]
+fn rooted_write_grant_cannot_escape_resolved_denies() {
+    use deltabox_core::policy::Policy;
+    use deltabox_core::protocol::{ExecutionProfile, ExecRequest, SessionSpec};
+
+    let view = tempfile::tempdir().unwrap();
+    let backing = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(backing.path().join("secret.txt"), "secret\n").unwrap();
+
+    let mut policy = Policy::default_agent();
+    policy.apply_execution_profile(ExecutionProfile::ReadWrite);
+    let spec = SessionSpec {
+        project: view.path().to_path_buf(),
+        host_project: Some(backing.path().to_path_buf()),
+        store_dir: view.path().join("store"),
+        policy,
+        resolved_deny_paths: Some(vec![backing.path().to_path_buf()]),
+    };
+
+    let mut backend = native_backend();
+    backend.start_session("rooted", &spec).unwrap();
+    let mut run = |script: String| {
+        backend
+            .exec(
+                "rooted",
+                ExecRequest {
+                    argv: vec!["sh".into(), "-c".into(), script],
+                    cwd: None,
+                    env: None,
+                },
+            )
+            .unwrap()
+    };
+
+    let widened = run(format!("printf widened > '{}'", outside.path().join("ok.txt").display()));
+    assert_eq!(widened.exit_code, Some(0), "read-write must reach host paths");
+    assert!(outside.path().join("ok.txt").exists());
+
+    let leak = backing.path().join("leak.txt");
+    let denied = run(format!("printf hacked > '{}'", leak.display()));
+    assert_ne!(denied.exit_code, Some(0), "the resolved deny must win");
+    assert!(!leak.exists(), "a rooted grant escaped the resolved deny");
+
+    let secret = run(format!("cat '{}'", backing.path().join("secret.txt").display()));
+    assert_ne!(secret.exit_code, Some(0), "denied reads must win too");
+    assert!(secret.stdout.is_empty());
+
+    backend.stop_session("rooted").unwrap();
 }
