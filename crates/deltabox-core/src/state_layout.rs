@@ -88,18 +88,38 @@ pub(crate) const SCRATCH_HOME: &str = "home";
 pub(crate) const SCRATCH_TMP: &str = "tmp";
 pub(crate) const SCRATCH_STORAGE: &str = "cow";
 
-/// Every path one session owns, split by what the sandbox owes it.
+/// Every path one session owns, and what the sandbox owes each of them.
 ///
-/// One structure derives both the grants and the denies. That is the point:
-/// while the two lists came from separate places they drifted, and the drift
-/// landed a deny on a scratch directory, which broke `HOME`/`TMPDIR` inside a
-/// sandbox that otherwise worked. Scratch is where the helper keeps the
-/// command's home, temporary directory and copy-on-write storage, so a deny
-/// anywhere above it silences the command instead of confining it.
+/// ```text
+/// <state_base>/<sid>/          engine state: protected, never reachable
+/// ├── engine/                  the deltafs engine's durable directory
+/// ├── token                    control-socket token
+/// ├── command-token            command-endpoint token
+/// └── command-helper.log       helper output, kept for post-mortems
 ///
-/// The two container directories, `runtime_dir` and `scratch_dir`, are
-/// deliberately neither granted nor denied: they only group the paths above,
-/// and naming one of them would drag its children along either way.
+/// <runtime_base>/<sid>/        the session's private runtime
+/// ├── mount                  ← view: the workspace a command sees, read-write
+/// ├── ready                    ┐  the helper's readiness marker, which the
+/// ├── control.sock             │  manager polls before it trusts the mount
+/// ├── command.sock             ├─ control leaves: unreachable in every profile
+/// ├── command.ready            │
+/// ├── command.lock             ┘
+/// └── command/               ← container only: never named in a rule
+///     ├── home/                ┐  the command's HOME, TMPDIR and
+///     ├── tmp/                 ├─ copy-on-write storage: writable, private
+///     └── cow/                 ┘  to the session, never part of the view
+/// ```
+///
+/// `command/` is the trap this layout exists to avoid. It shares its parent
+/// with the control leaves, so a rule naming that parent — or a deny list
+/// assembled by listing the parent's children — takes the command's writable
+/// space with it, and the command dies at its first write to `$HOME`. The two
+/// container directories are therefore named in no rule at all; they only
+/// group their children.
+///
+/// One structure derives both the grants and the denies, because while the
+/// two lists came from separate places they drifted. Denies outrank grants,
+/// so a deny above a grant does not narrow it, it removes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionLayout {
     /// Session state: the engine's durable home, its tokens and helper logs.
@@ -152,6 +172,26 @@ impl SessionLayout {
         }
     }
 
+    /// Every path the tree above names, in tree order. Only these may appear
+    /// in a rule: the two containers are deliberately absent, so naming one of
+    /// them in a grant or a deny cannot happen by accident.
+    fn session_paths(&self) -> Vec<PathBuf> {
+        let mut paths = vec![
+            self.state_dir.clone(),
+            self.engine_dir.clone(),
+            self.token.clone(),
+            self.command_token.clone(),
+            self.view.clone(),
+            self.control_socket.clone(),
+            self.control_ready.clone(),
+            self.command_socket.clone(),
+            self.command_ready.clone(),
+            self.command_lock.clone(),
+        ];
+        paths.extend(self.scratch_paths());
+        paths
+    }
+
     /// The workspace a command sees, plus the scratch trees it may write.
     pub(crate) fn granted_paths(&self) -> Vec<PathBuf> {
         let mut paths = vec![self.view.clone()];
@@ -168,9 +208,17 @@ impl SessionLayout {
         ]
     }
 
-    /// Paths no command may reach, under any execution profile. A deny here
-    /// outranks every grant the profile adds, which is what lets `read-write`
-    /// widen a command's reach to the host without handing it the sandbox.
+    /// Paths no command may reach, under any execution profile: the complement
+    /// of the grants. Everything the layout owns is denied unless the layout
+    /// itself names it as a grant, so a path added later is protected by
+    /// default and has to be granted on purpose. The default is closed because
+    /// the two mistakes are not equally expensive — an over-wide deny breaks a
+    /// command loudly at its first write, an over-wide grant is a hole nobody
+    /// sees.
+    ///
+    /// A deny here outranks every grant the profile adds, which is what lets
+    /// `read-write` widen a command's reach to the host without handing it the
+    /// sandbox.
     ///
     /// The deny covers opens, execs, links and renames, which is the set
     /// sandlock routes through its deny check. Removal is not in that set, so
@@ -178,16 +226,11 @@ impl SessionLayout {
     /// the profile grants the whole root, and Landlock charges a removal to
     /// the directory holding the file rather than to the file.
     pub(crate) fn protected_paths(&self) -> Vec<PathBuf> {
-        vec![
-            self.state_dir.clone(),
-            self.token.clone(),
-            self.command_token.clone(),
-            self.control_socket.clone(),
-            self.control_ready.clone(),
-            self.command_socket.clone(),
-            self.command_ready.clone(),
-            self.command_lock.clone(),
-        ]
+        let granted = self.granted_paths();
+        self.session_paths()
+            .into_iter()
+            .filter(|path| !granted.contains(path))
+            .collect()
     }
 
     /// Denies outrank grants, so a protected path that sits above a granted
@@ -249,6 +292,7 @@ mod tests {
             layout().protected_paths(),
             vec![
                 PathBuf::from("/state/session-1"),
+                PathBuf::from("/state/session-1/engine"),
                 PathBuf::from("/state/session-1/token"),
                 PathBuf::from("/state/session-1/command-token"),
                 PathBuf::from("/run/session-1/control.sock"),
@@ -258,6 +302,43 @@ mod tests {
                 PathBuf::from("/run/session-1/command.lock"),
             ]
         );
+    }
+
+    /// The deny list is the complement of the grants, not a list someone has
+    /// to remember to extend: every path the layout owns is on exactly one of
+    /// the two sides.
+    #[test]
+    fn every_path_is_either_granted_or_protected() {
+        let layout = layout();
+        let granted = layout.granted_paths();
+        let protected = layout.protected_paths();
+        let mut union = granted.clone();
+        union.extend(protected.clone());
+        assert_eq!(union.len(), layout.session_paths().len());
+        for path in &granted {
+            assert!(!protected.contains(path), "{} is on both sides", path.display());
+        }
+    }
+
+    /// The containers group their children and appear in no rule. Naming one
+    /// of them would drag the control leaves along with the scratch, which is
+    /// the failure this layout replaced.
+    #[test]
+    fn containers_are_named_in_no_rule() {
+        let layout = layout();
+        for container in [&layout.runtime_dir, &layout.scratch_dir] {
+            assert!(!layout.session_paths().contains(container));
+        }
+    }
+
+    /// The engine state is denied as one subtree, so its children need no
+    /// rule of their own only as long as they stay inside it.
+    #[test]
+    fn the_engine_state_covers_its_own_children() {
+        let layout = layout();
+        for child in [&layout.engine_dir, &layout.token, &layout.command_token] {
+            assert!(child.starts_with(&layout.state_dir));
+        }
     }
 
     /// Scratch is the command's own home, temporary directory and
