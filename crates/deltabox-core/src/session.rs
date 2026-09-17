@@ -757,6 +757,7 @@ mod tests {
                 cwd: None,
                 env: None,
                 label: Some("greeting".into()),
+                execution_profile: Default::default(),
             })
             .unwrap();
         assert_eq!(exec.stdout, "echo hi");

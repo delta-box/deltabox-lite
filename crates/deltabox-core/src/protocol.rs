@@ -84,6 +84,52 @@ pub struct ExecParams {
     pub env: Option<Vec<(String, String)>>,
     #[serde(default)]
     pub label: Option<String>,
+    /// Filesystem breadth granted to this command only.
+    ///
+    /// The session's isolation backend and protected deny set are unchanged:
+    /// the workspace still routes through DeltaFS and the backing project,
+    /// engine state, and helper endpoints stay denied.
+    #[serde(default)]
+    pub execution_profile: ExecutionProfile,
+}
+
+/// Filesystem breadth granted to one command execution.
+///
+/// Profiles widen what a command may reach; they never relax the protected
+/// deny set that keeps the session and its rollback data authoritative.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExecutionProfile {
+    /// Write access limited to the session workspace.
+    #[default]
+    WorkspaceWrite,
+    /// Workspace writes plus the rest of the filesystem.
+    ReadWrite,
+}
+
+impl ExecutionProfile {
+    /// Reject a widening profile whose sandbox view is nested in the backing
+    /// project.
+    ///
+    /// `read-write` grants the filesystem root, so the backend must keep
+    /// denying the backing project to preserve the workspace guarantee. When
+    /// the session's view lives inside that project, a deny on the project
+    /// would also cover the view, so the profile cannot be expressed and fails
+    /// closed instead of exposing the host tree.
+    pub fn ensure_backing_project_is_deniable(
+        self,
+        view: &std::path::Path,
+        host_project: &std::path::Path,
+    ) -> crate::Result<()> {
+        if self == Self::ReadWrite && view.starts_with(host_project) {
+            return Err(crate::Error::Unsupported(format!(
+                "read-write execution requires session state outside the backing project ({} is nested in {})",
+                view.display(),
+                host_project.display()
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

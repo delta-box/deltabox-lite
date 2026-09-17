@@ -484,6 +484,7 @@ impl Manager {
             cwd,
             env,
             label,
+            execution_profile,
         } = params;
         if let Some(fast) = self.fast_session(&session_id) {
             return self.exec_fast(fast, session_id, argv, cwd, env, label);
@@ -534,6 +535,9 @@ impl Manager {
             }
             CommandExecutionMode::Sandboxed => {
                 let mut policy = self.policy(&meta)?;
+                policy.apply_execution_profile(execution_profile);
+                execution_profile
+                    .ensure_backing_project_is_deniable(&state.live(), &self.project)?;
                 if !policy
                     .filesystem
                     .deny

@@ -6,8 +6,14 @@ const { tmpdir } = require('node:os')
 const { join } = require('node:path')
 
 async function main() {
-  const [addonPath, helperBinary] = process.argv.slice(2)
-  if (!addonPath || !helperBinary) throw new Error('usage: smoke.cjs <addon.node> <deltabox>')
+  const [addonPath, helperBinary, requestedIsolation] = process.argv.slice(2)
+  if (!addonPath || !helperBinary) {
+    throw new Error('usage: smoke.cjs <addon.node> <deltabox> [deltabox|none]')
+  }
+  const isolation = requestedIsolation || 'none'
+  if (isolation !== 'deltabox' && isolation !== 'none') {
+    throw new Error(`unsupported smoke isolation ${isolation}`)
+  }
   const { NativeDeltabox } = require(addonPath)
   const project = await realpath(await mkdtemp(join(tmpdir(), 'deltabox-node-smoke-')))
   const state = await realpath(await mkdtemp(join(tmpdir(), 'deltabox-node-state-')))
@@ -18,7 +24,7 @@ async function main() {
     stateDir: state,
     runtimeDir: runtime,
     fsMode: 'cbcow-through',
-    isolation: 'none',
+    isolation,
   })
   let session
   try {
@@ -26,8 +32,8 @@ async function main() {
     assert.equal(session.resolved_fs_mode, 'cbcow-through')
     assert.equal(session.durability, 'process-crash')
     assert.equal(session.status, 'running')
-    assert.equal(session.isolation, 'none')
-    assert.equal(session.isolation_provider, null)
+    assert.equal(session.isolation, isolation)
+    assert.equal(session.isolation_provider === null, isolation === 'none')
     assert.equal(session.state_provider, 'macos-apfs-fsevents')
     assert.equal(session.fallback_reason, null)
     assert.ok(session.mountpoint)
@@ -68,6 +74,44 @@ async function main() {
     assert.equal(typeof committed.checkpoint_id, 'string')
     assert.equal(Number.isInteger(committed.applied), true)
     assert.equal((await native.sessionStatus(session.session_id)).status, 'running')
+
+    // A per-command execution profile widens host access for one call without
+    // relaxing the session: the workspace stays DeltaFS-managed and the backing
+    // project stays denied.
+    if (isolation === 'deltabox') {
+      const outside = await realpath(await mkdtemp(join(tmpdir(), 'deltabox-node-outside-')))
+      const outsideFile = join(outside, 'outside.txt')
+      const denied = await native.exec(
+        session.session_id,
+        ['/bin/sh', '-c', `printf nope > '${outsideFile}'`],
+        project,
+        undefined,
+        'workspace-write profile',
+      )
+      assert.notEqual(denied.exit_code, 0)
+      const widened = await native.exec(
+        session.session_id,
+        ['/bin/sh', '-c', `printf widened > '${outsideFile}'`],
+        project,
+        undefined,
+        'read-write profile',
+        'read-write',
+      )
+      assert.equal(widened.exit_code, 0)
+      assert.equal(await readFile(outsideFile, 'utf8'), 'widened')
+      const leak = join(project, 'native-direct.txt')
+      const bypass = await native.exec(
+        session.session_id,
+        ['/bin/sh', '-c', `printf hacked > '${leak}'`],
+        project,
+        undefined,
+        'backing-project probe',
+        'read-write',
+      )
+      assert.notEqual(bypass.exit_code, 0)
+      await rm(outside, { recursive: true, force: true })
+    }
+
     await native.stopSession(session.session_id)
     session = undefined
     console.log(JSON.stringify({ transport: 'native', environment: 'shared', bytes: content.length }))
