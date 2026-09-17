@@ -1131,6 +1131,20 @@ fn read_write_profile_widens_host_access_but_keeps_protected_denies() {
                 "{label} moved {}",
                 target.display()
             );
+            // Reading is what the readiness marker was exposed to before the
+            // deny existed, and only under `workspace-write`: `read-write`
+            // grants the whole root, while `workspace-write` grants `/tmp`
+            // read access, which covers a runtime directory that fell back to
+            // `/tmp`. The sockets do not carry that guarantee — opening one
+            // fails short of the deny — so this probe is for the plain files.
+            if !name.ends_with(".sock") {
+                let read = exec(&format!("cat '{}'", target.display()), profile);
+                assert!(
+                    read["exit_code"].as_i64().unwrap_or(0) != 0,
+                    "{label} must not read {}: {read}",
+                    target.display()
+                );
+            }
         }
     }
 
