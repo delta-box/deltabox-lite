@@ -31,8 +31,9 @@ Run a command, inspect its change set, and choose whether to keep or discard it:
 
 ## Highlights
 
-- **Native isolation, not a container** - Linux composes Sandlock/Landlock/
-  seccomp with DeltaFS FUSE; macOS uses Seatbelt plus APFS clones and FSEvents.
+- **Native isolation by default** - Linux composes Sandlock/Landlock/seccomp
+  with DeltaFS FUSE; macOS uses Seatbelt plus APFS clones and FSEvents. Native
+  embedding can instead pair GitGhost storage with a fixed Docker sandbox.
 - **Service-free durable sessions** - Linux starts a session-scoped filesystem
   helper and macOS starts a session-scoped event helper automatically. Durable
   files remain authoritative across independent CLI processes; no global daemon
@@ -68,8 +69,10 @@ Release builds are also packaged for npm on Linux and macOS, x64 and arm64:
 npm install --global deltabox-lite
 ```
 
-The npm package exposes the platform prebuild directly. Pi integrations resolve
-the same native binary, so commands do not start an extra Node process.
+The npm package exposes both the native executable and a Node-API addon.
+Integrations can call `loadNative()` to keep session coordination, configuration,
+and byte I/O inside the Node host process; only the requested commands and the
+platform filesystem helper remain child processes.
 
 For a first transaction, create a project with one ordinary file and discard a
 command's changes. No package manifest or policy file is needed:
@@ -165,7 +168,12 @@ deltabox session start /abs/path/my-project --fs-mode cbcow-private --require-fs
 deltabox session start /abs/path/my-project --fs-mode cbcow-through --require-fs-mode
 deltabox session start /abs/path/my-project --fs-mode cbcow-through --durable
 deltabox session start /abs/path/my-project --fs-mode cbcow-through --durable --group-commit-ms 2
+deltabox session start /abs/path/my-project --fs-mode git --isolation bubblewrap
 ```
+
+The standalone CLI and stdio protocol keep Git mode on Bubblewrap. The native
+Node-API additionally accepts `fsMode: 'git', isolation: 'docker'`, using the
+preinstalled fixed image `ubuntu:22.04` without pulling it automatically.
 
 Fast mode is the default and recovers helper/process failures. `--durable`
 adds ordered storage barriers; success from commit means changed files,
@@ -262,6 +270,12 @@ one `cbcow-through` session.
 
 The no-op path does not scan or copy the project per command. Empty DeltaFS
 checkpoint and commit operations remain below 1 ms in the scaling benchmark.
+
+For native GitGhost sessions on the same i7-13700 host, a fresh Docker
+container raises the complete one-file review from 50.7 ms to 165.3 ms p50 for
+abort and from 59.0 ms to 173.1 ms for commit compared with Bubblewrap. See the
+[native Docker isolation comparison](docs/native-docker-performance.md) for
+the environment, phase breakdown, reversed-order runs, and raw output paths.
 
 The delta-driven path can outperform repeated Sandlock copy-up work when a workload makes many small changes.
 

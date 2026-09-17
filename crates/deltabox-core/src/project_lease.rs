@@ -65,6 +65,7 @@ pub(crate) fn acquire(
             fs::write(shared.join(session_id), format!("{session_id}\n"))?;
         }
         FilesystemMode::CopyPrivate => {}
+        FilesystemMode::Git => return Err(Error::Backend("invalid CB-CoW mode".into())),
     }
     Ok(())
 }

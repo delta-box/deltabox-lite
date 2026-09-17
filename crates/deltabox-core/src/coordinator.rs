@@ -1,5 +1,7 @@
 use crate::durable::DurableSessionManager;
 use crate::error::{Error, Result};
+#[cfg(target_os = "linux")]
+use crate::git_session::GitSessionManager;
 use crate::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
     CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecResult, FilesystemInfo,
@@ -7,37 +9,117 @@ use crate::protocol::{
 };
 use crate::session::SessionMeta;
 use crate::state_layout::state_root;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
+
+/// Command execution behavior selected once when a coordinator is embedded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CommandExecutionMode {
+    /// Preserve the existing per-platform sandbox helper path.
+    #[default]
+    Sandboxed,
+    /// Spawn commands directly with the embedding process environment.
+    Trusted,
+}
+
+/// Immutable coordinator configuration, safe to share across worker tasks.
+#[derive(Debug, Clone, Default)]
+pub struct CoordinatorOptions {
+    pub helper_bin: Option<PathBuf>,
+    pub command_execution: CommandExecutionMode,
+    /// Explicit engine state base for embedded callers.
+    pub state_dir: Option<PathBuf>,
+    /// Explicit ephemeral runtime base for embedded callers.
+    pub runtime_dir: Option<PathBuf>,
+    /// Keep routing and backend session state resident for an in-process host.
+    pub embedded_fast: bool,
+}
 
 pub struct SessionCoordinator {
     project: PathBuf,
+    routes: RwLock<HashMap<String, FilesystemMode>>,
     copy_private: DurableSessionManager,
     #[cfg(target_os = "linux")]
     cbcow: crate::cbcow::Manager,
     #[cfg(target_os = "macos")]
     macos_cbcow: crate::macos_cbcow::Manager,
+    #[cfg(target_os = "linux")]
+    git: GitSessionManager,
 }
 
 impl SessionCoordinator {
     pub fn new(project: &Path, worker_bin: Option<PathBuf>) -> Result<Self> {
+        Self::new_with_options(
+            project,
+            CoordinatorOptions {
+                helper_bin: worker_bin,
+                ..CoordinatorOptions::default()
+            },
+        )
+    }
+
+    pub fn new_with_options(project: &Path, options: CoordinatorOptions) -> Result<Self> {
+        Self::new_with_options_and_native_docker(project, options, false)
+    }
+
+    #[doc(hidden)]
+    pub fn new_with_options_and_native_docker(
+        project: &Path,
+        options: CoordinatorOptions,
+        native_docker: bool,
+    ) -> Result<Self> {
         let project = project.canonicalize()?;
-        let copy_private = DurableSessionManager::new(&project, worker_bin.clone())?;
-        #[cfg(target_os = "linux")]
-        let cbcow =
-            crate::cbcow::Manager::new(&project, worker_bin.unwrap_or(std::env::current_exe()?))?;
-        #[cfg(target_os = "macos")]
-        let macos_cbcow = crate::macos_cbcow::Manager::new(
+        let helper_bin = options
+            .helper_bin
+            .clone()
+            .unwrap_or(std::env::current_exe()?);
+        let copy_private = DurableSessionManager::new_with_execution_mode(
             &project,
-            worker_bin.unwrap_or(std::env::current_exe()?),
+            Some(helper_bin.clone()),
+            options.command_execution,
+        )?;
+        #[cfg(target_os = "linux")]
+        let cbcow = crate::cbcow::Manager::new_with_execution_mode(
+            &project,
+            helper_bin.clone(),
+            options.command_execution,
+            options.state_dir.clone(),
+            options.runtime_dir.clone(),
+            options.embedded_fast,
+        )?;
+        #[cfg(target_os = "linux")]
+        let git = GitSessionManager::new_with_native_docker(
+            &project,
+            options
+                .state_dir
+                .clone()
+                .map_or_else(default_state_base, Ok)?,
+            options
+                .runtime_dir
+                .clone()
+                .unwrap_or_else(default_runtime_base),
+            native_docker,
+        )?;
+        #[cfg(target_os = "macos")]
+        let macos_cbcow = crate::macos_cbcow::Manager::new_with_execution_mode(
+            &project,
+            helper_bin,
+            options.command_execution,
+            options.state_dir,
+            options.embedded_fast,
         )?;
         Ok(Self {
             project,
+            routes: RwLock::new(HashMap::new()),
             copy_private,
             #[cfg(target_os = "linux")]
             cbcow,
             #[cfg(target_os = "macos")]
             macos_cbcow,
+            #[cfg(target_os = "linux")]
+            git,
         })
     }
 
@@ -64,6 +146,25 @@ impl SessionCoordinator {
         durability: DurabilityMode,
         group_commit_ms: Option<u64>,
     ) -> Result<SessionInfo> {
+        self.start_with_durability_and_isolation(
+            policy,
+            requested,
+            require_requested,
+            durability,
+            group_commit_ms,
+            None,
+        )
+    }
+
+    pub fn start_with_durability_and_isolation(
+        &self,
+        policy: Option<&Path>,
+        requested: Option<FilesystemMode>,
+        require_requested: bool,
+        durability: DurabilityMode,
+        group_commit_ms: Option<u64>,
+        isolation: Option<&str>,
+    ) -> Result<SessionInfo> {
         if group_commit_ms.is_some() && durability != DurabilityMode::Strict {
             return Err(Error::InvalidDurability(
                 "group_commit_ms requires strict durability".into(),
@@ -74,8 +175,13 @@ impl SessionCoordinator {
                 "group_commit_ms must be greater than zero".into(),
             ));
         }
+        if requested != Some(FilesystemMode::Git) && isolation.is_some() {
+            return Err(Error::Unsupported(
+                "explicit isolation is currently supported only with fs_mode git".into(),
+            ));
+        }
         let requested = requested.unwrap_or(default_mode());
-        match requested {
+        let info = match requested {
             FilesystemMode::CopyPrivate => {
                 if durability == DurabilityMode::Strict {
                     return Err(Error::InvalidDurability(
@@ -92,7 +198,27 @@ impl SessionCoordinator {
                 durability,
                 group_commit_ms,
             ),
-        }
+            FilesystemMode::Git => {
+                if durability == DurabilityMode::Strict {
+                    return Err(Error::Unsupported(
+                        "git mode supports fast durability only".into(),
+                    ));
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    self.git.start(policy, isolation, group_commit_ms)
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Err(Error::Unsupported("git mode requires Linux".into()))
+                }
+            }
+        }?;
+        self.routes
+            .write()
+            .expect("coordinator route cache poisoned")
+            .insert(info.session_id.clone(), info.filesystem.resolved_fs_mode);
+        Ok(info)
     }
 
     pub fn status(&self, session_id: &str) -> Result<SessionInfo> {
@@ -102,17 +228,26 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.status(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.status(session_id),
+            #[cfg(target_os = "linux")]
+            Route::Git(manager) => manager.status(session_id),
         }
     }
 
     pub fn stop(&self, session_id: &str) -> Result<SessionInfo> {
-        match self.route(session_id)? {
+        let info = match self.route(session_id)? {
             Route::CopyPrivate(manager) => manager.stop(session_id),
             #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.stop(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.stop(session_id),
-        }
+            #[cfg(target_os = "linux")]
+            Route::Git(manager) => manager.stop(session_id),
+        }?;
+        self.routes
+            .write()
+            .expect("coordinator route cache poisoned")
+            .remove(session_id);
+        Ok(info)
     }
 
     pub fn remove_stopped(&self, session_id: &str) -> Result<()> {
@@ -122,6 +257,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.remove_stopped(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.remove_stopped(session_id),
+            #[cfg(target_os = "linux")]
+            Route::Git(manager) => manager.remove_stopped(session_id),
         }
     }
 
@@ -132,6 +269,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.exec(params),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.exec(params),
+            #[cfg(target_os = "linux")]
+            Route::Git(manager) => manager.exec(params),
         }
     }
 
@@ -142,16 +281,55 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.read_file(session_id, path),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.read_file(session_id, path),
+            #[cfg(target_os = "linux")]
+            Route::Git(manager) => manager.read_file(session_id, path),
+        }
+    }
+
+    /// Read raw bytes without the JSON/Base64 compatibility layer.
+    pub fn read_file_bytes(&self, session_id: &str, path: &Path) -> Result<Vec<u8>> {
+        match self.route(session_id)? {
+            Route::CopyPrivate(manager) => manager.read_file_bytes(session_id, path),
+            #[cfg(target_os = "linux")]
+            Route::Cbcow(manager) => manager.read_file_bytes(session_id, path),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.read_file_bytes(session_id, path),
+            #[cfg(target_os = "linux")]
+            Route::Git(manager) => manager.read_file_bytes(session_id, path),
         }
     }
 
     pub fn write_file(&self, session_id: &str, path: &Path, content: Vec<u8>) -> Result<()> {
+        self.write_file_bytes(session_id, path, &content)
+    }
+
+    /// Write borrowed bytes, avoiding a JS Buffer copy for native callers.
+    pub fn write_file_bytes(&self, session_id: &str, path: &Path, content: &[u8]) -> Result<()> {
         match self.route(session_id)? {
-            Route::CopyPrivate(manager) => manager.write_file(session_id, path, content),
+            Route::CopyPrivate(manager) => manager.write_file(session_id, path, content.to_vec()),
             #[cfg(target_os = "linux")]
-            Route::Cbcow(manager) => manager.write_file(session_id, path, content),
+            Route::Cbcow(manager) => manager.write_file_bytes(session_id, path, content),
             #[cfg(target_os = "macos")]
-            Route::MacosCbcow(manager) => manager.write_file(session_id, path, content),
+            Route::MacosCbcow(manager) => manager.write_file_bytes(session_id, path, content),
+            #[cfg(target_os = "linux")]
+            Route::Git(manager) => manager.write_file_bytes(session_id, path, content),
+        }
+    }
+
+    /// Register exact paths mutated directly through an embedded mountpoint.
+    pub fn record_file_changes(&self, session_id: &str, paths: &[PathBuf]) -> Result<()> {
+        match self.route(session_id)? {
+            Route::CopyPrivate(_) => Err(Error::Unsupported(
+                "direct mount tracking requires a CB-CoW filesystem mode".into(),
+            )),
+            #[cfg(target_os = "linux")]
+            Route::Cbcow(manager) => manager.record_file_changes(session_id, paths),
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.record_file_changes(session_id, paths),
+            #[cfg(target_os = "linux")]
+            Route::Git(_) => Err(Error::Unsupported(
+                "direct mount tracking is unavailable in git mode".into(),
+            )),
         }
     }
 
@@ -162,6 +340,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.checkpoint(params),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.checkpoint(params),
+            #[cfg(target_os = "linux")]
+            Route::Git(manager) => manager.checkpoint(params),
         }
     }
 
@@ -172,6 +352,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.diff(params),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.diff(params),
+            #[cfg(target_os = "linux")]
+            Route::Git(manager) => manager.diff(params),
         }
     }
 
@@ -182,6 +364,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.commit(params),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.commit(params),
+            #[cfg(target_os = "linux")]
+            Route::Git(manager) => manager.commit(params),
         }
     }
 
@@ -192,6 +376,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.abort(params),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.abort(params),
+            #[cfg(target_os = "linux")]
+            Route::Git(manager) => manager.abort(params),
         }
     }
 
@@ -204,6 +390,10 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.sync(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.sync(session_id),
+            #[cfg(target_os = "linux")]
+            Route::Git(_) => Err(crate::error::Error::Unsupported(
+                "session.sync requires a cbcow-private session".into(),
+            )),
         }
     }
 
@@ -214,6 +404,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.begin_review(params),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.begin_review(params),
+            #[cfg(target_os = "linux")]
+            Route::Git(manager) => manager.begin_review(params),
         }
     }
 
@@ -224,6 +416,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.review_status(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.review_status(session_id),
+            #[cfg(target_os = "linux")]
+            Route::Git(manager) => manager.review_status(session_id),
         }
     }
 
@@ -234,6 +428,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.review_diff(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.review_diff(session_id),
+            #[cfg(target_os = "linux")]
+            Route::Git(manager) => manager.review_diff(session_id),
         }
     }
 
@@ -244,6 +440,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.review_commit(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.review_commit(session_id),
+            #[cfg(target_os = "linux")]
+            Route::Git(manager) => manager.review_commit(session_id),
         }
     }
 
@@ -254,6 +452,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.review_abort(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.review_abort(session_id),
+            #[cfg(target_os = "linux")]
+            Route::Git(manager) => manager.review_abort(session_id),
         }
     }
 
@@ -264,6 +464,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.review_skip(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.review_skip(session_id),
+            #[cfg(target_os = "linux")]
+            Route::Git(manager) => manager.review_skip(session_id),
         }
     }
 
@@ -350,6 +552,23 @@ impl SessionCoordinator {
     }
 
     fn route(&self, session_id: &str) -> Result<Route<'_>> {
+        if let Some(mode) = self
+            .routes
+            .read()
+            .expect("coordinator route cache poisoned")
+            .get(session_id)
+            .copied()
+        {
+            return self.route_mode(mode);
+        }
+        #[cfg(target_os = "linux")]
+        if self.git.is_git_session(session_id)? {
+            self.routes
+                .write()
+                .expect("coordinator route cache poisoned")
+                .insert(session_id.into(), FilesystemMode::Git);
+            return Ok(Route::Git(&self.git));
+        }
         let path = state_root(&self.project)?.join(session_id).join("session.json");
         let meta: SessionMeta = serde_json::from_slice(&fs::read(&path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
@@ -358,7 +577,16 @@ impl SessionCoordinator {
                 Error::Io(error)
             }
         })?)?;
-        match meta.filesystem.resolved_fs_mode {
+        let mode = meta.filesystem.resolved_fs_mode;
+        self.routes
+            .write()
+            .expect("coordinator route cache poisoned")
+            .insert(session_id.into(), mode);
+        self.route_mode(mode)
+    }
+
+    fn route_mode(&self, mode: FilesystemMode) -> Result<Route<'_>> {
+        match mode {
             FilesystemMode::CopyPrivate => Ok(Route::CopyPrivate(&self.copy_private)),
             #[cfg(target_os = "linux")]
             FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate => {
@@ -372,6 +600,10 @@ impl SessionCoordinator {
             FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate => Err(Error::Unsupported(
                 "this CB-CoW session requires Linux".into(),
             )),
+            #[cfg(target_os = "linux")]
+            FilesystemMode::Git => Ok(Route::Git(&self.git)),
+            #[cfg(not(target_os = "linux"))]
+            FilesystemMode::Git => Err(Error::Unsupported("git mode requires Linux".into())),
         }
     }
 }
@@ -382,10 +614,37 @@ enum Route<'a> {
     Cbcow(&'a crate::cbcow::Manager),
     #[cfg(target_os = "macos")]
     MacosCbcow(&'a crate::macos_cbcow::Manager),
+    #[cfg(target_os = "linux")]
+    Git(&'a GitSessionManager),
 }
 
 fn default_mode() -> FilesystemMode {
     FilesystemMode::CbcowThrough
+}
+
+#[cfg(target_os = "linux")]
+fn default_state_base() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("DELTABOX_STATE_DIR") {
+        return Ok(PathBuf::from(path));
+    }
+    if let Some(path) = std::env::var_os("XDG_STATE_HOME") {
+        return Ok(PathBuf::from(path).join("deltabox-lite"));
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| Error::Backend("HOME is unavailable".into()))?;
+    Ok(home.join(".local/state/deltabox-lite"))
+}
+
+#[cfg(target_os = "linux")]
+fn default_runtime_base() -> PathBuf {
+    if let Some(path) = std::env::var_os("DELTABOX_RUNTIME_DIR") {
+        return PathBuf::from(path);
+    }
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!("/tmp/deltabox-{}", unsafe { libc::geteuid() })))
+        .join("deltabox-lite")
 }
 
 #[cfg(test)]

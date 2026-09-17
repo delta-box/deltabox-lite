@@ -1,6 +1,7 @@
 use crate::backend::linux_sandlock::resolve_deny_paths;
 use crate::changeset::{describe_change, ChangeKind, DEFAULT_TEXT_SIZE_LIMIT};
 use crate::command_executor::{self, Endpoint as CommandEndpoint};
+use crate::coordinator::CommandExecutionMode;
 use crate::error::{Error, Result};
 use crate::journal::{Journal, JournalEntry, JournalKind};
 use crate::pathmap::PathMapper;
@@ -20,6 +21,7 @@ use crate::state_layout::{publish_lock_path, runtime_base, state_base, state_roo
 use base64::Engine;
 use deltafs_fuse::control::{self, Command as ControlCommand, ResultValue};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -27,6 +29,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -66,17 +69,47 @@ pub struct Manager {
     project: PathBuf,
     root: PathBuf,
     helper_bin: PathBuf,
+    execution_mode: CommandExecutionMode,
+    state_base: PathBuf,
+    runtime_base: PathBuf,
+    embedded_fast: bool,
+    trusted_shells: Mutex<HashMap<String, Arc<Mutex<Option<crate::trusted::PersistentBash>>>>>,
 }
 
 impl Manager {
     pub fn new(project: &Path, helper_bin: PathBuf) -> Result<Self> {
+        Self::new_with_execution_mode(
+            project,
+            helper_bin,
+            CommandExecutionMode::Sandboxed,
+            None,
+            None,
+            false,
+        )
+    }
+
+    pub fn new_with_execution_mode(
+        project: &Path,
+        helper_bin: PathBuf,
+        execution_mode: CommandExecutionMode,
+        state_base_override: Option<PathBuf>,
+        runtime_base_override: Option<PathBuf>,
+        embedded_fast: bool,
+    ) -> Result<Self> {
         let project = project.canonicalize()?;
         let root = state_root(&project)?;
         fs::create_dir_all(&root)?;
+        let state_base = state_base_override.map_or_else(state_base, Ok)?;
+        let runtime_base = runtime_base_override.unwrap_or_else(runtime_base);
         Ok(Self {
             project,
             root,
             helper_bin,
+            execution_mode,
+            state_base,
+            runtime_base,
+            embedded_fast,
+            trusted_shells: Mutex::new(HashMap::new()),
         })
     }
 
@@ -180,10 +213,13 @@ impl Manager {
             crate::protocol::FilesystemMode::CopyPrivate => {
                 return Err(Error::Backend("invalid CB-CoW mode".into()))
             }
+            crate::protocol::FilesystemMode::Git => {
+                return Err(Error::Backend("invalid CB-CoW mode".into()))
+            }
         };
         save_json(&store.join(DENY_PATHS), &deny_paths)?;
-        let state_root = state_base()?.join(&session_id);
-        let runtime_dir = runtime_base().join(&session_id);
+        let state_root = self.state_base.join(&session_id);
+        let runtime_dir = self.runtime_base.join(&session_id);
         fs::create_dir_all(state_root.join("engine"))?;
         fs::create_dir_all(&runtime_dir)?;
         fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700))?;
@@ -233,7 +269,7 @@ impl Manager {
             };
         }
 
-        let filesystem = filesystem_info(&record);
+        let filesystem = filesystem_info(&record, self.execution_mode);
         let meta = SessionMeta {
             session_id: session_id.clone(),
             project: self.project.clone(),
@@ -261,7 +297,15 @@ impl Manager {
             })
         })();
         match result {
-            Ok(info) => Ok(info),
+            Ok(info) => {
+                if self.embedded_fast && self.execution_mode == CommandExecutionMode::Trusted {
+                    self.trusted_shells
+                        .lock()
+                        .expect("trusted shell map poisoned")
+                        .insert(session_id, Arc::new(Mutex::new(None)));
+                }
+                Ok(info)
+            }
             Err(error) => match self.cleanup_start(&session_id, &record) {
                 Ok(()) => Err(error),
                 Err(cleanup) => Err(Error::Backend(format!(
@@ -320,11 +364,15 @@ impl Manager {
             status: meta.status,
             checkpoint_count: status.checkpoints.len().saturating_sub(1),
             pending_changes: status.touched_paths,
-            filesystem: filesystem_info(&record),
+            filesystem: filesystem_info(&record, self.execution_mode),
         })
     }
 
     pub fn stop(&self, session_id: &str) -> Result<SessionInfo> {
+        self.trusted_shells
+            .lock()
+            .expect("trusted shell map poisoned")
+            .remove(session_id);
         if !self.store(session_id).join(MOUNT_RECORD).exists() {
             let mut meta = self.running_meta(session_id)?;
             // No engine record: the start is either still materializing or
@@ -382,7 +430,7 @@ impl Manager {
             wait_unmounted(&record.mountpoint)?;
         }
         meta.status = SessionStatus::Stopped;
-        meta.filesystem = filesystem_info(&record);
+        meta.filesystem = filesystem_info(&record, self.execution_mode);
         meta.filesystem.helper_pid = None;
         self.save_meta(&meta)?;
         crate::project_lease::release(
@@ -424,106 +472,166 @@ impl Manager {
     }
 
     pub fn exec(&self, params: ExecParams) -> Result<ExecResult> {
-        let _lock = self.exec_lock(&params.session_id)?;
-        let meta = self.running_meta(&params.session_id)?;
-        let initial_record = self.load_record(&params.session_id)?;
-        let operation = command_executor::lock_operations(&command_endpoint(&initial_record))?;
-        let record = self.ensure_helper(&params.session_id)?;
-        let endpoint = command_endpoint(&record);
-        if !endpoint.token_file.exists() {
-            write_private(
-                &endpoint.token_file,
-                format!("{}{}\n", Uuid::new_v4(), Uuid::new_v4()).as_bytes(),
-                record.durability == DurabilityMode::Strict,
-            )?;
-        }
-        let mapper = PathMapper::new(&self.project, &record.mountpoint);
-        let mut policy = self.policy(&meta)?;
-        let deny_paths: Vec<PathBuf> =
-            serde_json::from_slice(&fs::read(self.store(&params.session_id).join(DENY_PATHS))?)?;
-        let mut deny_paths: Vec<PathBuf> = deny_paths
-            .into_iter()
-            .map(|path| mapper.map_path(&path))
-            .collect();
-        let state_root = record
-            .state_dir
-            .parent()
-            .expect("engine state has a session root")
-            .to_path_buf();
-        deny_paths.push(state_root.clone());
-        deny_paths.push(record.socket.clone());
-        deny_paths.push(endpoint.socket.clone());
-        deny_paths.push(endpoint.ready_file.clone());
-        deny_paths.push(endpoint.operation_lock.clone());
-        policy
-            .filesystem
-            .deny
-            .push(state_root.to_string_lossy().into_owned());
-        policy
-            .filesystem
-            .deny
-            .push(record.socket.to_string_lossy().into_owned());
-        policy
-            .filesystem
-            .deny
-            .push(endpoint.socket.to_string_lossy().into_owned());
-        policy
-            .filesystem
-            .deny
-            .push(endpoint.ready_file.to_string_lossy().into_owned());
-        policy
-            .filesystem
-            .deny
-            .push(endpoint.operation_lock.to_string_lossy().into_owned());
-        let request = ExecRequest {
-            argv: params
-                .argv
-                .into_iter()
-                .map(|value| mapper.map_arg(&value))
-                .collect(),
-            cwd: params.cwd.as_deref().map(|path| mapper.map_path(path)),
-            env: command_executor::capture_environment(params.env)
-                .map(|values| {
-                    values
+        let ExecParams {
+            session_id,
+            argv,
+            cwd,
+            env,
+            label,
+        } = params;
+        let _lock = self.exec_lock(&session_id)?;
+        let meta = self.running_meta(&session_id)?;
+        let result = match self.execution_mode {
+            CommandExecutionMode::Trusted => {
+                let record = self.ensure_helper(&session_id)?;
+                let mapper = PathMapper::new(&self.project, &record.mountpoint);
+                let request = ExecRequest {
+                    argv: argv
                         .into_iter()
-                        .map(|(key, value)| mapper.map_env(&key, &value).map(|value| (key, value)))
-                        .collect::<Result<Vec<_>>>()
-                })
-                .transpose()?,
+                        .map(|value| mapper.map_arg(&value))
+                        .collect(),
+                    cwd: Some(
+                        cwd.as_deref()
+                            .map(|path| mapper.map_path(path))
+                            .unwrap_or_else(|| record.mountpoint.clone()),
+                    ),
+                    env: env
+                        .map(|values| {
+                            values
+                                .into_iter()
+                                .map(|(key, value)| {
+                                    mapper.map_env(&key, &value).map(|value| (key, value))
+                                })
+                                .collect::<Result<Vec<_>>>()
+                        })
+                        .transpose()?,
+                };
+                if let Some(shell) = self
+                    .trusted_shells
+                    .lock()
+                    .expect("trusted shell map poisoned")
+                    .get(&session_id)
+                    .cloned()
+                {
+                    crate::trusted::exec_reusing_bash(
+                        &mut shell.lock().expect("trusted shell poisoned"),
+                        request,
+                    )?
+                } else {
+                    crate::trusted::exec(request)?
+                }
+            }
+            CommandExecutionMode::Sandboxed => {
+                let initial_record = self.load_record(&session_id)?;
+                let operation =
+                    command_executor::lock_operations(&command_endpoint(&initial_record))?;
+                let record = self.ensure_helper(&session_id)?;
+                let endpoint = command_endpoint(&record);
+                if !endpoint.token_file.exists() {
+                    write_private(
+                        &endpoint.token_file,
+                        format!("{}{}\n", Uuid::new_v4(), Uuid::new_v4()).as_bytes(),
+                        record.durability == DurabilityMode::Strict,
+                    )?;
+                }
+                let mapper = PathMapper::new(&self.project, &record.mountpoint);
+                let mut policy = self.policy(&meta)?;
+                let deny_paths: Vec<PathBuf> =
+                    serde_json::from_slice(&fs::read(self.store(&session_id).join(DENY_PATHS))?)?;
+                let mut deny_paths: Vec<PathBuf> = deny_paths
+                    .into_iter()
+                    .map(|path| mapper.map_path(&path))
+                    .collect();
+                let state_root = record
+                    .state_dir
+                    .parent()
+                    .expect("engine state has a session root")
+                    .to_path_buf();
+                deny_paths.push(state_root.clone());
+                deny_paths.push(record.socket.clone());
+                deny_paths.push(endpoint.socket.clone());
+                deny_paths.push(endpoint.ready_file.clone());
+                deny_paths.push(endpoint.operation_lock.clone());
+                policy
+                    .filesystem
+                    .deny
+                    .push(state_root.to_string_lossy().into_owned());
+                policy
+                    .filesystem
+                    .deny
+                    .push(record.socket.to_string_lossy().into_owned());
+                policy
+                    .filesystem
+                    .deny
+                    .push(endpoint.socket.to_string_lossy().into_owned());
+                policy
+                    .filesystem
+                    .deny
+                    .push(endpoint.ready_file.to_string_lossy().into_owned());
+                policy
+                    .filesystem
+                    .deny
+                    .push(endpoint.operation_lock.to_string_lossy().into_owned());
+                let request = ExecRequest {
+                    argv: argv
+                        .into_iter()
+                        .map(|value| mapper.map_arg(&value))
+                        .collect(),
+                    cwd: cwd.as_deref().map(|path| mapper.map_path(path)),
+                    env: command_executor::capture_environment(env)
+                        .map(|values| {
+                            values
+                                .into_iter()
+                                .map(|(key, value)| {
+                                    mapper.map_env(&key, &value).map(|value| (key, value))
+                                })
+                                .collect::<Result<Vec<_>>>()
+                        })
+                        .transpose()?,
+                };
+                let spec = SessionSpec {
+                    project: record.mountpoint.clone(),
+                    host_project: Some(self.project.clone()),
+                    store_dir: record.runtime_dir.join("command"),
+                    policy,
+                    resolved_deny_paths: Some(deny_paths),
+                };
+                command_executor::ensure_running(
+                    &endpoint,
+                    &self.helper_bin,
+                    &record
+                        .state_dir
+                        .parent()
+                        .expect("engine state has a session root")
+                        .join("command-helper.log"),
+                )?;
+                drop(operation);
+                command_executor::exec(
+                    &endpoint,
+                    &session_id,
+                    record.helper_start_ticks,
+                    spec,
+                    request,
+                )?
+            }
         };
-        let spec = SessionSpec {
-            project: record.mountpoint.clone(),
-            host_project: Some(self.project.clone()),
-            store_dir: record.runtime_dir.join("command"),
-            policy,
-            resolved_deny_paths: Some(deny_paths),
-        };
-        command_executor::ensure_running(
-            &endpoint,
-            &self.helper_bin,
-            &record
-                .state_dir
-                .parent()
-                .expect("engine state has a session root")
-                .join("command-helper.log"),
-        )?;
-        drop(operation);
-        let result = command_executor::exec(
-            &endpoint,
-            &params.session_id,
-            record.helper_start_ticks,
-            spec,
-            request,
-        )?;
         self.append(
-            &params.session_id,
+            &session_id,
             JournalKind::Exec,
-            Some(serde_json::json!({"label": params.label, "result": result})),
+            Some(serde_json::json!({"label": label, "result": result})),
         )?;
         Ok(result)
     }
 
     pub fn read_file(&self, session_id: &str, path: &Path) -> Result<FsReadResult> {
+        let bytes = self.read_file_bytes(session_id, path)?;
+        Ok(FsReadResult {
+            content_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+            size: bytes.len(),
+        })
+    }
+
+    pub fn read_file_bytes(&self, session_id: &str, path: &Path) -> Result<Vec<u8>> {
         let _lock = self.lock(session_id)?;
         let meta = self.running_meta(session_id)?;
         let record = self.ensure_helper(session_id)?;
@@ -538,14 +646,14 @@ impl Manager {
                 "fs.read target is unavailable or too large".into(),
             ));
         }
-        let bytes = fs::read(target)?;
-        Ok(FsReadResult {
-            content_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
-            size: bytes.len(),
-        })
+        Ok(fs::read(target)?)
     }
 
     pub fn write_file(&self, session_id: &str, path: &Path, content: Vec<u8>) -> Result<()> {
+        self.write_file_bytes(session_id, path, &content)
+    }
+
+    pub fn write_file_bytes(&self, session_id: &str, path: &Path, content: &[u8]) -> Result<()> {
         let _lock = self.lock(session_id)?;
         let meta = self.running_meta(session_id)?;
         let record = self.ensure_helper(session_id)?;
@@ -571,6 +679,17 @@ impl Manager {
             JournalKind::Write,
             Some(serde_json::json!({"path": relative})),
         )
+    }
+
+    /// Linux mount writes are synchronously captured by the FUSE engine, so
+    /// the trusted direct-I/O notification is intentionally a no-op.
+    pub fn record_file_changes(&self, _session_id: &str, _paths: &[PathBuf]) -> Result<()> {
+        if !self.embedded_fast || self.execution_mode != CommandExecutionMode::Trusted {
+            return Err(Error::Backend(
+                "direct mount tracking requires embedded trusted mode".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub fn checkpoint(&self, params: CheckpointParams) -> Result<CheckpointInfo> {
@@ -1438,14 +1557,17 @@ fn default_record_mode() -> crate::protocol::FilesystemMode {
     crate::protocol::FilesystemMode::CbcowThrough
 }
 
-fn filesystem_info(record: &MountRecord) -> FilesystemInfo {
-    let mut info = filesystem_info_inner(record);
+fn filesystem_info(record: &MountRecord, execution_mode: CommandExecutionMode) -> FilesystemInfo {
+    let mut info = filesystem_info_inner(record, execution_mode);
     info.degraded_protections = crate::backend::linux_sandlock::degraded_protections();
-    return info;
+    info
 }
 
-fn filesystem_info_inner(record: &MountRecord) -> FilesystemInfo {
-    let info = match record.mode {
+fn filesystem_info_inner(
+    record: &MountRecord,
+    execution_mode: CommandExecutionMode,
+) -> FilesystemInfo {
+    let mut info = match record.mode {
         crate::protocol::FilesystemMode::CbcowThrough => FilesystemInfo::cbcow_through(
             record.mountpoint.clone(),
             record.helper_pid,
@@ -1457,7 +1579,12 @@ fn filesystem_info_inner(record: &MountRecord) -> FilesystemInfo {
             record.restarts,
         ),
         crate::protocol::FilesystemMode::CopyPrivate => unreachable!("CB-CoW mount record mode"),
+        crate::protocol::FilesystemMode::Git => unreachable!("CB-CoW mount record mode"),
     };
+    if execution_mode == CommandExecutionMode::Trusted {
+        info.isolation = "none".into();
+        info.isolation_provider = None;
+    }
     info.with_durability(record.durability, record.group_commit_ms)
 }
 

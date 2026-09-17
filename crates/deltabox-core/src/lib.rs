@@ -14,6 +14,10 @@ pub mod command_executor;
 pub mod coordinator;
 pub mod durable;
 pub mod error;
+#[cfg(target_os = "linux")]
+mod file_lock;
+#[cfg(target_os = "linux")]
+pub mod git_session;
 pub mod journal;
 #[cfg(target_os = "macos")]
 pub mod macos_cbcow;
@@ -27,11 +31,14 @@ pub(crate) mod locks;
 pub(crate) mod project_lease;
 pub(crate) mod publog;
 pub mod protocol;
+#[cfg(target_os = "linux")]
+pub mod providers;
 pub(crate) mod test_hooks;
 pub mod server;
 pub mod session;
 mod state_layout;
 pub mod snapshot;
+pub mod trusted;
 pub mod worker;
 
 pub use error::{Error, Result};

@@ -650,6 +650,7 @@ mod tests {
                     size: 1,
                     mtime_ns: i as i64,
                     kind: ScanEntryKind::File,
+                    fingerprint: None,
                 })
                 .collect()
         }

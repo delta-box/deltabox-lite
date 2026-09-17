@@ -5,8 +5,10 @@
   "description": "Native sandbox runtime with diff, commit, and abort for AI coding agents",
   "repository": "https://github.com/Ddnirvana/deltabox-lite",
   "main": "index.cjs",
+  "types": "index.d.ts",
   "files": [
     "index.cjs",
+    "index.d.ts",
     "README.md"
   ],
   "optionalDependencies": {

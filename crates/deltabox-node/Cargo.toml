@@ -1,0 +1,20 @@
+[package]
+name = "deltabox-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Node-API bindings for embedding deltabox-lite"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+deltabox-core = { path = "../deltabox-core" }
+napi = { version = "2", default-features = false, features = ["napi8", "tokio_rt"] }
+napi-derive = "2"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[build-dependencies]
+napi-build = "=2.2.4"
