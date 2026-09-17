@@ -772,8 +772,8 @@ fn build_sandbox(spec: &SessionSpec, worker_bin: &Path, direct_write: bool) -> R
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     spec.project.hash(&mut hasher);
     let sandbox_name = format!("deltabox-{:016x}", hasher.finish());
-    let sandbox_home = spec.store_dir.join("home");
-    let sandbox_tmp = spec.store_dir.join("tmp");
+    let sandbox_home = spec.store_dir.join(crate::state_layout::SCRATCH_HOME);
+    let sandbox_tmp = spec.store_dir.join(crate::state_layout::SCRATCH_TMP);
     std::fs::create_dir_all(&sandbox_home)?;
     std::fs::create_dir_all(&sandbox_tmp)?;
     let mut builder = Sandbox::builder()
@@ -796,7 +796,7 @@ fn build_sandbox(spec: &SessionSpec, worker_bin: &Path, direct_write: bool) -> R
     if !direct_write {
         builder = builder
             .workdir(&spec.project)
-            .fs_storage(spec.store_dir.join("cow"));
+            .fs_storage(spec.store_dir.join(crate::state_layout::SCRATCH_STORAGE));
     }
     match spec.policy.network.mode {
         NetworkMode::AllowAudit => {

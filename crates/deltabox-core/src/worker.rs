@@ -198,8 +198,8 @@ fn run_exec(root: &Path, runtime: &Path, exec: &WorkerExec) -> Result<WorkerExec
             cmd.env(key, value);
         }
     }
-    let sandbox_home = runtime.join("home");
-    let sandbox_tmp = runtime.join("tmp");
+    let sandbox_home = runtime.join(crate::state_layout::SCRATCH_HOME);
+    let sandbox_tmp = runtime.join(crate::state_layout::SCRATCH_TMP);
     cmd.env("HOME", &sandbox_home);
     cmd.env("TMPDIR", &sandbox_tmp);
     cmd.env("XDG_CACHE_HOME", sandbox_home.join(".cache"));

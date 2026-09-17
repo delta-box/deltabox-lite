@@ -94,6 +94,9 @@ visible to diff, checkpoint, commit, and abort, while the backing project, the
 session state root, and the helper endpoints remain denied. Two consequences
 are worth stating explicitly:
 
+- **The command's `HOME` and `TMPDIR` are session scratch, not host paths.**
+  They stay writable under every profile, `read-write` included: widening a
+  command's reach must not take away the private space it writes in.
 - **Host changes outside the workspace are not rollback-able.** `read-write`
   exists for commands whose effect is inherently host-wide (`apt install`,
   service restarts, `~/.cache` population). Those writes are outside DeltaFS,
