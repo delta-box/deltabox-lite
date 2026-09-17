@@ -1069,6 +1069,71 @@ fn read_write_profile_widens_host_access_but_keeps_protected_denies() {
     );
     assert!(!direct.exists(), "read-write bypassed the backing deny");
 
+    // Scratch is where the command's HOME and TMPDIR point. The helper creates
+    // that tree when the first command starts the mount, so writing to it has
+    // to keep working on the first command and on every later one.
+    let scratch = "printf home > \"$HOME/probe\" && printf tmp > \"$TMPDIR/probe\"";
+    for round in ["first", "second"] {
+        let written = exec(scratch, Some("read-write"));
+        assert_eq!(
+            written["exit_code"], 0,
+            "the {round} command must be able to write its HOME and TMPDIR: {written}"
+        );
+    }
+    let home_probe = exec("cat \"$HOME/probe\" \"$TMPDIR/probe\"", Some("read-write"));
+    assert_eq!(
+        home_probe["exit_code"], 0,
+        "scratch must persist: {home_probe}"
+    );
+    assert_eq!(home_probe["stdout"], "hometmp");
+
+    // The control plane is closed in both profiles: none of these paths may be
+    // opened for writing or renamed away, because they are how the manager
+    // decides the session is alive. Appending is the meaningful probe for the
+    // three regular files; for the two sockets it fails whatever the sandbox
+    // does, so the rename is what carries the guarantee there.
+    let session_runtime = runtime.path().join("deltabox-lite").join(&session);
+    for name in [
+        "ready",
+        "control.sock",
+        "command.sock",
+        "command.ready",
+        "command.lock",
+    ] {
+        let target = session_runtime.join(name);
+        let moved = session_runtime.join(format!("{name}.moved"));
+        assert!(
+            target.exists(),
+            "{} should exist while running",
+            target.display()
+        );
+        for (label, profile) in [
+            ("workspace-write", None),
+            ("read-write", Some("read-write")),
+        ] {
+            let write = exec(&format!("printf x >> '{}'", target.display()), profile);
+            assert!(
+                write["exit_code"].as_i64().unwrap_or(0) != 0,
+                "{label} must not write {}: {write}",
+                target.display()
+            );
+            let rename = exec(
+                &format!("mv '{}' '{}'", target.display(), moved.display()),
+                profile,
+            );
+            assert!(
+                rename["exit_code"].as_i64().unwrap_or(0) != 0,
+                "{label} must not rename {}: {rename}",
+                target.display()
+            );
+            assert!(
+                target.exists() && !moved.exists(),
+                "{label} moved {}",
+                target.display()
+            );
+        }
+    }
+
     let abort = Command::new(env!("CARGO_BIN_EXE_deltabox"))
         .args(["abort", &session, "--project"])
         .arg(project.path())
