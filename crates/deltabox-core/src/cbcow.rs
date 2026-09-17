@@ -12,7 +12,8 @@ use crate::private_publish::{
 use crate::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
     CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecRequest, ExecResult,
-    FilesystemInfo, FsReadResult, ReviewBeginParams, SessionInfo, SessionSpec, SessionStatus,
+    ExecutionProfile, FilesystemInfo, FsReadResult, ReviewBeginParams, SessionInfo, SessionSpec,
+    SessionStatus,
 };
 use crate::session::{now_ms, SessionMeta, SessionRegistry};
 use crate::locks::Lock;
@@ -439,6 +440,10 @@ impl Manager {
         }
         let mapper = PathMapper::new(&self.project, &record.mountpoint);
         let mut policy = self.policy(&meta)?;
+        policy.apply_execution_profile(params.execution_profile);
+        params
+            .execution_profile
+            .ensure_backing_project_is_deniable(&record.mountpoint, &self.project)?;
         let deny_paths: Vec<PathBuf> =
             serde_json::from_slice(&fs::read(self.store(&params.session_id).join(DENY_PATHS))?)?;
         let mut deny_paths: Vec<PathBuf> = deny_paths
@@ -475,6 +480,9 @@ impl Manager {
             .filesystem
             .deny
             .push(endpoint.operation_lock.to_string_lossy().into_owned());
+        if params.execution_profile == ExecutionProfile::ReadWrite {
+            deny_runtime_siblings(&record, &mut policy, &mut deny_paths)?;
+        }
         let request = ExecRequest {
             argv: params
                 .argv
@@ -1385,6 +1393,28 @@ fn resolve_policy(project: &Path, policy: Option<&Path>) -> Result<Option<PathBu
             .map_err(Error::from)
         })
         .transpose()
+}
+
+/// Every sibling of the mountpoint is engine machinery: helper sockets, ready
+/// files, and the command executor's private storage. A command running with
+/// root write access must not be able to reach any of it.
+fn deny_runtime_siblings(
+    record: &MountRecord,
+    policy: &mut Policy,
+    deny_paths: &mut Vec<PathBuf>,
+) -> Result<()> {
+    for entry in fs::read_dir(&record.runtime_dir)? {
+        let path = entry?.path();
+        if path == record.mountpoint {
+            continue;
+        }
+        deny_paths.push(path.clone());
+        policy
+            .filesystem
+            .deny
+            .push(path.to_string_lossy().into_owned());
+    }
+    Ok(())
 }
 
 fn save_json(path: &Path, value: &impl Serialize) -> Result<()> {

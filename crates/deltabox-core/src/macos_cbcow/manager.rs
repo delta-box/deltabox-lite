@@ -368,6 +368,10 @@ impl Manager {
             self.enforce_storage_limit(&meta, &state)?;
         }
         let mut policy = self.policy(&meta)?;
+        policy.apply_execution_profile(params.execution_profile);
+        params
+            .execution_profile
+            .ensure_backing_project_is_deniable(&state.live(), &self.project)?;
         if !policy
             .filesystem
             .deny
