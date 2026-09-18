@@ -169,6 +169,13 @@ impl GitSessionManager {
 
     pub fn exec(&self, params: ExecParams) -> Result<ExecResult> {
         let _locked = self.lock_running(&params.session_id)?;
+        if params.execution_profile == crate::protocol::ExecutionProfile::ReadWrite {
+            return Err(Error::Unsupported(
+                "read-write execution requires a CB-CoW session; Git isolation cannot widen \
+                 host access without dropping the workspace guarantee"
+                    .into(),
+            ));
+        }
         self.isolation.exec(params.argv, params.cwd, params.env)
     }
 
@@ -289,6 +296,7 @@ impl GitSessionManager {
         Ok(CommitResult {
             checkpoint_id: params.checkpoint.unwrap_or_else(|| "accepted".to_string()),
             applied,
+            folded_publications: None,
         })
     }
 
@@ -363,6 +371,7 @@ impl GitSessionManager {
             CommitParams {
                 session_id: session_id.to_string(),
                 checkpoint: None,
+                ours: false,
             },
             meta,
         )
@@ -527,6 +536,9 @@ fn git_filesystem_info(meta: &GitSessionMeta) -> FilesystemInfo {
         helper_pid: None,
         helper_restarts: 0,
         mount_namespace: false,
+        // A git session's commands run under bubblewrap, so there is no
+        // Landlock ruleset whose scopes could have been dropped.
+        degraded_protections: None,
     }
 }
 

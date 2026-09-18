@@ -1567,10 +1567,6 @@ fn filesystem_info_inner(record: &MountRecord) -> FilesystemInfo {
         crate::protocol::FilesystemMode::CopyPrivate => unreachable!("CB-CoW mount record mode"),
         crate::protocol::FilesystemMode::Git => unreachable!("CB-CoW mount record mode"),
     };
-    if execution_mode == CommandExecutionMode::Trusted {
-        info.isolation = "none".into();
-        info.isolation_provider = None;
-    }
     info.with_durability(record.durability, record.group_commit_ms)
 }
 

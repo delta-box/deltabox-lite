@@ -377,6 +377,10 @@ impl SessionCoordinator {
                 "session.sync requires a cbcow-private session".into(),
             )),
             #[cfg(target_os = "linux")]
+            Route::Git(_) => Err(crate::error::Error::Unsupported(
+                "session.sync requires a cbcow-private session".into(),
+            )),
+            #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.sync(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.sync(session_id),

@@ -64,7 +64,7 @@ pub(crate) fn acquire(
         FilesystemMode::CbcowPrivate => {
             fs::write(shared.join(session_id), format!("{session_id}\n"))?;
         }
-        FilesystemMode::CopyPrivate => {}
+        FilesystemMode::CopyPrivate | FilesystemMode::Git => {}
     }
     Ok(())
 }
