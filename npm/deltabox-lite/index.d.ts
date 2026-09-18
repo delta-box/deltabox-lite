@@ -5,6 +5,24 @@ export interface NativeEnvironmentEntry {
   value: string
 }
 
+/**
+ * Configuration snapshot for one embedded coordinator, fixed at construction.
+ * `fsMode` is the storage mode every session on this coordinator starts in;
+ * `isolation` picks how commands run. Neither can be changed later, because the
+ * coordinator and its active filesystem state live for the whole process.
+ */
+export interface NativeDeltaboxOptions {
+  stateDir?: string
+  runtimeDir?: string
+  fsMode?: 'cbcow-through' | 'cbcow-private' | 'copy-private'
+  /**
+   * `deltabox` keeps the session's own sandbox and deny set. `none` lets
+   * commands share the Node process ambient environment, so a host has to name
+   * it explicitly; the native transport is the only one that can offer it.
+   */
+  isolation?: 'deltabox' | 'none'
+}
+
 export interface NativeSessionInfo {
   session_id: string
   project: string
@@ -17,7 +35,9 @@ export interface NativeSessionInfo {
   host_visibility: 'immediate' | 'on-commit'
   durability: string
   group_commit_ms?: number
-  isolation: string
+  isolation: 'deltabox' | 'none'
+  /** Resolved OS mechanism behind `deltabox` isolation, absent under `none`. */
+  isolation_provider: string | null
   state_provider: string | null
   fallback_reason: string | null
   rollback_guarantee: string
@@ -112,9 +132,7 @@ export interface NativeDeltaboxConstructor {
   new(
     projectRoot: string,
     helperBinary: string,
-    trusted?: boolean,
-    stateDir?: string,
-    runtimeDir?: string,
+    options?: NativeDeltaboxOptions,
   ): NativeDeltaboxInstance
 }
 
