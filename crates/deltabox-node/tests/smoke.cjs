@@ -14,13 +14,20 @@ async function main() {
   const runtime = await realpath(await mkdtemp(join(tmpdir(), 'deltabox-node-runtime-')))
   const file = join(project, 'native-buffer.txt')
   process.env.DELTABOX_NATIVE_SHARED_ENV = 'shared-from-node'
-  const native = new NativeDeltabox(project, helperBinary, true, state, runtime)
+  const native = new NativeDeltabox(project, helperBinary, {
+    stateDir: state,
+    runtimeDir: runtime,
+    fsMode: 'cbcow-through',
+    isolation: 'none',
+  })
   let session
   try {
     session = await native.startSession(undefined, 'fast', undefined, 'auto', false)
     assert.equal(session.resolved_fs_mode, 'cbcow-through')
     assert.equal(session.durability, 'process-crash')
     assert.equal(session.status, 'running')
+    assert.equal(session.isolation, 'none')
+    assert.equal(session.isolation_provider, null)
     assert.equal(session.state_provider, 'macos-apfs-fsevents')
     assert.equal(session.fallback_reason, null)
     assert.ok(session.mountpoint)

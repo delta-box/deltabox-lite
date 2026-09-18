@@ -246,6 +246,8 @@ pub struct FilesystemInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_commit_ms: Option<u64>,
     pub isolation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolation_provider: Option<String>,
     #[serde(default, alias = "fuse_provider")]
     pub state_provider: Option<String>,
     pub fallback_reason: Option<String>,
@@ -304,7 +306,8 @@ impl FilesystemInfo {
             host_visibility: "on-commit".into(),
             durability: "process-crash".into(),
             group_commit_ms: None,
-            isolation: platform_isolation().into(),
+            isolation: "deltabox".into(),
+            isolation_provider: Some(platform_isolation().into()),
             state_provider: None,
             fallback_reason,
             rollback_guarantee: "private-working-tree".into(),
@@ -324,7 +327,8 @@ impl FilesystemInfo {
             host_visibility: "immediate".into(),
             durability: "process-crash".into(),
             group_commit_ms: None,
-            isolation: platform_isolation().into(),
+            isolation: "deltabox".into(),
+            isolation_provider: Some(platform_isolation().into()),
             state_provider: Some("linux-fuse3".into()),
             fallback_reason: None,
             rollback_guarantee: "fuse-routed-writes-only".into(),
@@ -344,7 +348,8 @@ impl FilesystemInfo {
             host_visibility: "on-commit".into(),
             durability: "process-crash".into(),
             group_commit_ms: None,
-            isolation: platform_isolation().into(),
+            isolation: "deltabox".into(),
+            isolation_provider: Some(platform_isolation().into()),
             state_provider: Some("linux-fuse3".into()),
             fallback_reason: None,
             rollback_guarantee: "private-live-tree".into(),
@@ -365,7 +370,8 @@ impl FilesystemInfo {
             host_visibility: if private { "on-commit" } else { "immediate" }.into(),
             durability: "process-crash".into(),
             group_commit_ms: None,
-            isolation: "seatbelt".into(),
+            isolation: "deltabox".into(),
+            isolation_provider: Some("seatbelt".into()),
             state_provider: Some("macos-apfs-fsevents".into()),
             fallback_reason: None,
             rollback_guarantee: if private {
