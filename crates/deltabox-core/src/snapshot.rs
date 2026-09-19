@@ -3,7 +3,7 @@
 use crate::changeset::{describe_change, ChangeKind, DEFAULT_TEXT_SIZE_LIMIT};
 use crate::error::{Error, Result};
 use crate::session::now_ms;
-use crate::worker::ScanEntry;
+use crate::worker::{ScanEntry, ScanEntryKind};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -11,11 +11,21 @@ use std::io::{copy, Write};
 use std::path::Path;
 
 pub const BASE_SCAN_FILE: &str = "base_scan.json";
+pub const CURRENT_SCAN_SNAPSHOT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScanSnapshot {
+    #[serde(default)]
+    pub version: u32,
     pub entries: Vec<ScanEntry>,
     pub taken_at_ms: u64,
+}
+
+impl ScanSnapshot {
+    pub fn has_current_fingerprints(&self) -> bool {
+        self.version == CURRENT_SCAN_SNAPSHOT_VERSION
+            && self.entries.iter().all(|entry| entry.fingerprint.is_some())
+    }
 }
 
 pub fn load_snapshot(path: &Path) -> Result<Option<ScanSnapshot>> {
@@ -28,6 +38,7 @@ pub fn load_snapshot(path: &Path) -> Result<Option<ScanSnapshot>> {
 
 pub fn save_snapshot(path: &Path, entries: &[ScanEntry]) -> Result<()> {
     let snapshot = ScanSnapshot {
+        version: CURRENT_SCAN_SNAPSHOT_VERSION,
         entries: entries.to_vec(),
         taken_at_ms: now_ms(),
     };
@@ -63,10 +74,7 @@ pub fn diff_snapshots(from: &[ScanEntry], to: &[ScanEntry]) -> Vec<SnapshotDiff>
                 new_size: Some(entry.size),
             }),
             Some(old) => {
-                if old.size != entry.size
-                    || old.mtime_ns != entry.mtime_ns
-                    || old.kind != entry.kind
-                {
+                if scan_entry_changed(old, entry) {
                     out.push(SnapshotDiff {
                         path: entry.path.clone(),
                         kind: ChangeKind::Modified,
@@ -87,6 +95,21 @@ pub fn diff_snapshots(from: &[ScanEntry], to: &[ScanEntry]) -> Vec<SnapshotDiff>
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
     out
+}
+
+fn scan_entry_changed(old: &ScanEntry, new: &ScanEntry) -> bool {
+    if old.kind != new.kind {
+        return true;
+    }
+    match (&old.fingerprint, &new.fingerprint) {
+        (Some(old_fingerprint), Some(new_fingerprint)) => {
+            old_fingerprint != new_fingerprint
+                || (old.kind != ScanEntryKind::Directory
+                    && (old.size != new.size || old.mtime_ns != new.mtime_ns))
+        }
+        (None, None) => old.size != new.size || old.mtime_ns != new.mtime_ns,
+        _ => true,
+    }
 }
 
 /// Recursively copy a tree, preserving symlinks and file modes.
@@ -389,6 +412,7 @@ pub fn build_scan_entries(paths: &[String], upper: &Path, lower: &Path) -> Vec<S
                 size: meta.len(),
                 mtime_ns: mtime_ns(&meta),
                 kind,
+                fingerprint: None,
             });
         }
     }
@@ -448,6 +472,7 @@ mod tests {
             size,
             mtime_ns: mtime,
             kind: crate::worker::ScanEntryKind::File,
+            fingerprint: None,
         }
     }
 
