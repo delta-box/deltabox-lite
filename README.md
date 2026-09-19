@@ -250,6 +250,20 @@ See [policy reference](docs/policy.md) for the full schema and enforcement
 semantics, and [macOS compatibility](docs/macos.md) for path mapping and tool
 support.
 
+The policy is the session's standing breadth. A single command can request a
+wider *execution profile* — `workspace-write` (default) or `read-write` — so a
+`session.exec` call can reach the host filesystem without changing the session:
+
+```bash
+deltabox exec "$SESSION" --project /abs/path/my-project \
+  --execution-profile read-write -- sh -c 'sudo apt-get install -y ripgrep'
+```
+
+The workspace still routes through Deltabox under either profile, so its changes
+stay diff/commit/abort-able, and the backing project, engine state, and helper
+endpoints stay denied. Host writes outside the workspace are outside DeltaFS
+and cannot be rolled back.
+
 ## Performance
 
 Measured on x86-server (Linux 6.18, ext4, release build). Each row reports 50

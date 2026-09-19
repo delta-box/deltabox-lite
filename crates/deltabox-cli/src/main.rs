@@ -4,7 +4,7 @@ use deltabox_core::backend::DefaultBackend;
 use deltabox_core::coordinator::SessionCoordinator;
 use deltabox_core::protocol::{
     AbortParams, CheckpointParams, CommitParams, DiffParams, DurabilityMode, ExecParams,
-    FilesystemMode, Request, ReviewBeginParams, ReviewKind,
+    ExecutionProfile, FilesystemMode, Request, ReviewBeginParams, ReviewKind,
 };
 use deltabox_core::server::Server;
 use std::io::{BufRead, IsTerminal, Write};
@@ -167,6 +167,9 @@ struct ExecArgs {
     label: Option<String>,
     #[arg(long)]
     cwd: Option<PathBuf>,
+    /// Filesystem breadth for this command only: workspace-write or read-write.
+    #[arg(long, value_parser = parse_execution_profile)]
+    execution_profile: Option<ExecutionProfile>,
     #[arg(long)]
     env: Vec<String>,
     #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
@@ -420,6 +423,7 @@ fn main() -> anyhow::Result<()> {
                 cwd: args.cwd,
                 env,
                 label: args.label,
+                execution_profile: args.execution_profile.unwrap_or_default(),
             })?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
@@ -748,6 +752,7 @@ fn run_transaction(args: RunArgs) -> anyhow::Result<i32> {
             cwd: args.cwd,
             env,
             label: args.label,
+            execution_profile: Default::default(),
         })?;
         std::io::stdout()
             .lock()
@@ -827,6 +832,14 @@ fn parse_filesystem_mode(value: &str) -> Result<FilesystemMode, String> {
         "cbcow-private" => Ok(FilesystemMode::CbcowPrivate),
         "copy-private" => Ok(FilesystemMode::CopyPrivate),
         _ => Err("expected cbcow-through, cbcow-private, or copy-private".into()),
+    }
+}
+
+fn parse_execution_profile(value: &str) -> Result<ExecutionProfile, String> {
+    match value {
+        "workspace-write" => Ok(ExecutionProfile::WorkspaceWrite),
+        "read-write" => Ok(ExecutionProfile::ReadWrite),
+        _ => Err("expected workspace-write or read-write".into()),
     }
 }
 

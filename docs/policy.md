@@ -64,6 +64,52 @@ Localhost is not implicitly privileged and must be listed explicitly. macOS
 normalizes `localhost`, `127.0.0.0/8` and `::1` spellings to Seatbelt's
 `localhost` filter while retaining the exact listed port.
 
+## Execution profiles
+
+The policy above is the session's *standing* policy. One command can request a
+different filesystem breadth with an execution profile:
+
+| Profile | Writes reachable | Typical use |
+|---|---|---|
+| `workspace-write` (default) | The session workspace only | Editing the project |
+| `read-write` | The workspace plus the rest of the host filesystem | `apt install`, toolchain and package-cache writes |
+
+```bash
+# Standing profile: the workspace, with the backing project unreachable.
+deltabox exec "$SESSION" --project /abs/path/project -- sh -c 'echo hello > notes.txt'
+
+# One command only: reach the host filesystem as well.
+deltabox exec "$SESSION" --project /abs/path/project \
+  --execution-profile read-write -- sh -c 'sudo apt-get install -y ripgrep'
+```
+
+The same field travels through every adapter: `execution_profile` on
+`session.exec`, `--execution-profile` on the CLI (also accepted by
+`deltabox run`), and the optional sixth argument of the Node binding's
+`exec(sessionId, argv, cwd, environment, label, executionProfile)`.
+
+Profiles widen access; they never relax the protected deny set. Under
+`read-write`, the workspace still routes through Deltabox, so its changes stay
+visible to diff, checkpoint, commit, and abort, while the backing project, the
+session state root, and the helper endpoints remain denied. Two consequences
+are worth stating explicitly:
+
+- **The command's `HOME` and `TMPDIR` are session scratch, not host paths.**
+  They stay writable under every profile, `read-write` included: widening a
+  command's reach must not take away the private space it writes in.
+- **Host changes outside the workspace are not rollback-able.** `read-write`
+  exists for commands whose effect is inherently host-wide (`apt install`,
+  service restarts, `~/.cache` population). Those writes are outside DeltaFS,
+  so only the workspace portion of the turn can be reverted.
+- **`read-write` needs the workspace outside the backing project.**
+  `read-write` grants the filesystem root, so the backend keeps denying the
+  backing project to preserve the workspace guarantee. A view nested inside
+  that project cannot be expressed and the command fails closed with
+  `unsupported` instead of exposing the host tree.
+
+`git` isolation and the unsandboxed native profile reject `read-write`: neither
+can widen host access without dropping the workspace guarantee.
+
 ## Environment
 
 Every executed child starts with an empty environment. Deltabox copies only

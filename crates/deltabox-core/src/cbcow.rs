@@ -17,7 +17,7 @@ use crate::protocol::{
 };
 use crate::session::{now_ms, SessionMeta, SessionRegistry};
 use crate::locks::Lock;
-use crate::state_layout::{publish_lock_path, runtime_base, state_base, state_root};
+use crate::state_layout::{publish_lock_path, runtime_base, state_base, state_root, SessionLayout};
 use base64::Engine;
 use deltafs_fuse::control::{self, Command as ControlCommand, ResultValue};
 use serde::{Deserialize, Serialize};
@@ -215,22 +215,23 @@ impl Manager {
             }
         };
         save_json(&store.join(DENY_PATHS), &deny_paths)?;
-        let state_root = self.state_base.join(&session_id);
-        let runtime_dir = self.runtime_base.join(&session_id);
-        fs::create_dir_all(state_root.join("engine"))?;
-        fs::create_dir_all(&runtime_dir)?;
-        fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700))?;
-        fs::set_permissions(&runtime_dir, fs::Permissions::from_mode(0o700))?;
-        let mountpoint = runtime_dir.join("mount");
-        fs::create_dir_all(&mountpoint)?;
-        let token_file = state_root.join("token");
+        let layout = SessionLayout::from_roots(
+            self.state_base.join(&session_id),
+            self.runtime_base.join(&session_id),
+        );
+        layout.assert_disjoint()?;
+        fs::create_dir_all(&layout.engine_dir)?;
+        fs::create_dir_all(&layout.runtime_dir)?;
+        fs::set_permissions(&layout.state_dir, fs::Permissions::from_mode(0o700))?;
+        fs::set_permissions(&layout.runtime_dir, fs::Permissions::from_mode(0o700))?;
+        fs::create_dir_all(&layout.view)?;
         write_private(
-            &token_file,
+            &layout.token,
             format!("{}{}\n", Uuid::new_v4(), Uuid::new_v4()).as_bytes(),
             durability == DurabilityMode::Strict,
         )?;
         write_private(
-            &state_root.join("command-token"),
+            &layout.command_token,
             format!("{}{}\n", Uuid::new_v4(), Uuid::new_v4()).as_bytes(),
             durability == DurabilityMode::Strict,
         )?;
@@ -238,12 +239,12 @@ impl Manager {
         let mut record = MountRecord {
             source,
             mode,
-            mountpoint,
-            state_dir: state_root.join("engine"),
-            socket: runtime_dir.join("control.sock"),
-            token_file,
-            ready_file: runtime_dir.join("ready"),
-            runtime_dir,
+            mountpoint: layout.view.clone(),
+            state_dir: layout.engine_dir.clone(),
+            socket: layout.control_socket.clone(),
+            token_file: layout.token.clone(),
+            ready_file: layout.control_ready.clone(),
+            runtime_dir: layout.runtime_dir.clone(),
             helper_pid: 0,
             helper_start_ticks: 0,
             restarts: 0,
@@ -418,7 +419,7 @@ impl Manager {
             self.append(session_id, JournalKind::Abort, None)?;
         }
         self.save_review(session_id, None)?;
-        command_executor::shutdown(&command_endpoint(&record))?;
+        command_executor::shutdown(&command_endpoint(&record)?)?;
         if self.request(&record, ControlCommand::Shutdown).is_err() {
             self.stop_helper(&record);
         }
@@ -436,7 +437,7 @@ impl Manager {
             session_id,
         );
         self.append(session_id, JournalKind::SessionStop, None)?;
-        command_executor::cleanup_stopped(&command_endpoint(&record));
+        command_executor::cleanup_stopped(&command_endpoint(&record)?);
         Ok(SessionInfo {
             session_id: meta.session_id,
             project: meta.project,
@@ -475,6 +476,7 @@ impl Manager {
             cwd,
             env,
             label,
+            execution_profile,
         } = params;
         let _lock = self.exec_lock(&session_id)?;
         let meta = self.running_meta(&session_id)?;
@@ -521,9 +523,10 @@ impl Manager {
             CommandExecutionMode::Sandboxed => {
                 let initial_record = self.load_record(&session_id)?;
                 let operation =
-                    command_executor::lock_operations(&command_endpoint(&initial_record))?;
+                    command_executor::lock_operations(&command_endpoint(&initial_record)?)?;
                 let record = self.ensure_helper(&session_id)?;
-                let endpoint = command_endpoint(&record);
+                let layout = session_layout(&record)?;
+                let endpoint = command_endpoint(&record)?;
                 if !endpoint.token_file.exists() {
                     write_private(
                         &endpoint.token_file,
@@ -533,42 +536,28 @@ impl Manager {
                 }
                 let mapper = PathMapper::new(&self.project, &record.mountpoint);
                 let mut policy = self.policy(&meta)?;
+                policy.apply_execution_profile(execution_profile);
+                execution_profile
+                    .ensure_backing_project_is_deniable(&record.mountpoint, &self.project)?;
                 let deny_paths: Vec<PathBuf> =
                     serde_json::from_slice(&fs::read(self.store(&session_id).join(DENY_PATHS))?)?;
                 let mut deny_paths: Vec<PathBuf> = deny_paths
                     .into_iter()
                     .map(|path| mapper.map_path(&path))
                     .collect();
-                let state_root = record
-                    .state_dir
-                    .parent()
-                    .expect("engine state has a session root")
-                    .to_path_buf();
-                deny_paths.push(state_root.clone());
-                deny_paths.push(record.socket.clone());
-                deny_paths.push(endpoint.socket.clone());
-                deny_paths.push(endpoint.ready_file.clone());
-                deny_paths.push(endpoint.operation_lock.clone());
-                policy
-                    .filesystem
-                    .deny
-                    .push(state_root.to_string_lossy().into_owned());
-                policy
-                    .filesystem
-                    .deny
-                    .push(record.socket.to_string_lossy().into_owned());
-                policy
-                    .filesystem
-                    .deny
-                    .push(endpoint.socket.to_string_lossy().into_owned());
-                policy
-                    .filesystem
-                    .deny
-                    .push(endpoint.ready_file.to_string_lossy().into_owned());
-                policy
-                    .filesystem
-                    .deny
-                    .push(endpoint.operation_lock.to_string_lossy().into_owned());
+                // The control plane is closed in every profile, and it is named here
+                // rather than discovered by listing `runtime_dir`. Listing it both
+                // missed whatever the helper had not created yet — the readiness
+                // marker only exists after the first command starts the mount — and
+                // denied the scratch directory that the command's HOME and TMPDIR
+                // live in, which left a widened command unable to write anywhere.
+                for path in layout.protected_paths() {
+                    deny_paths.push(path.clone());
+                    policy
+                        .filesystem
+                        .deny
+                        .push(path.to_string_lossy().into_owned());
+                }
                 let request = ExecRequest {
                     argv: argv
                         .into_iter()
@@ -589,18 +578,14 @@ impl Manager {
                 let spec = SessionSpec {
                     project: record.mountpoint.clone(),
                     host_project: Some(self.project.clone()),
-                    store_dir: record.runtime_dir.join("command"),
+                    store_dir: layout.scratch_dir.clone(),
                     policy,
                     resolved_deny_paths: Some(deny_paths),
                 };
                 command_executor::ensure_running(
                     &endpoint,
                     &self.helper_bin,
-                    &record
-                        .state_dir
-                        .parent()
-                        .expect("engine state has a session root")
-                        .join("command-helper.log"),
+                    &layout.state_dir.join("command-helper.log"),
                 )?;
                 drop(operation);
                 command_executor::exec(
@@ -1112,7 +1097,7 @@ impl Manager {
             self.recover_publication(session_id, &record)?;
             return Ok(record);
         }
-        command_executor::reset(&command_endpoint(&record))?;
+        command_executor::reset(&command_endpoint(&record)?)?;
         self.stop_helper(&record);
         wait_helper_stopped(&record)?;
         detach_mount(&record.mountpoint)?;
@@ -1329,7 +1314,7 @@ impl Manager {
             &self.root.join("active-cbcow"),
             session_id,
         );
-        let _ = command_executor::shutdown(&command_endpoint(record));
+        let _ = command_endpoint(record).map(|endpoint| command_executor::shutdown(&endpoint));
         self.stop_helper(record);
         detach_mount(&record.mountpoint)?;
         wait_unmounted(&record.mountpoint)?;
@@ -1451,7 +1436,7 @@ impl Manager {
             return Err(Error::SessionNotFound(session_id.into()));
         }
         let record = self.load_record(session_id)?;
-        let operation = command_executor::lock_operations(&command_endpoint(&record))?;
+        let operation = command_executor::lock_operations(&command_endpoint(&record)?)?;
         Ok(SessionOperationLock {
             _operation: operation,
             _session: session,
@@ -1577,16 +1562,36 @@ fn filesystem_info_inner(record: &MountRecord) -> FilesystemInfo {
     info.with_durability(record.durability, record.group_commit_ms)
 }
 
-fn command_endpoint(record: &MountRecord) -> CommandEndpoint {
-    let state_root = record
+fn command_endpoint(record: &MountRecord) -> Result<CommandEndpoint> {
+    let layout = session_layout(record)?;
+    Ok(CommandEndpoint::new(
+        layout.command_socket,
+        layout.command_token,
+        layout.command_ready,
+    ))
+}
+
+/// Rebuilds the layout of a recorded session and checks the record against it.
+/// A record written by a build that laid its paths out differently would
+/// otherwise run with half its control plane protected, so this fails loudly
+/// instead.
+fn session_layout(record: &MountRecord) -> Result<SessionLayout> {
+    let state_dir = record
         .state_dir
         .parent()
-        .expect("engine state has a session root");
-    CommandEndpoint::new(
-        record.runtime_dir.join("command.sock"),
-        state_root.join("command-token"),
-        record.runtime_dir.join("command.ready"),
-    )
+        .ok_or_else(|| Error::Backend("engine state has no session root".into()))?;
+    let layout = SessionLayout::from_roots(state_dir.to_path_buf(), record.runtime_dir.clone());
+    if record.mountpoint != layout.view
+        || record.socket != layout.control_socket
+        || record.ready_file != layout.control_ready
+        || record.state_dir != layout.engine_dir
+    {
+        return Err(Error::Backend(
+            "session paths no longer match the current layout; restart the session".into(),
+        ));
+    }
+    layout.assert_disjoint()?;
+    Ok(layout)
 }
 
 fn relative_path(project: &Path, path: &Path) -> Result<PathBuf> {
