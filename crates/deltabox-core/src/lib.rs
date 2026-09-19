@@ -32,6 +32,7 @@ pub mod server;
 pub mod session;
 mod state_layout;
 pub mod snapshot;
+pub mod trusted;
 pub mod worker;
 
 pub use error::{Error, Result};

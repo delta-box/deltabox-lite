@@ -61,10 +61,13 @@ original session-ID stdout format for shell compatibility.
 
 `SessionInfo` = `{session_id, project, started_at_ms, status, checkpoint_count,
 pending_changes, requested_fs_mode, resolved_fs_mode, host_visibility,
-durability, group_commit_ms?, isolation, state_provider, fallback_reason, rollback_guarantee,
-tainted, mountpoint?, helper_pid?, helper_restarts, mount_namespace,
-degraded_protections?}`. On Linux kernels that cannot enforce every Landlock
-protection, `degraded_protections` lists the dropped scopes (for example
+durability, group_commit_ms?, isolation, isolation_provider?, state_provider,
+fallback_reason, rollback_guarantee, tainted, mountpoint?, helper_pid?,
+helper_restarts, mount_namespace, degraded_protections?}`. `isolation` names the
+session's isolation profile and `isolation_provider` the OS mechanism behind it
+(`sandlock` or `seatbelt`), so a consumer can tell which confinement it relies
+on without parsing the platform. On Linux kernels that cannot enforce every
+Landlock protection, `degraded_protections` lists the dropped scopes (for example
 `signal-scope` below ABI v6); consumers must not assume those confinements.
 
 `session.start` over `serve` must name the project `serve` was started in;
