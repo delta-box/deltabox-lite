@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
@@ -82,6 +83,29 @@ try {
     stdio: "inherit",
   });
   if (packed.status !== 0) process.exit(packed.status ?? 1);
+
+  // Plain binary tarball for Homebrew and scripts/install.sh: the binary,
+  // license, and README at the top level, named by the Rust target triple so
+  // installers can map `uname` output onto it without a second lookup table.
+  // A sidecar .sha256 in `shasum -c` format lets installers verify the
+  // download without a separate manifest.
+  const tarballStage = join(stage, "tarball");
+  mkdirSync(tarballStage);
+  copyFileSync(binary, join(tarballStage, "deltabox"));
+  chmodSync(join(tarballStage, "deltabox"), 0o755);
+  copyFileSync(join(root, "LICENSE"), join(tarballStage, "LICENSE"));
+  copyFileSync(join(root, "README.md"), join(tarballStage, "README.md"));
+  const tarballName = `deltabox-${version}-${target}.tar.gz`;
+  const tarball = join(output, tarballName);
+  const tarred = spawnSync(
+    "tar",
+    ["-czf", tarball, "-C", tarballStage, "deltabox", "LICENSE", "README.md"],
+    { cwd: root, stdio: "inherit" },
+  );
+  if (tarred.status !== 0) process.exit(tarred.status ?? 1);
+  const digest = createHash("sha256").update(readFileSync(tarball)).digest("hex");
+  writeFileSync(join(output, `${tarballName}.sha256`), `${digest}  ${tarballName}\n`);
+  console.log(`${tarballName} sha256 ${digest}`);
 } finally {
   rmSync(stage, { recursive: true });
 }
