@@ -9,7 +9,27 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
-- First packaged release of the `deltabox` CLI and the `deltabox-lite` npm
-  wrapper with prebuilt binaries for macOS (arm64, x64) and Linux (x64, arm64).
-- `scripts/release.mjs` bumps every version site in lockstep, rolls this
-  changelog, and tags the release.
+### Added
+
+- Prebuilt release tarballs (`deltabox-<version>-<target>.tar.gz`) with
+  `.sha256` sidecars for manual installs.
+- A Homebrew formula (`brew install ddnirvana/tap/deltabox`) kept current by
+  `scripts/update-homebrew-formula.mjs`.
+- `scripts/install.sh`, a one-line installer for macOS and Linux.
+- `scripts/release.mjs`, which cuts a release by bumping every version site in
+  lockstep, rolling this changelog, and tagging.
+- `bin/deltabox.js`, a launcher in the `deltabox-lite` npm wrapper that puts
+  the `deltabox` command on the PATH after a global install.
+- `RELEASING.md`, documenting the release pipeline for maintainers.
+
+### Changed
+
+- The prebuilds workflow now runs on tag pushes, publishes from a single
+  restartable job, and publishes the GitHub release only after every platform
+  succeeds.
+
+### Fixed
+
+- The macOS embedded fast path failed to compile after the publish-lock merge
+  (`deltabox-core`).
+- `npm install --global deltabox-lite` did not expose the `deltabox` command.

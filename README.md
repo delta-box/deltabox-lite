@@ -53,25 +53,46 @@ Run a command, inspect its change set, and choose whether to keep or discard it:
   allow/audit, deny-all and allowlist modes, scrubbed child environments, and
   bounded writes/storage.
 
-## Quick start
+## Install
 
-Build the runtime:
+Prebuilt binaries ship for macOS (arm64, x64) and Linux (x64, arm64) with each
+[GitHub release](https://github.com/Ddnirvana/deltabox-lite/releases). Pick one:
+
+```bash
+# Homebrew (macOS and Linux)
+brew install ddnirvana/tap/deltabox
+
+# One-line installer: verifies the download's sha256, installs to ~/.local/bin, no sudo
+curl -fsSL https://raw.githubusercontent.com/Ddnirvana/deltabox-lite/main/scripts/install.sh | sh
+
+# npm: the CLI plus a Node-API addon for embedding
+npm install --global deltabox-lite
+```
+
+**Embedding**: The npm package exposes both the native executable and a Node-API addon.
+Integrations can call `loadNative()` to keep session coordination, configuration,
+and byte I/O inside the Node host process; only the requested commands and the
+platform filesystem helper remain child processes.
+
+The installer honours `DELTABOX_VERSION` and `DELTABOX_INSTALL_DIR`. Every
+release also carries plain `deltabox-<version>-<target>.tar.gz` tarballs with a
+`.sha256` sidecar for manual installs.
+
+The Homebrew tap and npm packages are populated by the release pipeline; if a
+channel is not yet available for your platform, build from source instead.
+Linux prebuilt binaries are built on Ubuntu 24.04 (glibc 2.39) and may not run
+on distributions with an older glibc; build from source there.
+
+Or build from source with Rust 1.87+:
 
 ```bash
 cargo build --release
 export PATH="$PWD/target/release:$PATH"
 ```
 
-Release builds are also packaged for npm on Linux and macOS, x64 and arm64:
+Maintainers: see RELEASING.md for how releases are cut.
 
-```bash
-npm install --global deltabox-lite
-```
-
-The npm package exposes both the native executable and a Node-API addon.
-Integrations can call `loadNative()` to keep session coordination, configuration,
-and byte I/O inside the Node host process; only the requested commands and the
-platform filesystem helper remain child processes.
+## Quick start
 
 For a first transaction, create a project with one ordinary file and discard a
 command's changes. No package manifest or policy file is needed:
