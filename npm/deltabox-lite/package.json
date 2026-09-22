@@ -9,6 +9,13 @@
   "bin": {
     "deltabox": "bin/deltabox.js"
   },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "files": [
     "index.cjs",
     "index.d.ts",

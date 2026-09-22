@@ -73,7 +73,9 @@ try {
       os: [os],
       cpu: [cpu],
       files: ["bin", "native", "README.md", "LICENSE"],
-      bin: { deltabox: "bin/deltabox" },
+      // No `bin` here: the wrapper's launcher (npm/deltabox-lite/bin/deltabox.js)
+      // is the one command on PATH, and it finds bin/deltabox through
+      // index.cjs. A second bin would race the wrapper's on local installs.
     }, null, 2)}\n`,
   );
   mkdirSync(output, { recursive: true });
