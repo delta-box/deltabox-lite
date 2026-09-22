@@ -1,9 +1,10 @@
 # deltabox-lite
 
 This package installs the native `deltabox` runtime for supported Linux and
-macOS systems. npm exposes the matching optional platform package as the
-`deltabox` command and as a Node-API addon. No JavaScript launcher or
-prestarted service is installed.
+macOS systems. The matching optional platform package carries the binary and
+the Node-API addon; `bin/deltabox.js` is a thin launcher that executes that
+binary in place, so `npm install --global deltabox-lite` puts a `deltabox`
+command on the PATH. No prestarted service is installed.
 
 ```js
 const { binaryPath, loadNative } = require('deltabox-lite')

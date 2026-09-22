@@ -39,9 +39,13 @@ jobs:
         run: |
           mkdir -p dist/smoke
           npm pack ./npm/deltabox-lite --pack-destination dist/smoke
-          npm install --offline --ignore-scripts --no-audit --no-fund \
+          # Mirror the documented install path (`npm install --global
+          # deltabox-lite`): a global install only links the top-level
+          # package's own bin, so this catches a wrapper without a launcher.
+          npm install --global --offline --ignore-scripts --no-audit --no-fund \
             --prefix dist/smoke/install ./dist/*.tgz ./dist/smoke/*.tgz
-          dist/smoke/install/node_modules/.bin/deltabox --version
+          dist/smoke/install/bin/deltabox --version
+          node -e "console.log(require('./dist/smoke/install/lib/node_modules/deltabox-lite').binaryPath())"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
