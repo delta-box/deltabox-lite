@@ -1288,10 +1288,12 @@ impl Manager {
     ) -> Result<CommitResult> {
         self.require_fast_running(session)?;
         self.enforce_fast_storage_limit(session)?;
-        // Embedded sessions skip the per-session file lock (the in-process
-        // mutex covers that) but still publish into the shared host: the
-        // publication window must be serialized against sibling sessions and
-        // recoveries exactly as in `commit_locked`.
+        // Embedded sessions are serialized by the in-process FastSession
+        // mutex rather than the per-session file lock; that is enough only
+        // because a fast session is driven solely from the process that
+        // created it. Publication is different: it lands in the host that
+        // sibling sessions and other processes share, so the publish lock and
+        // the publog bookkeeping are taken exactly as in `commit_locked`.
         let _publish =
             Lock::acquire(&crate::state_layout::publish_lock_path(&self.project)?)?;
         crate::test_hooks::maybe_pause("publish_lock_held");

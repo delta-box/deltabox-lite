@@ -97,6 +97,13 @@ export interface NativeDiffResult {
 export interface NativeCommitResult {
   checkpoint_id: string
   applied: number
+  /**
+   * How many sibling publications this commit's baseline was fast-forwarded
+   * over; absent when zero. When set, the host moved since this session's
+   * baseline and the orchestrator should re-verify (build, test) after
+   * integration.
+   */
+  folded_publications?: number
 }
 
 export interface NativeAbortResult {
