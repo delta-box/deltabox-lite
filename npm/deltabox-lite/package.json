@@ -6,9 +6,20 @@
   "repository": "https://github.com/Ddnirvana/deltabox-lite",
   "main": "index.cjs",
   "types": "index.d.ts",
+  "bin": {
+    "deltabox": "bin/deltabox.js"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "files": [
     "index.cjs",
     "index.d.ts",
+    "bin/deltabox.js",
     "README.md"
   ],
   "optionalDependencies": {

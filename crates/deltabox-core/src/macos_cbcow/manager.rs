@@ -886,46 +886,13 @@ impl Manager {
         let target = parse_checkpoint(params.checkpoint.as_deref())?;
         let tracker = self.prepare_events(&mut state, true)?;
         self.enforce_storage_limit(&meta, &state)?;
-        let seen = fs::read_to_string(self.store(&params.session_id).join("publog.seq"))
-            .ok()
-            .and_then(|raw| raw.trim().parse().ok())
-            .unwrap_or(0);
-        let folded = crate::publog::entries_since(&self.project, seen)?.len() as u64;
-        // The endorsement bound is normally the session's own publog cursor:
-        // only publications it has acknowledged may move the baseline, so
-        // first-committer-wins holds. The pre-declared `ours` policy waives
-        // that acknowledgement inside this same lock window — every
-        // digest-endorsed sibling publication is accepted and overridden,
-        // while stranger changes keep failing closed.
-        let endorsed_until = if params.ours { u64::MAX } else { seen };
+        let (seen, folded) = self.publog_cursor(&params.session_id)?;
+        let endorsed_until = endorsement_bound(&params, seen);
         let result = state.commit(target, endorsed_until)?;
         self.finish_events(&mut state, &tracker, false)?;
         let (id, published) = result;
         let applied = published.len();
-        if applied > 0 {
-            let mut digests = std::collections::BTreeMap::new();
-            for change in &published {
-                if change.kind == crate::changeset::ChangeKind::Deleted {
-                    continue;
-                }
-                let host_path = self.project.join(&change.path);
-                if host_path.is_file() {
-                    if let Some(digest) = crate::publog::file_digest_capped(&host_path)? {
-                        digests.insert(change.path.clone(), digest);
-                    }
-                }
-            }
-            let seq = crate::publog::append(
-                &self.project,
-                &params.session_id,
-                &published,
-                digests,
-            )?;
-            fs::write(
-                self.store(&params.session_id).join("publog.seq"),
-                format!("{seq}\n"),
-            )?;
-        }
+        self.record_publication(&params.session_id, &published)?;
         self.save_review(&params.session_id, None)?;
         self.append(&record, &params.session_id, JournalKind::Commit, None)?;
         Ok(CommitResult {
@@ -933,6 +900,49 @@ impl Manager {
             applied,
             folded_publications: (folded > 0).then_some(folded),
         })
+    }
+
+    /// The session's publog cursor (`seen`) and how many sibling publications
+    /// landed after it. Read under the publish lock so the count is exact.
+    fn publog_cursor(&self, session_id: &str) -> Result<(u64, u64)> {
+        let seen = fs::read_to_string(self.store(session_id).join("publog.seq"))
+            .ok()
+            .and_then(|raw| raw.trim().parse().ok())
+            .unwrap_or(0);
+        let folded = crate::publog::entries_since(&self.project, seen)?.len() as u64;
+        Ok((seen, folded))
+    }
+
+    /// Append this commit's publication to the shared publog and advance the
+    /// session's cursor past it. Must run under the publish lock, after the
+    /// host already carries the published files (their digests are sampled
+    /// from the host). A commit that published nothing leaves the log alone.
+    fn record_publication(
+        &self,
+        session_id: &str,
+        published: &[crate::publog::PublogChange],
+    ) -> Result<()> {
+        if published.is_empty() {
+            return Ok(());
+        }
+        let mut digests = std::collections::BTreeMap::new();
+        for change in published {
+            if change.kind == crate::changeset::ChangeKind::Deleted {
+                continue;
+            }
+            let host_path = self.project.join(&change.path);
+            if host_path.is_file() {
+                if let Some(digest) = crate::publog::file_digest_capped(&host_path)? {
+                    digests.insert(change.path.clone(), digest);
+                }
+            }
+        }
+        let seq = crate::publog::append(&self.project, session_id, published, digests)?;
+        fs::write(
+            self.store(session_id).join("publog.seq"),
+            format!("{seq}\n"),
+        )?;
+        Ok(())
     }
 
     pub fn abort(&self, params: AbortParams) -> Result<AbortResult> {
@@ -1062,6 +1072,7 @@ impl Manager {
                 CommitParams {
                     session_id: session_id.into(),
                     checkpoint: None,
+                    ours: false,
                 },
             );
         }
@@ -1277,14 +1288,28 @@ impl Manager {
     ) -> Result<CommitResult> {
         self.require_fast_running(session)?;
         self.enforce_fast_storage_limit(session)?;
+        // Embedded sessions are serialized by the in-process FastSession
+        // mutex rather than the per-session file lock; that is enough only
+        // because a fast session is driven solely from the process that
+        // created it. Publication is different: it lands in the host that
+        // sibling sessions and other processes share, so the publish lock and
+        // the publog bookkeeping are taken exactly as in `commit_locked`.
+        let _publish =
+            Lock::acquire(&crate::state_layout::publish_lock_path(&self.project)?)?;
+        crate::test_hooks::maybe_pause("publish_lock_held");
         let target = parse_checkpoint(params.checkpoint.as_deref())?;
-        let (id, applied) = session.state.commit(target)?;
+        let (seen, folded) = self.publog_cursor(&params.session_id)?;
+        let endorsed_until = endorsement_bound(&params, seen);
+        let (id, published) = session.state.commit(target, endorsed_until)?;
+        let applied = published.len();
+        self.record_publication(&params.session_id, &published)?;
         session.review = None;
         self.save_review(&params.session_id, None)?;
         session.append(&params.session_id, JournalKind::Commit, None)?;
         Ok(CommitResult {
             checkpoint_id: id.to_string(),
             applied,
+            folded_publications: (folded > 0).then_some(folded),
         })
     }
 
@@ -1694,6 +1719,20 @@ fn info_from_stopped(meta: SessionMeta) -> SessionInfo {
         checkpoint_count: 0,
         pending_changes: 0,
         filesystem: meta.filesystem,
+    }
+}
+
+/// The endorsement bound is normally the session's own publog cursor: only
+/// publications it has acknowledged may move the baseline, so
+/// first-committer-wins holds. The pre-declared `ours` policy waives that
+/// acknowledgement inside the same lock window — every digest-endorsed sibling
+/// publication is accepted and overridden, while stranger changes keep
+/// failing closed.
+fn endorsement_bound(params: &CommitParams, seen: u64) -> u64 {
+    if params.ours {
+        u64::MAX
+    } else {
+        seen
     }
 }
 

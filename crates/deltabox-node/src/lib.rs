@@ -131,6 +131,12 @@ pub struct NativeCommitResult {
     #[napi(js_name = "checkpoint_id")]
     pub checkpoint_id: String,
     pub applied: f64,
+    /// How many sibling publications this commit's baseline was fast-forwarded
+    /// over, present only when non-zero. The host moved legitimately since
+    /// this session's baseline, so orchestrators should re-verify (build,
+    /// test) after integration.
+    #[napi(js_name = "folded_publications")]
+    pub folded_publications: Option<f64>,
 }
 
 #[napi(object)]
@@ -762,6 +768,7 @@ fn commit_result(value: CommitResult) -> NativeCommitResult {
     NativeCommitResult {
         checkpoint_id: value.checkpoint_id,
         applied: value.applied as f64,
+        folded_publications: value.folded_publications.map(|count| count as f64),
     }
 }
 
