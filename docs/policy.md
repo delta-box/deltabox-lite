@@ -26,6 +26,22 @@ dereferences such a link and therefore cannot expose its target bytes.
 returns `ENOSPC`, preserving the behavior expected by shells and developer
 tools; macOS does not provide `/dev/full`.
 
+### Tools installed outside system directories
+
+On Linux, inheriting `PATH` does not grant filesystem access to every directory
+it names. For example, npm installed by nvm under
+`/home/user/.nvm/versions/node/v24.16.0` is outside the default read roots.
+Add the selected installation directory to the policy's `filesystem.read`
+list, preserving the existing system roots. This grants read/execute access;
+it does not grant writes to the tool installation. An npm symlink also needs
+its target package directory to be readable. Do not add the entire home
+directory merely to run a tool.
+
+The sandbox uses a private `HOME`. To use rustup shims, explicitly configure
+`RUSTUP_HOME` and allow that toolchain directory, or invoke the selected
+Cargo binary directly. The developer-tool compatibility test uses explicit
+read grants and direct Node/npm/Cargo paths for this reason.
+
 ## Network
 
 The supported modes are:

@@ -1006,6 +1006,18 @@ fn exec_does_not_inherit_supervisor_secrets_but_accepts_explicit_env() {
     assert_eq!(result["exit_code"], 0);
 }
 
+fn tool_path(name: &str) -> std::path::PathBuf {
+    let output = Command::new("sh")
+        .args(["-c", "command -v \"$1\"", "sh", name])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "required test tool {name} is missing from PATH"
+    );
+    std::fs::canonicalize(String::from_utf8(output.stdout).unwrap().trim()).unwrap()
+}
+
 #[test]
 fn representative_cli_tools_and_dev_null_work_inside_sandbox() {
     let project = tempfile::tempdir().unwrap();
@@ -1030,7 +1042,33 @@ fn representative_cli_tools_and_dev_null_work_inside_sandbox() {
             .unwrap()
             .success());
     }
-    let sid = start(project.path());
+    // Tool managers may install outside the default system read roots. Grant
+    // this test's selected tools explicitly rather than widening agent policy.
+    let node = tool_path("node");
+    let npm = tool_path("npm");
+    let cargo = std::fs::canonicalize(env!("CARGO")).unwrap();
+    let mut policy = deltabox_core::policy::Policy::default_agent();
+    policy.filesystem.read.extend([
+        node.parent().unwrap().to_path_buf(),
+        npm.parent().unwrap().parent().unwrap().to_path_buf(),
+        cargo.parent().unwrap().parent().unwrap().to_path_buf(),
+    ]);
+    let policy_path = project.path().join("tools-policy.toml");
+    std::fs::write(&policy_path, toml::to_string(&policy).unwrap()).unwrap();
+    let output = run(
+        project.path(),
+        &[
+            "session",
+            "start",
+            project.path().to_str().unwrap(),
+            "--policy",
+            policy_path.to_str().unwrap(),
+            "--fs-mode",
+            "copy-private",
+            "--require-fs-mode",
+        ],
+    );
+    let sid = String::from_utf8(output.stdout).unwrap().trim().to_owned();
     let mut cases = vec![("dev-null", "printf sink-test > /dev/null")];
     #[cfg(target_os = "linux")]
     cases.push((
@@ -1062,11 +1100,32 @@ fn representative_cli_tools_and_dev_null_work_inside_sandbox() {
             "node",
             "node -e 'require(\"fs\").writeFileSync(\"node.txt\", \"ok\")'",
         ),
-        ("cargo", "cargo --version > /dev/null"),
-        ("npm", "npm --version > /dev/null"),
     ]);
     for (name, script) in cases {
         let result = exec(project.path(), &sid, script);
+        assert_eq!(
+            result["exit_code"], 0,
+            "{name} compatibility failed: {result}"
+        );
+    }
+    // Use argv so paths with spaces work, npm uses the selected Node binary,
+    // and Cargo runs directly without rustup's per-user HOME configuration.
+    for (name, argv) in [
+        ("cargo", vec![cargo.to_str().unwrap(), "--version"]),
+        (
+            "npm",
+            vec![node.to_str().unwrap(), npm.to_str().unwrap(), "--version"],
+        ),
+    ] {
+        let mut args = vec![
+            "exec",
+            &sid,
+            "--project",
+            project.path().to_str().unwrap(),
+            "--",
+        ];
+        args.extend(argv);
+        let result: Value = serde_json::from_slice(&run(project.path(), &args).stdout).unwrap();
         assert_eq!(
             result["exit_code"], 0,
             "{name} compatibility failed: {result}"

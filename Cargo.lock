@@ -404,6 +404,7 @@ dependencies = [
  "libc",
  "serde_json",
  "tempfile",
+ "toml",
  "xattr",
 ]
 

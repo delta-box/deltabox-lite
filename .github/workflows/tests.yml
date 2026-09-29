@@ -1,0 +1,56 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: Core (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux filesystem dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse3 libfuse3-dev pkg-config
+          sudo modprobe fuse
+          test -r /dev/fuse && test -w /dev/fuse
+      - name: Build CLI, helper and addon
+        shell: bash
+        run: |
+          mkdir -p target/test-results
+          cargo build --workspace --locked 2>&1 | tee target/test-results/build.log
+      - name: Require the native filesystem provider
+        shell: bash
+        run: bash scripts/test-native-provider.sh 2>&1 | tee target/test-results/native-provider.log
+      - name: Test the workspace
+        shell: bash
+        run: cargo test --workspace --locked --no-fail-fast 2>&1 | tee target/test-results/tests.log
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.os }}
+          path: target/test-results/
+          if-no-files-found: ignore

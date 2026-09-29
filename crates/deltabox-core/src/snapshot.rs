@@ -7,7 +7,7 @@ use crate::worker::{ScanEntry, ScanEntryKind};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{copy, Write};
+use std::io::{copy, Read, Write};
 use std::path::Path;
 
 pub const BASE_SCAN_FILE: &str = "base_scan.json";
@@ -260,8 +260,9 @@ fn make_owner_writable(path: &Path) -> Result<()> {
 }
 
 /// Copy `src` to `dst`, skipping files already frozen in `prev` with the same
-/// size/mtime/type. Used for checkpoint freeze so unchanged upper files are
-/// not re-copied on every checkpoint.
+/// contents, type, mode and mtime. Matching size/mtime alone cannot prove that
+/// a file is unchanged. Used for checkpoint freeze so unchanged upper files
+/// are read for comparison but not re-copied on every checkpoint.
 pub fn copy_tree_incremental(src: &Path, prev: Option<&Path>, dst: &Path) -> Result<usize> {
     let mut copied = 0usize;
     for entry in walkdir::WalkDir::new(src).follow_links(false) {
@@ -276,16 +277,10 @@ pub fn copy_tree_incremental(src: &Path, prev: Option<&Path>, dst: &Path) -> Res
             std::fs::create_dir_all(&target)?;
             continue;
         }
-        let unchanged = prev.is_some_and(|p| {
-            let prev_path = p.join(rel);
-            match (
-                std::fs::symlink_metadata(&prev_path),
-                std::fs::symlink_metadata(entry.path()),
-            ) {
-                (Ok(a), Ok(b)) => same_entry(&a, &b),
-                _ => false,
-            }
-        });
+        let unchanged = match prev {
+            Some(previous) => same_entry(previous, rel, entry.path())?,
+            None => false,
+        };
         if unchanged {
             continue;
         }
@@ -311,10 +306,67 @@ pub fn copy_tree_incremental(src: &Path, prev: Option<&Path>, dst: &Path) -> Res
     Ok(copied)
 }
 
-fn same_entry(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
-    a.len() == b.len()
-        && a.file_type().is_symlink() == b.file_type().is_symlink()
-        && a.modified().ok() == b.modified().ok()
+fn same_entry(previous_root: &Path, relative: &Path, current: &Path) -> Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+
+    // A directory may have replaced a file or a symlink since the last
+    // freeze. Never follow a previous snapshot's symlink ancestor.
+    for ancestor in relative
+        .ancestors()
+        .skip(1)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
+        match std::fs::symlink_metadata(previous_root.join(ancestor)) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Ok(false),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return Ok(false)
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let previous = previous_root.join(relative);
+    let a = match std::fs::symlink_metadata(&previous) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let b = std::fs::symlink_metadata(current)?;
+    if a.file_type() != b.file_type()
+        || a.len() != b.len()
+        || a.permissions().mode() != b.permissions().mode()
+        || a.modified()? != b.modified()?
+    {
+        return Ok(false);
+    }
+    if a.file_type().is_symlink() {
+        return Ok(std::fs::read_link(&previous)? == std::fs::read_link(current)?);
+    }
+    if !a.is_file() {
+        return Ok(false);
+    }
+    let mut previous = File::open(&previous)?;
+    let mut current = File::open(current)?;
+    let mut left = [0_u8; 64 * 1024];
+    let mut right = [0_u8; 64 * 1024];
+    let mut remaining = a.len();
+    while remaining > 0 {
+        let count = remaining.min(left.len() as u64) as usize;
+        previous.read_exact(&mut left[..count])?;
+        current.read_exact(&mut right[..count])?;
+        if left[..count] != right[..count] {
+            return Ok(false);
+        }
+        remaining -= count as u64;
+    }
+    Ok(true)
 }
 
 pub fn preserve_symlink_times(src: &Path, dst: &Path) -> Result<()> {
@@ -535,6 +587,12 @@ mod tests {
         copy_tree_incremental(src.path(), None, prev.path()).unwrap();
         // Now change one file in the live tree.
         std::fs::write(src.path().join("changed.txt"), "v2").unwrap();
+        // Force the metadata collision instead of relying on filesystem timing.
+        preserve_mtime(
+            &prev.path().join("changed.txt"),
+            &src.path().join("changed.txt"),
+        )
+        .unwrap();
         let dst = tempfile::tempdir().unwrap();
 
         let copied = copy_tree_incremental(src.path(), Some(prev.path()), dst.path()).unwrap();
@@ -544,6 +602,103 @@ mod tests {
             "v2"
         );
         assert!(!dst.path().join("same.txt").exists());
+    }
+
+    #[test]
+    fn incremental_copy_detects_changes_beyond_the_first_buffer_and_mode_changes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let src = tempfile::tempdir().unwrap();
+        let prev = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let mut bytes = vec![b'a'; 128 * 1024 + 1];
+        let large = src.path().join("large");
+        let mode = src.path().join("mode");
+        std::fs::write(&large, &bytes).unwrap();
+        std::fs::write(&mode, "unchanged bytes").unwrap();
+        std::fs::set_permissions(&mode, std::fs::Permissions::from_mode(0o600)).unwrap();
+        copy_tree_incremental(src.path(), None, prev.path()).unwrap();
+        assert_eq!(
+            copy_tree_incremental(src.path(), Some(prev.path()), dst.path()).unwrap(),
+            0
+        );
+
+        *bytes.last_mut().unwrap() = b'b';
+        std::fs::write(&large, &bytes).unwrap();
+        preserve_mtime(&prev.path().join("large"), &large).unwrap();
+        std::fs::set_permissions(&mode, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            copy_tree_incremental(src.path(), Some(prev.path()), dst.path()).unwrap(),
+            2
+        );
+        assert_eq!(std::fs::read(dst.path().join("large")).unwrap(), bytes);
+        assert_eq!(
+            std::fs::metadata(dst.path().join("mode"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
+
+    #[test]
+    fn incremental_copy_compares_dangling_symlink_targets_without_following_them() {
+        let src = tempfile::tempdir().unwrap();
+        let prev = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let link = src.path().join("link");
+        std::os::unix::fs::symlink("missing-a", &link).unwrap();
+        copy_tree_incremental(src.path(), None, prev.path()).unwrap();
+        assert_eq!(
+            copy_tree_incremental(src.path(), Some(prev.path()), dst.path()).unwrap(),
+            0
+        );
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink("missing-b", &link).unwrap();
+        preserve_symlink_times(&prev.path().join("link"), &link).unwrap();
+        assert_eq!(
+            copy_tree_incremental(src.path(), Some(prev.path()), dst.path()).unwrap(),
+            1
+        );
+        assert_eq!(
+            std::fs::read_link(dst.path().join("link")).unwrap(),
+            Path::new("missing-b")
+        );
+    }
+
+    #[test]
+    fn incremental_copy_does_not_reuse_files_below_previous_non_directories() {
+        let src = tempfile::tempdir().unwrap();
+        let prev = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("child"), "same").unwrap();
+        std::fs::write(prev.path().join("was-file"), "old").unwrap();
+        std::os::unix::fs::symlink(outside.path(), prev.path().join("was-link")).unwrap();
+        for name in ["was-file", "was-link"] {
+            std::fs::create_dir(src.path().join(name)).unwrap();
+            std::fs::copy(
+                outside.path().join("child"),
+                src.path().join(name).join("child"),
+            )
+            .unwrap();
+            preserve_mtime(
+                &outside.path().join("child"),
+                &src.path().join(name).join("child"),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            copy_tree_incremental(src.path(), Some(prev.path()), dst.path()).unwrap(),
+            2
+        );
+        for name in ["was-file", "was-link"] {
+            assert_eq!(
+                std::fs::read_to_string(dst.path().join(name).join("child")).unwrap(),
+                "same"
+            );
+        }
     }
 
     #[test]
