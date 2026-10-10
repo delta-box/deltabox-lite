@@ -1,6 +1,6 @@
 <div align="center">
 
-# Deltabox-lite
+<h1 align="center"><img src="assets/deltabox-lite-logo.svg" width="300" alt="DeltaBox Lite"></h1>
 
 **Lightweight, agent-native sandboxing with diff · commit · abort.**
 
