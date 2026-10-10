@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="220" height="46" viewBox="0 0 220 46" role="img" aria-labelledby="title">
+  <title id="title">DeltaBox Lite</title>
+  <rect x="2" y="2" width="40" height="40" fill="none" stroke="#315b41" stroke-width="1.5"/>
+  <text x="22" y="33" fill="#315b41" font-family="Inter, Arial, sans-serif" font-size="30" text-anchor="middle">Δ</text>
+  <text x="56" y="32" fill="#1c261f" font-family="Inter, Arial, sans-serif" font-size="25" font-weight="700">DeltaBox</text>
+  <text x="175" y="32" fill="#68736b" font-family="Inter, Arial, sans-serif" font-size="25" font-weight="400">Lite</text>
+</svg>

@@ -1,6 +1,12 @@
 <div align="center">
 
-<h1 align="center"><img src="assets/deltabox-lite-logo.svg" width="300" alt="DeltaBox Lite"></h1>
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/deltabox-lite-logo.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/deltabox-lite-logo-light.svg">
+    <img src="assets/deltabox-lite-logo-light.svg" width="300" alt="DeltaBox Lite">
+  </picture>
+</h1>
 
 **Lightweight, agent-native sandboxing with diff · commit · abort.**
 
