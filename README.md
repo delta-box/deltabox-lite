@@ -98,6 +98,59 @@ export PATH="$PWD/target/release:$PATH"
 
 Maintainers: see RELEASING.md for how releases are cut.
 
+### DSH (DeepSeek Harness)
+
+With DeepSeek Harness installed, add the plugin to your Web profile:
+
+```bash
+dsh plugin --profile web add dsh-deltabox
+```
+
+For Desktop, open **Plugins → Add plugin**, enter `dsh-deltabox`, and install
+it. Alternatively, use Desktop's bundled CLI:
+
+```bash
+dsh plugin --profile desktop add dsh-deltabox
+```
+
+[DSH plugin guide](https://github.com/delta-box/dsh-deltabox#readme) for
+configuration and review controls.
+
+### Pi
+
+Install Pi if needed, then add the extension:
+
+```bash
+npm install --global @earendil-works/pi-coding-agent
+pi install npm:pi-deltabox
+```
+
+Start a new Pi session in
+your project and run `/sandbox-status` to verify that the extension is active.
+Use `/sandbox-review`, `/sandbox-commit`, and `/sandbox-abort` to review, keep,
+or discard changes. See the
+[Pi extension guide](https://github.com/delta-box/pi-deltabox#readme) for
+configuration, including explicit command isolation settings.
+
+Both integrations use FUSE on Linux for CB-CoW (`/dev/fuse` and `fusermount3`
+or `fusermount`) and APFS/FSEvents on macOS. Pi's native mode does not silently
+fall back: explicitly select `copy-private` if CB-CoW is unavailable.
+
+### Let an AI agent install it
+
+Copy this prompt into an AI coding agent with terminal access:
+
+```text
+Install DeltaBox Lite by following the instructions at
+https://raw.githubusercontent.com/delta-box/deltabox-lite/main/install-prompt.txt
+Detect my environment, install the appropriate runtime and any DSH or Pi
+integration I use, and verify the installation with the disposable smoke test.
+```
+
+The plain-text [installation prompt](install-prompt.txt) covers environment
+checks, integration setup, and verification. You can also paste its contents
+directly into your agent.
+
 ## Quick start
 
 For a first transaction, create a project with one ordinary file and discard a
@@ -209,11 +262,8 @@ strict mode closes a sentinel boundary before each result, detects external
 writes, and refuses an unsafe abort. Use `cbcow-private` when host isolation is
 required before commit.
 
-The fastest way to see it with an agent is the Pi extension:
-
-```bash
-pi install npm:pi-deltabox
-```
+For agent setup, see the [DSH](#dsh-deepseek-harness) and [Pi](#pi)
+installation instructions above.
 
 ## How it works
 
