@@ -11,6 +11,16 @@ private APFS-cloned `LIVE` tree and conflict-checks touched host paths before
 publishing them at commit. State is kept in a hidden sibling of the project by
 default; `DELTABOX_STATE_DIR` overrides that location.
 
+Both sandboxed native modes support the per-command `read-write` execution
+profile. In through mode the real project remains writable and tracked; in
+private mode commands write the LIVE tree and direct host-project access stays
+denied. Both protect the accepted baseline, session metadata, command token,
+and helper endpoints even when the filesystem root is writable. Private LIVE
+and command HOME/TMPDIR remain usable within the protected state tree.
+Project changes are reviewable and rollback-able; writes elsewhere on the host
+are immediate and cannot be rolled back. Through-mode project writes are also
+immediately visible, and retain the exclusive-writer contract described below.
+
 Each session starts a small FSEvents helper to retain the warm file-level event
 stream across CLI processes. The helper owns no filesystem state: if it exits,
 the next operation rebuilds it from the persisted event ID and device UUID.

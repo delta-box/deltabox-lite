@@ -75,11 +75,17 @@ impl Session {
     }
 
     fn exec(&self, script: &str) -> Value {
+        self.exec_profile(script, "workspace-write")
+    }
+
+    fn exec_profile(&self, script: &str, profile: &str) -> Value {
         let output = self.run([
             "exec",
             &self.id,
             "--project",
             self.project.path().to_str().unwrap(),
+            "--execution-profile",
+            profile,
             "--",
             "/bin/sh",
             "-c",
@@ -588,6 +594,167 @@ fn assert_ok(output: &Output) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn read_write_profiles_preserve_macos_tracking_and_protected_state() {
+    for mode in ["cbcow-through", "cbcow-private"] {
+        for strict in [false, true] {
+            let session = Session::start_with(mode, strict);
+            let outside = tempfile::Builder::new()
+                .prefix("deltabox-outside-")
+                .tempdir_in("/private/tmp")
+                .unwrap();
+            let escaped = outside.path().join("escaped.txt");
+            let script = format!("printf outside > '{}'", escaped.display());
+            assert_ne!(session.exec(&script)["exit_code"], 0);
+            assert!(!escaped.exists());
+
+            let widened =
+                session.exec_profile(&format!("printf changed > a.txt; {script}"), "read-write");
+            assert_eq!(
+                widened["exit_code"], 0,
+                "{mode}, strict={strict}: {widened}"
+            );
+            assert_eq!(std::fs::read_to_string(&escaped).unwrap(), "outside");
+            assert_eq!(session.status()["pending_changes"], 1);
+
+            // Locate authoritative engine state from the public session record,
+            // rather than assuming the native state base matches the CLI override.
+            let projects = session.state.path().join("projects");
+            let project_state = std::fs::read_dir(projects)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            let metadata = project_state.join(&session.id);
+            let record: Value =
+                serde_json::from_slice(&std::fs::read(metadata.join("macos-native.json")).unwrap())
+                    .unwrap();
+            let engine_state = PathBuf::from(record["state_root"].as_str().unwrap());
+            let base = engine_state.join("engine/base/a.txt");
+            let token = engine_state.join("command-token");
+            let token_before = std::fs::read(&token).unwrap();
+            for path in [
+                &base,
+                &token,
+                &metadata.join("session.json"),
+                &session.command_runtime().join("command.ready"),
+            ] {
+                let probe = format!(
+                    "if cat '{0}'; then exit 1; fi; if printf corrupt > '{0}'; then exit 2; fi; if rm '{0}'; then exit 3; fi",
+                    path.display());
+                let result = session.exec_profile(&probe, "read-write");
+                assert_eq!(
+                    result["exit_code"],
+                    0,
+                    "protected {}: {result}",
+                    path.display()
+                );
+                assert!(path.exists());
+            }
+            assert_eq!(std::fs::read_to_string(&base).unwrap(), "accepted");
+            assert_eq!(std::fs::read(&token).unwrap(), token_before);
+            // Even allow_audit networking must not reach the privileged helpers.
+            for socket in [
+                session.command_runtime().join("command.sock"),
+                Path::new("/private/tmp").join(format!("deltafs-{}.sock", session.id)),
+            ] {
+                if !socket.exists() {
+                    continue;
+                }
+                let result = session.exec_profile(
+                    &format!(
+                        r#"/usr/bin/python3 -c 'import socket, sys
+s = socket.socket(socket.AF_UNIX)
+try:
+ s.connect(sys.argv[1])
+except PermissionError:
+ sys.exit(0)
+sys.exit(1)' '{}'"#,
+                        socket.display()
+                    ),
+                    "read-write",
+                );
+                assert_eq!(
+                    result["exit_code"],
+                    0,
+                    "control socket {}: {result}",
+                    socket.display()
+                );
+            }
+            for path in [
+                engine_state.join("engine"),
+                engine_state.join("runtime"),
+                session.command_runtime(),
+                metadata.clone(),
+                project_state.clone(),
+                engine_state.parent().unwrap().to_path_buf(),
+            ] {
+                let result = session.exec_profile(
+                    &format!("if mv '{0}' '{0}.moved'; then exit 1; fi", path.display()),
+                    "read-write",
+                );
+                assert_eq!(
+                    result["exit_code"],
+                    0,
+                    "rename protected ancestor {}: {result}",
+                    path.display()
+                );
+                assert!(path.exists());
+            }
+            let scratch = session.exec_profile(
+                "printf home > \"$HOME/probe\" && printf tmp > \"$TMPDIR/probe\"",
+                "read-write",
+            );
+            assert_eq!(scratch["exit_code"], 0, "{scratch}");
+
+            if mode == "cbcow-private" {
+                let bypass = session.exec_profile(
+                    &format!(
+                        "printf bypass > '{}/bypass.txt'",
+                        session.project.path().display()
+                    ),
+                    "read-write",
+                );
+                assert_ne!(bypass["exit_code"], 0);
+                assert!(!session.project.path().join("bypass.txt").exists());
+                assert_eq!(
+                    std::fs::read_to_string(session.project.path().join("a.txt")).unwrap(),
+                    "accepted"
+                );
+            } else {
+                assert_eq!(
+                    std::fs::read_to_string(session.project.path().join("a.txt")).unwrap(),
+                    "changed"
+                );
+            }
+
+            // A warm command helper must rebuild its profile on each request.
+            assert_ne!(session.exec(&script)["exit_code"], 0);
+            let abort = session.run([
+                "abort",
+                &session.id,
+                "--project",
+                session.project.path().to_str().unwrap(),
+            ]);
+            assert_ok(&abort);
+            assert_eq!(
+                std::fs::read_to_string(session.project.path().join("a.txt")).unwrap(),
+                "accepted"
+            );
+            assert_eq!(std::fs::read_to_string(&escaped).unwrap(), "outside");
+            let changed = session.exec_profile("printf kept > a.txt", "read-write");
+            assert_eq!(changed["exit_code"], 0, "{changed}");
+            assert_ok(&session.commit());
+            assert_eq!(
+                std::fs::read_to_string(session.project.path().join("a.txt")).unwrap(),
+                "kept"
+            );
+            session.stop();
+        }
+    }
 }
 
 #[test]
