@@ -9,6 +9,8 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-14
+
 ### Fixed
 
 - Allow sandboxed `read-write` execution in macOS `cbcow-through` sessions
