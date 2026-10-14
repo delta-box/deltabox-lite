@@ -108,8 +108,9 @@ pub enum ExecutionProfile {
 }
 
 impl ExecutionProfile {
-    /// Reject a widening profile whose sandbox view is nested in the backing
-    /// project.
+    /// For modes that isolate a backing project, reject a widening profile
+    /// whose working directory overlaps that project. Direct through-mode
+    /// writers do not use this check: the project is their tracked workspace.
     ///
     /// `read-write` grants the filesystem root, so the backend must keep
     /// denying the backing project to preserve the workspace guarantee. When
@@ -123,7 +124,7 @@ impl ExecutionProfile {
     ) -> crate::Result<()> {
         if self == Self::ReadWrite && view.starts_with(host_project) {
             return Err(crate::Error::Unsupported(format!(
-                "read-write execution requires session state outside the backing project ({} is nested in {})",
+                "read-write execution requires a working directory outside the denied backing project (working directory {} overlaps backing project {})",
                 view.display(),
                 host_project.display()
             )));
@@ -536,6 +537,23 @@ pub struct AbortResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn widening_a_private_workspace_keeps_the_backing_project_deniable() {
+        let host = std::path::Path::new("/project");
+        for view in [host, std::path::Path::new("/project/mount")] {
+            let error = ExecutionProfile::ReadWrite
+                .ensure_backing_project_is_deniable(view, host)
+                .unwrap_err();
+            assert!(error.to_string().contains("working directory"));
+            ExecutionProfile::WorkspaceWrite
+                .ensure_backing_project_is_deniable(view, host)
+                .unwrap();
+        }
+        ExecutionProfile::ReadWrite
+            .ensure_backing_project_is_deniable(std::path::Path::new("/state/mount"), host)
+            .unwrap();
+    }
 
     #[test]
     fn request_json_round_trip() {

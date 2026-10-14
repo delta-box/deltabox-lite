@@ -11,7 +11,7 @@ use crate::snapshot::{
 };
 use crate::worker::{read_capped, scan_root, ScanEntry};
 use base64::Engine;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
@@ -343,6 +343,7 @@ impl SeatbeltBackend {
             &host,
             proxy.as_ref().map(|proxy| proxy.port),
             &tool_roots,
+            spec.resolved_deny_paths.as_deref().unwrap_or_default(),
         )?;
         Ok(SessionState {
             spec: spec.clone(),
@@ -788,6 +789,7 @@ fn build_profile(
     host: &Path,
     proxy_port: Option<u16>,
     tool_roots: &[PathBuf],
+    protected_paths: &[PathBuf],
 ) -> Result<String> {
     let mut lines = vec![
         "(version 1)".to_string(),
@@ -894,6 +896,48 @@ fn build_profile(
                 "(deny file-write-create file-write-unlink {filter})"
             ));
         }
+    }
+
+    // Broad filesystem grants must never expose authoritative session data.
+    // A private LIVE tree and command scratch can be nested in engine state;
+    // carve out only those writable trees, not the runtime/control directory.
+    let scratch = [runtime.join("home"), runtime.join("tmp")];
+    let mut anchors = BTreeSet::new();
+    for protected in protected_paths {
+        let exceptions: Vec<&Path> = std::iter::once(root)
+            .chain(scratch.iter().map(PathBuf::as_path))
+            .filter(|path| *path != protected && path.starts_with(protected))
+            .collect();
+        let mut filter = format!("(subpath {})", quote_path(protected));
+        for exception in &exceptions {
+            filter = format!(
+                "(require-all {filter} (require-not (subpath {})))",
+                quote_path(exception)
+            );
+        }
+        lines.push(format!("(deny file-read* file-write* {filter})"));
+        // Keep LIVE/scratch roots and every protected ancestor stable: a
+        // parent rename could otherwise relocate state without opening it.
+        for exception in &exceptions {
+            anchors.extend(exception.ancestors());
+        }
+        anchors.extend(protected.ancestors());
+        // Unix-domain sockets use network rules as well as filesystem rules.
+        lines.push(format!(
+            "(deny network* (local unix-socket (subpath {})))",
+            quote_path(protected)
+        ));
+        lines.push(format!(
+            "(deny network* (remote unix-socket (subpath {})))",
+            quote_path(protected)
+        ));
+    }
+
+    for anchor in anchors {
+        lines.push(format!(
+            "(deny file-write-unlink (literal {}))",
+            quote_path(anchor)
+        ));
     }
 
     match policy.network.mode {
@@ -1106,6 +1150,7 @@ mod tests {
             Path::new("/tmp/host"),
             None,
             &[],
+            &[],
         )
         .unwrap();
         assert!(profile.contains("/tmp/a project"));
@@ -1124,6 +1169,7 @@ mod tests {
             Path::new("/tmp/host"),
             None,
             &[],
+            &[],
         )
         .unwrap();
         assert!(!profile.contains("deny file-read* file-write* (subpath \"/tmp/host\")"));
@@ -1137,6 +1183,7 @@ mod tests {
             Path::new("/tmp/runtime"),
             Path::new("/tmp/host"),
             None,
+            &[],
             &[],
         )
         .unwrap();
@@ -1214,6 +1261,7 @@ mod tests {
             Path::new("/tmp/runtime"),
             Path::new("/tmp/host"),
             Some(43210),
+            &[],
             &[],
         )
         .unwrap();

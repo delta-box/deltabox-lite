@@ -536,8 +536,13 @@ impl Manager {
             CommandExecutionMode::Sandboxed => {
                 let mut policy = self.policy(&meta)?;
                 policy.apply_execution_profile(execution_profile);
-                execution_profile
-                    .ensure_backing_project_is_deniable(&state.live(), &self.project)?;
+                // Through mode tracks writes in the real project; only private
+                // workspaces must keep commands away from the backing tree.
+                if state.status().mode == Mode::Private {
+                    execution_profile
+                        .ensure_backing_project_is_deniable(&state.live(), &self.project)?;
+                }
+                let endpoint = command_endpoint(&record);
                 if !policy
                     .filesystem
                     .deny
@@ -551,14 +556,22 @@ impl Manager {
                     host_project: Some(self.project.clone()),
                     store_dir: record.state_root.join("runtime"),
                     policy,
-                    resolved_deny_paths: None,
+                    resolved_deny_paths: Some(vec![
+                        self.root.clone(),
+                        record.state_root.clone(),
+                        endpoint
+                            .socket
+                            .parent()
+                            .expect("command runtime directory")
+                            .into(),
+                        state.event_socket(),
+                    ]),
                 };
                 let request = ExecRequest {
                     argv,
                     cwd,
                     env: command_executor::capture_environment(env),
                 };
-                let endpoint = command_endpoint(&record);
                 if !endpoint.token_file.exists() {
                     write_file(
                         &endpoint.token_file,

@@ -90,9 +90,10 @@ The same field travels through every adapter: `execution_profile` on
 
 Profiles widen access; they never relax the protected deny set. Under
 `read-write`, the workspace still routes through Deltabox, so its changes stay
-visible to diff, checkpoint, commit, and abort, while the backing project, the
-session state root, and the helper endpoints remain denied. Two consequences
-are worth stating explicitly:
+visible to diff, checkpoint, commit, and abort. Engine state and helper
+endpoints remain denied. Linux FUSE and private-workspace modes also deny
+direct backing-project access; macOS through mode tracks writes in the real
+project itself. The following rules apply:
 
 - **The command's `HOME` and `TMPDIR` are session scratch, not host paths.**
   They stay writable under every profile, `read-write` included: widening a
@@ -101,11 +102,15 @@ are worth stating explicitly:
   exists for commands whose effect is inherently host-wide (`apt install`,
   service restarts, `~/.cache` population). Those writes are outside DeltaFS,
   so only the workspace portion of the turn can be reverted.
-- **`read-write` needs the workspace outside the backing project.**
-  `read-write` grants the filesystem root, so the backend keeps denying the
-  backing project to preserve the workspace guarantee. A view nested inside
-  that project cannot be expressed and the command fails closed with
-  `unsupported` instead of exposing the host tree.
+- **Isolated views must stay outside the denied backing project.**
+  Linux FUSE and private-workspace modes retain the backing-project deny under
+  `read-write`. A view inside that denied tree is rejected with `unsupported`.
+  macOS `cbcow-through` instead uses the project as its tracked workspace, so
+  it allows project access under both profiles. Its accepted baseline, session
+  metadata, authentication tokens, and helper endpoints remain protected;
+  only the private LIVE tree and command HOME/TMPDIR are exempt within state.
+  Through-mode writes are immediately visible in the project; abort restores
+  the baseline under the existing exclusive-writer contract.
 
 `git` isolation and the unsandboxed native profile reject `read-write`: neither
 can widen host access without dropping the workspace guarantee.
