@@ -286,10 +286,11 @@ deltabox exec "$SESSION" --project /abs/path/my-project \
   --execution-profile read-write -- sh -c 'sudo apt-get install -y ripgrep'
 ```
 
-The workspace still routes through Deltabox under either profile, so its changes
-stay diff/commit/abort-able, and the backing project, engine state, and helper
-endpoints stay denied. Host writes outside the workspace are outside DeltaFS
-and cannot be rolled back.
+Workspace changes stay visible to diff, commit, and abort under either profile.
+Linux FUSE and private-workspace modes deny direct access to the backing project;
+macOS `cbcow-through` writes the real project and tracks those changes with
+APFS/FSEvents. Engine state and helper endpoints stay denied in both cases.
+Host writes outside the workspace cannot be rolled back.
 
 ## Performance
 

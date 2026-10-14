@@ -109,10 +109,12 @@ for that one command without changing the session: `workspace-write` keeps
 writes inside the session workspace, and `read-write` additionally reaches the
 rest of the host filesystem. The workspace stays a Deltabox-owned tree either
 way, so its changes remain visible to diff, checkpoint, commit, and abort,
-while the backing project, engine state, and helper endpoints stay denied.
-Because `read-write` grants the filesystem root, it requires the session state
-to live outside the backing project; otherwise the backend rejects the command
-with `unsupported`. See [policy reference](policy.md#execution-profiles).
+while engine state and helper endpoints stay denied. Linux FUSE and
+private-workspace modes also deny direct backing-project access, requiring the
+working directory to live outside that denied tree for `read-write`; an
+overlapping directory is rejected with `unsupported`. macOS `cbcow-through`
+uses the real project as its tracked workspace and supports both profiles
+without denying that project. See [policy reference](policy.md#execution-profiles).
 
 `DiffResult` = `{from, to, pending_changes, changes}` where each `Change` is
 `{path, kind: added|modified|deleted, old_size, new_size, is_binary,
