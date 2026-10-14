@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install the deltabox CLI from a GitHub release.
 #
-#   curl -fsSL https://raw.githubusercontent.com/Ddnirvana/deltabox-lite/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/delta-box/deltabox-lite/main/scripts/install.sh | sh
 #
 # Picks the tarball for this machine, verifies its sha256 against the sidecar
 # published next to it, and puts `deltabox` in $HOME/.local/bin. No sudo, no
@@ -13,7 +13,7 @@
 #
 set -eu
 
-repo="Ddnirvana/deltabox-lite"
+repo="delta-box/deltabox-lite"
 
 log() { printf 'deltabox-install: %s\n' "$*" >&2; }
 die() { log "error: $*"; exit 1; }

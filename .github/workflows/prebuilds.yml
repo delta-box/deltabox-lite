@@ -180,7 +180,7 @@ jobs:
     env:
       TAG: ${{ github.ref_name }}
       HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-      HOMEBREW_TAP_REPO: Ddnirvana/homebrew-tap
+      HOMEBREW_TAP_REPO: delta-box/homebrew-tap
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

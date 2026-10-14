@@ -62,14 +62,14 @@ Run a command, inspect its change set, and choose whether to keep or discard it:
 ## Install
 
 Prebuilt binaries ship for macOS (arm64, x64) and Linux (x64, arm64) with each
-[GitHub release](https://github.com/Ddnirvana/deltabox-lite/releases). Pick one:
+[GitHub release](https://github.com/delta-box/deltabox-lite/releases). Pick one:
 
 ```bash
 # Homebrew (macOS and Linux)
-brew install ddnirvana/tap/deltabox
+brew install delta-box/tap/deltabox
 
 # One-line installer: verifies the download's sha256, installs to ~/.local/bin, no sudo
-curl -fsSL https://raw.githubusercontent.com/Ddnirvana/deltabox-lite/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/delta-box/deltabox-lite/main/scripts/install.sh | sh
 
 # npm: the CLI plus a Node-API addon for embedding
 npm install --global deltabox-lite

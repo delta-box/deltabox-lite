@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "license": "Apache-2.0",
   "description": "Native sandbox runtime with diff, commit, and abort for AI coding agents",
-  "repository": "https://github.com/Ddnirvana/deltabox-lite",
+  "repository": "https://github.com/delta-box/deltabox-lite",
   "main": "index.cjs",
   "types": "index.d.ts",
   "bin": {

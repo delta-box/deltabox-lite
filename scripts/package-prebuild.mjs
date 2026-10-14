@@ -69,7 +69,7 @@ try {
       version,
       description: `Native ${os}/${cpu} prebuild for deltabox-lite`,
       license: "Apache-2.0",
-      repository: "https://github.com/Ddnirvana/deltabox-lite",
+      repository: "https://github.com/delta-box/deltabox-lite",
       os: [os],
       cpu: [cpu],
       files: ["bin", "native", "README.md", "LICENSE"],

@@ -11,7 +11,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/Ddnirvana/deltabox-lite"
+repository = "https://github.com/delta-box/deltabox-lite"
 rust-version = "1.87"
 
 [workspace.dependencies]

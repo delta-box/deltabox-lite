@@ -30,5 +30,5 @@ Linux CB-CoW modes require `/dev/fuse` and `fusermount3` or `fusermount` on the
 host. Deltabox otherwise reports the reason and falls back to `copy-private`
 unless the requested mode is required.
 
-See the [deltabox-lite repository](https://github.com/Ddnirvana/deltabox-lite)
+See the [deltabox-lite repository](https://github.com/delta-box/deltabox-lite)
 for usage and policy documentation.
