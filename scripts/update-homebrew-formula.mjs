@@ -37,7 +37,7 @@ import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const formulaPath = join(root, "homebrew", "deltabox.rb");
-const repo = "Ddnirvana/deltabox-lite";
+const repo = "delta-box/deltabox-lite";
 const targets = [
   "aarch64-apple-darwin",
   "x86_64-apple-darwin",

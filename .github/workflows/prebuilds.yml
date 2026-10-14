@@ -156,7 +156,7 @@ jobs:
             if npm view "$name@$version" version >/dev/null 2>&1; then
               echo "$name@$version is already on npm, skipping"
             else
-              npm publish "$tgz" --access public
+              npm publish "./$tgz" --access public
             fi
           }
           version="${TAG#v}"
@@ -180,7 +180,7 @@ jobs:
     env:
       TAG: ${{ github.ref_name }}
       HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-      HOMEBREW_TAP_REPO: Ddnirvana/homebrew-tap
+      HOMEBREW_TAP_REPO: delta-box/homebrew-tap
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

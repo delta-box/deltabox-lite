@@ -25,7 +25,7 @@ a clone with push access to `main` and the `gh` CLI signed in.
    `deltabox-lite-darwin-x64`, `deltabox-lite-linux-arm64`, and
    `deltabox-lite-linux-x64`. Those names must be claimable, or already
    owned by the token's account.
-2. **The Homebrew tap** — create `Ddnirvana/homebrew-tap` with a `Formula/`
+2. **The Homebrew tap** — create `delta-box/homebrew-tap` with a `Formula/`
    directory, then add repository secret `HOMEBREW_TAP_TOKEN`: a
    fine-grained PAT with `Contents: read/write` on that repo. Without it,
    the `homebrew` job warns and skips instead of failing.
@@ -70,7 +70,7 @@ a clone with push access to `main` and the `gh` CLI signed in.
 3. **Flip to published** — once every platform has succeeded, the draft
    release is published.
 4. **Homebrew** — a separate job rewrites `homebrew/deltabox.rb` with the
-   release's checksums and pushes it to `Ddnirvana/homebrew-tap` (skipped
+   release's checksums and pushes it to `delta-box/homebrew-tap` (skipped
    with a warning if the tap token is not configured).
 
 A manual `workflow_dispatch` run from the Actions tab only builds and
@@ -104,7 +104,7 @@ DELTABOX_VERSION=0.2.0 DELTABOX_BASE_URL=file:///abs/path/to/dist \
 ```
 
 **The Homebrew formula**, against a throwaway local tap instead of the real
-`Ddnirvana/homebrew-tap`. The committed formula carries placeholder checksums,
+`delta-box/homebrew-tap`. The committed formula carries placeholder checksums,
 so first render one that points at a local build served over HTTP (a
 `.sha256` sidecar is needed for every target; copy the real one under the
 other three names for a single-platform test):
