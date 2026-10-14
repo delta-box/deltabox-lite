@@ -9,6 +9,13 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+### Fixed
+
+- Allow sandboxed `read-write` execution in macOS `cbcow-through` sessions
+  while protecting rollback baselines, metadata, tokens, and helper endpoints.
+- Describe working-directory conflicts accurately when an isolated workspace
+  overlaps its denied backing project. Linux FUSE isolation is unchanged.
+
 ## [0.1.0] - 2026-10-14
 
 ### Added
