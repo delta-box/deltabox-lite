@@ -9,6 +9,8 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-14
+
 ### Added
 
 - Prebuilt release tarballs (`deltabox-<version>-<target>.tar.gz`) with
