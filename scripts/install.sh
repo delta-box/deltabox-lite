@@ -10,6 +10,7 @@
 #   DELTABOX_VERSION=0.2.0        install this version instead of the latest
 #   DELTABOX_INSTALL_DIR=/usr/local/bin   install somewhere else
 #   DELTABOX_BASE_URL=file:///path/to/dist   fetch from a local build (testing)
+#   DELTABOX_PROJECT_DIR=/path/to/project   check this volume (default: current directory)
 #
 set -eu
 
@@ -73,6 +74,62 @@ else
   die "shasum or sha256sum is required to verify the download"
 fi
 
+# These are advisory prerequisites, not a mount/clone smoke test. The runtime
+# makes the final capability decision when a session starts.
+check_filesystem_environment() {
+  case "$os" in
+    Linux)
+      if [ ! -c /dev/fuse ]; then
+        log "warning: /dev/fuse is missing or is not a character device; Linux CB-CoW needs FUSE. Enable FUSE on the host and expose /dev/fuse if running in a container."
+      elif [ ! -r /dev/fuse ] || [ ! -w /dev/fuse ]; then
+        log "warning: /dev/fuse is not readable and writable by the current user; check device permissions before using CB-CoW."
+      else
+        log "FUSE device: /dev/fuse is readable and writable"
+      fi
+      if command -v fusermount3 >/dev/null 2>&1; then
+        log "FUSE helper: fusermount3"
+      elif command -v fusermount >/dev/null 2>&1; then
+        log "FUSE helper: fusermount"
+      else
+        log "warning: neither fusermount3 nor fusermount is on PATH; install your distribution's FUSE userspace package for CB-CoW."
+      fi
+      log "FUSE checks do not verify mount permissions; if CB-CoW is unavailable, explicitly select --fs-mode copy-private."
+      ;;
+    Darwin)
+      project_dir="${DELTABOX_PROJECT_DIR:-.}"
+      if [ ! -d "$project_dir" ]; then
+        log "warning: project directory does not exist: $project_dir; cannot check APFS. Set DELTABOX_PROJECT_DIR to an existing project directory."
+      elif ! command -v diskutil >/dev/null 2>&1 || ! command -v plutil >/dev/null 2>&1; then
+        log "warning: diskutil and plutil are required to check the project's APFS volume; APFS check skipped."
+      else
+        # diskutil accepts a device or mount point, not an arbitrary project
+        # subdirectory. Resolve its backing device with POSIX df first.
+        project_path=$(cd "$project_dir" && pwd -P) || project_path=""
+        filesystem=""
+        if [ -n "$project_path" ]; then
+          project_device=$(df -P "$project_path" 2>/dev/null | awk 'NR == 2 { print $1 }') || project_device=""
+          if [ -n "$project_device" ]; then
+            filesystem=$(diskutil info -plist "$project_device" 2>/dev/null \
+              | plutil -extract FilesystemType raw -o - - 2>/dev/null) || filesystem=""
+          fi
+        fi
+        case "$filesystem" in
+          apfs)
+            log "APFS volume detected for project: $project_path"
+            ;;
+          "")
+            log "warning: could not determine the filesystem for $project_dir; verify that the project is on APFS before using native CB-CoW."
+            ;;
+          *)
+            log "warning: project $project_path uses $filesystem, not APFS; use an APFS project volume for native CB-CoW or explicitly select --fs-mode copy-private."
+            ;;
+        esac
+      fi
+      log "APFS check applies only to ${project_dir}; it does not verify clone support between the project and session state directories."
+      ;;
+  esac
+}
+
 main() {
   # --- resolve the install directory --------------------------------------------
   if [ -n "${DELTABOX_INSTALL_DIR:-}" ]; then
@@ -105,6 +162,8 @@ main() {
     fi
   fi
   target="${arch_part}-${os_part}"
+
+  check_filesystem_environment
 
   # --- resolve the version and download location --------------------------------
   version="${DELTABOX_VERSION:-}"
