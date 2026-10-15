@@ -16,7 +16,7 @@ Give agents a confined workspace with explicit diff, commit, and abort semantics
 [![npm](https://img.shields.io/npm/v/deltabox-lite?logo=npm)](https://www.npmjs.com/package/deltabox-lite)
 [![Rust](https://img.shields.io/badge/rust-1.87+-orange.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey.svg)](#)
-[![Pi](https://img.shields.io/badge/pi-deltabox-purple.svg)](https://github.com/Ddnirvana/pi-deltabox)
+[![Pi](https://img.shields.io/badge/pi-deltabox-purple.svg)](https://github.com/delta-box/pi-deltabox)
 
 </div>
 
@@ -370,8 +370,11 @@ isolation.
 - `crates/deltabox-core` — sessions, checkpoints, diff/commit/abort, policy,
   journal, platform backends.
 - `crates/deltabox-cli` — the `deltabox` command-line binary.
+- `crates/deltabox-node` - the `deltabox` Node-API bindings.
 - `deltafs-fuse` — the standalone commit-biased state engine, FUSE adapter,
   helper, and local control protocol.
+- `plugin` - dsh and pi plugin
+- `npm` - npm package
 - `docs/policy.md` — policy schema and enforcement boundaries.
 - `docs/macos.md` — macOS backend behavior and compatibility matrix.
 
