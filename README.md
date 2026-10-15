@@ -107,6 +107,8 @@ cargo build --release
 export PATH="$PWD/target/release:$PATH"
 ```
 
+## Plugin
+
 ### DSH (DeepSeek Harness)
 
 With DeepSeek Harness installed, add the plugin to your Web profile:
