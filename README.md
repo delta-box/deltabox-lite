@@ -17,6 +17,7 @@ Give agents a confined workspace with explicit diff, commit, and abort semantics
 [![Rust](https://img.shields.io/badge/rust-1.87+-orange.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey.svg)](#)
 [![Pi](https://img.shields.io/badge/pi-deltabox-purple.svg)](https://github.com/delta-box/pi-deltabox)
+[![DSH](https://img.shields.io/badge/dsh-deltabox-blue.svg)](https://github.com/delta-box/dsh-deltabox)
 
 </div>
 
