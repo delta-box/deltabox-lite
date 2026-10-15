@@ -61,42 +61,50 @@ Run a command, inspect its change set, and choose whether to keep or discard it:
 
 ## Install
 
-Prebuilt binaries ship for macOS (arm64, x64) and Linux (x64, arm64) with each
-[GitHub release](https://github.com/delta-box/deltabox-lite/releases). Pick one:
+### Let AI agents install
+
+Copy this prompt into an AI coding agent with terminal access:
+
+```text
+Install DeltaBox Lite by following the instructions at
+https://raw.githubusercontent.com/delta-box/deltabox-lite/main/install-prompt.txt
+Detect my environment, install the appropriate runtime and any DSH or Pi
+integration I use, and verify the installation with the disposable smoke test.
+```
+
+The plain-text [installation prompt](install-prompt.txt) covers environment
+checks, integration setup, and verification. You can also paste its contents
+directly into your agent.
+
+### Manual Install
+
+Run the following on Mac or Linux to install deltabox-lite CLI:
+
+```
+curl -fsSL https://raw.githubusercontent.com/delta-box/deltabox-lite/main/scripts/install.sh | sh
+```
+
+The prebuilt binaries ship for macOS (arm64, x64) and Linux (x64, arm64) can be found on
+[GitHub release](https://github.com/delta-box/deltabox-lite/releases).
+
+deltabox-lite CLI can also be installed via the following package managers:
 
 ```bash
-# Homebrew (macOS and Linux)
-brew install delta-box/tap/deltabox
-
-# One-line installer: verifies the download's sha256, installs to ~/.local/bin, no sudo
-curl -fsSL https://raw.githubusercontent.com/delta-box/deltabox-lite/main/scripts/install.sh | sh
-
-# npm: the CLI plus a Node-API addon for embedding
+# Install using npm
 npm install --global deltabox-lite
 ```
 
-**Embedding**: The npm package exposes both the native executable and a Node-API addon.
-Integrations can call `loadNative()` to keep session coordination, configuration,
-and byte I/O inside the Node host process; only the requested commands and the
-platform filesystem helper remain child processes.
+```bash
+# Install using Homebrew
+brew install delta-box/tap/deltabox
+```
 
-The installer honours `DELTABOX_VERSION` and `DELTABOX_INSTALL_DIR`. Every
-release also carries plain `deltabox-<version>-<target>.tar.gz` tarballs with a
-`.sha256` sidecar for manual installs.
-
-The Homebrew tap and npm packages are populated by the release pipeline; if a
-channel is not yet available for your platform, build from source instead.
-Linux prebuilt binaries are built on Ubuntu 24.04 (glibc 2.39) and may not run
-on distributions with an older glibc; build from source there.
-
-Or build from source with Rust 1.87+:
+### Build from source
 
 ```bash
 cargo build --release
 export PATH="$PWD/target/release:$PATH"
 ```
-
-Maintainers: see RELEASING.md for how releases are cut.
 
 ### DSH (DeepSeek Harness)
 
@@ -133,23 +141,7 @@ or discard changes. See the
 configuration, including explicit command isolation settings.
 
 Both integrations use FUSE on Linux for CB-CoW (`/dev/fuse` and `fusermount3`
-or `fusermount`) and APFS/FSEvents on macOS. Pi's native mode does not silently
-fall back: explicitly select `copy-private` if CB-CoW is unavailable.
-
-### Let an AI agent install it
-
-Copy this prompt into an AI coding agent with terminal access:
-
-```text
-Install DeltaBox Lite by following the instructions at
-https://raw.githubusercontent.com/delta-box/deltabox-lite/main/install-prompt.txt
-Detect my environment, install the appropriate runtime and any DSH or Pi
-integration I use, and verify the installation with the disposable smoke test.
-```
-
-The plain-text [installation prompt](install-prompt.txt) covers environment
-checks, integration setup, and verification. You can also paste its contents
-directly into your agent.
+or `fusermount`) and APFS/FSEvents on macOS.
 
 ## Quick start
 
@@ -261,9 +253,6 @@ writer. Fast `exec` defers FSEvents accounting to the next state operation;
 strict mode closes a sentinel boundary before each result, detects external
 writes, and refuses an unsafe abort. Use `cbcow-private` when host isolation is
 required before commit.
-
-For agent setup, see the [DSH](#dsh-deepseek-harness) and [Pi](#pi)
-installation instructions above.
 
 ## How it works
 
