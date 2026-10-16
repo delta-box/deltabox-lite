@@ -56,6 +56,9 @@ enum Command {
     /// Run the in-sandbox worker loop (spawned by the Linux backend).
     #[command(hide = true)]
     Worker(WorkerArgs),
+    #[cfg(windows)]
+    #[command(name = "__windows-fs-helper", hide = true)]
+    WindowsFsHelper(WindowsFsHelperArgs),
     /// Run a session-scoped filesystem helper.
     #[cfg(target_os = "linux")]
     #[command(hide = true)]
@@ -287,6 +290,13 @@ struct WorkerArgs {
     root: PathBuf,
     #[arg(long)]
     runtime: PathBuf,
+}
+
+#[cfg(windows)]
+#[derive(clap::Args)]
+struct WindowsFsHelperArgs {
+    #[arg(long)]
+    state_dir: PathBuf,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -608,6 +618,13 @@ fn main() -> anyhow::Result<()> {
         },
         Command::Worker(args) => {
             deltabox_core::worker::run_worker(&args.root, &args.runtime)?;
+        }
+        #[cfg(windows)]
+        Command::WindowsFsHelper(args) => {
+            if let Err(error)=deltabox_core::windows::helper::run(&args.state_dir) {
+                let _=std::fs::write(args.state_dir.join("helper.log"),error.to_string());
+                return Err(error.into());
+            }
         }
         #[cfg(target_os = "linux")]
         Command::FsHelper(args) => {
