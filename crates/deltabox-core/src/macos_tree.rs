@@ -9,6 +9,8 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 const ACL_TYPE_EXTENDED: libc::c_int = 0x0000_0100;
+const CLONE_NOFOLLOW: u32 = 0x0001;
+const CLONE_ACL: u32 = 0x0004;
 
 unsafe extern "C" {
     fn acl_get_link_np(path: *const libc::c_char, kind: libc::c_int) -> *mut c_void;
@@ -55,6 +57,58 @@ pub(crate) fn clone_path(
             "unsupported project entry: {}",
             source.display()
         )));
+    }
+    Ok(())
+}
+
+/// Clone `source` with a single clonefile(2) call, which copies a whole
+/// hierarchy when `source` is a directory. APFS then clones the tree inside
+/// the kernel, an order of magnitude faster than `clone_path`, but the copy
+/// is approximate: it resets directory times, drops the ACLs of descendants,
+/// clears set-id bits, gives every entry the destination's group and splits
+/// hard links. Callers must repair it entry by entry.
+pub(crate) fn clone_tree(source: &Path, destination: &Path) -> Result<()> {
+    let source = c_path(source)?;
+    let destination = c_path(destination)?;
+    let flags = CLONE_NOFOLLOW | CLONE_ACL;
+    if unsafe { libc::clonefile(source.as_ptr(), destination.as_ptr(), flags) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().into())
+    }
+}
+
+/// Copy only the access and modification times from `source`.
+pub(crate) fn copy_times(source: &Path, destination: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(source)?;
+    set_times(
+        destination,
+        timestamp_ns(metadata.atime(), metadata.atime_nsec()),
+        timestamp_ns(metadata.mtime(), metadata.mtime_nsec()),
+        metadata.file_type().is_symlink(),
+    )
+}
+
+/// Let a repair create or remove `path` even when its parent directory was
+/// copied with a read-only mode or a lock flag. The caller restores the
+/// parent's own metadata afterwards.
+pub(crate) fn unlock_parent(path: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::Backend("repaired path has no parent".into()))?;
+    let metadata = match fs::symlink_metadata(parent) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(parent)?;
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.st_flags() != 0 {
+        set_flags(parent, 0, false)?;
+    }
+    if metadata.mode() & 0o300 != 0o300 {
+        fs::set_permissions(parent, fs::Permissions::from_mode(metadata.mode() | 0o300))?;
     }
     Ok(())
 }
