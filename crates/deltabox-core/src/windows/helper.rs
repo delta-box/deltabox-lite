@@ -54,6 +54,7 @@ pub fn session_info(engine: &Engine, pid: Option<u32>) -> Result<SessionInfo> {
         FilesystemInfo::cbcow_private(engine.manifest.view.clone(),pid.unwrap_or(0),0)
     } else { FilesystemInfo::cbcow_through(engine.manifest.view.clone(),pid.unwrap_or(0),0) };
     filesystem.state_provider=Some("windows-winfsp".into());
+    filesystem=filesystem.with_durability(engine.manifest.durability, None);
     filesystem.isolation_provider=Some("mxc-psec-filesystem".into());
     if engine.manifest.fs_mode == FilesystemMode::CbcowThrough { filesystem.rollback_guarantee="winfsp-routed-writes-only".into(); }
     filesystem.helper_pid=pid;
@@ -96,7 +97,12 @@ pub fn run(state: &Path) -> Result<()> {
         if request.token != engine.lock().unwrap().manifest.token { continue; }
         let stopping=matches!(request.method,Method::SessionStop(_));
         let result=dispatch(&engine,&mount,state,request.method);
+        if matches!(&result, Err(Error::Io(_))) {
+            let mut e=engine.lock().unwrap();
+            if e.manifest.durable() { e.fail(); }
+        }
         let stop=stopping && result.is_ok();
+        let recover=engine.lock().unwrap().requires_recovery();
         let response=match result {
             Ok(value)=>Response { result: Some(value),error: None,conflict: None },
             Err(error)=>Response { result: None,conflict: match &error {Error::ProjectConflict(report)=>Some(report.clone()),_=>None},error: Some(error.to_string()) }
@@ -104,7 +110,9 @@ pub fn run(state: &Path) -> Result<()> {
         // The operation is authoritative even when its client has disappeared.
         let _=serde_json::to_writer(&mut stream,&response);
         let _=stream.write_all(b"\n");
-        if stop {break;}
+        // Drop the mount after a failed barrier. The next request starts a fresh
+        // helper and replays the retained journal instead of using uncertain RAM.
+        if stop || recover {break;}
     }
     drop(mount);
     let _=fs::remove_file(state.join("ready.json"));

@@ -1,5 +1,6 @@
 //! Private LIVE materialization and serialized, recoverable host publication.
-use super::engine::{copy_tree, remove, write_json, Engine, Manifest, Metadata};
+use super::engine::{copy_tree_durable, remove, write_json_durable, Engine, Manifest, Metadata};
+use super::durability;
 use super::helper::lock;
 use crate::changeset::{Change, ChangeKind};
 use crate::error::{ConflictReport, PathConflict};
@@ -108,13 +109,13 @@ pub(super) fn initialize(state: &Path, manifest: &mut Manifest) -> Result<()> {
     recover_locked(parent)?;
     let entries = scan(&manifest.source)?;
     let live = state.join("live");
-    copy_tree(&manifest.source, &live)?;
+    copy_tree_durable(&manifest.source, &live, manifest.durable())?;
     if entries != scan(&live)? || entries != scan(&manifest.source)? {
         remove(&live)?;
         return Err(Error::ProjectConflict(ConflictReport::new("project changed while materializing private LIVE", Vec::new())));
     }
     manifest.live = Some(live.canonicalize()?);
-    write_json(&state.join("baseline.json"), &Baseline { entries, seen: history(parent)?.len() })
+    write_json_durable(&state.join("baseline.json"), &Baseline { entries, seen: history(parent)?.len() }, manifest.durable())
 }
 
 pub(super) fn recover(state: &Path) -> Result<()> {
@@ -127,27 +128,39 @@ fn recover_locked(parent: &Path) -> Result<()> {
     let journal = parent.join("publish.json");
     if !journal.exists() { return Ok(()); }
     let tx: Transaction = read_json(&journal)?;
+    let durable = tx.manifest.durable();
+    if durable {
+        durability::qualify(&tx.manifest.source)?;
+        durability::qualify(&tx.state)?;
+        // A previously failed decision-directory flush is ambiguous. Stabilize
+        // the recovered decision before completing it or retiring its backups.
+        durability::flush(&durability::open(&journal)?)?;
+        durability::directory(parent)?;
+    }
     if tx.committed {
         // The decision is authoritative. Every subsequent step is idempotent.
-        write_json(&tx.state.join("baseline.json"), &tx.baseline)?;
+        write_json_durable(&tx.state.join("baseline.json"), &tx.baseline, durable)?;
         let mut entries = history(parent)?;
         if !tx.publication.changes.is_empty() && !entries.iter().any(|p| p.id == tx.publication.id) {
             entries.push(tx.publication.clone());
-            write_json(&parent.join("publications.json"), &entries)?;
+            write_json_durable(&parent.join("publications.json"), &entries, durable)?;
         }
-        write_json(&tx.state.join("session.json"), &tx.manifest)?;
+        write_json_durable(&tx.state.join("session.json"), &tx.manifest, durable)?;
     } else {
         for (index, op) in tx.operations.iter().enumerate().rev() {
             let host = tx.manifest.source.join(&op.path);
             if op.metadata_only {
-                op.old_metadata.as_ref().unwrap().restore(&host)?;
+                op.old_metadata.as_ref().unwrap().restore_durable(&host, durable)?;
             } else {
                 remove(&host)?;
-                if op.existed { copy_tree(&tx.stage.join("backup").join(index.to_string()), &host)?; }
+                if op.existed { copy_tree_durable(&tx.stage.join("backup").join(index.to_string()), &host, durable)?; }
             }
+            if durable { durability::parents(&host, &tx.manifest.source)?; durability::point("publish_undo_barrier")?; }
         }
     }
+    if durable { durability::point("publish_retire_before")?; }
     fs::remove_file(journal)?;
+    if durable { durability::point("publish_retire_removed")?; durability::directory(parent)?; durability::point("publish_retire_barrier")?; }
     let _ = remove(&tx.stage);
     Ok(())
 }
@@ -162,22 +175,23 @@ fn latest(entries: &[Publication]) -> BTreeMap<String, Option<Fingerprint>> {
     out
 }
 
-fn copy_publication(source: &Path, target: &Path) -> Result<()> {
+fn copy_publication(source: &Path, target: &Path, durable: bool) -> Result<()> {
     if !source.exists() { return Ok(()); }
     if source.is_dir() {
-        fs::create_dir_all(target)?;
+        durability::create_directories(target, durable)?;
         for entry in fs::read_dir(source)? {
             let entry = entry?;
-            if !is_draft(&entry.file_name().to_string_lossy()) { copy_publication(&entry.path(), &target.join(entry.file_name()))?; }
+            if !is_draft(&entry.file_name().to_string_lossy()) { copy_publication(&entry.path(), &target.join(entry.file_name()), durable)?; }
         }
-        Metadata::read(source)?.restore(target)
-    } else { copy_tree(source, target) }
+        Metadata::read(source)?.restore_durable(target, durable)
+    } else { copy_tree_durable(source, target, durable) }
 }
 
 pub(super) fn publish(state: &Path, manifest: &Manifest, next: &Manifest, changes: &[Change], stage: &Path, ours: bool) -> Result<u64> {
     let parent = state.parent().unwrap();
     let _publish = lock(&parent.join("publish.lock"), Duration::from_secs(660))?;
     recover_locked(parent)?;
+    let durable = manifest.durable();
     let mut baseline: Baseline = read_json(&state.join("baseline.json"))?;
     let publications = history(parent)?;
     let folded = publications.len().saturating_sub(baseline.seen) as u64;
@@ -204,8 +218,8 @@ pub(super) fn publish(state: &Path, manifest: &Manifest, next: &Manifest, change
 
     let incoming = stage.join("incoming");
     let backup = stage.join("backup");
-    fs::create_dir_all(&incoming)?;
-    fs::create_dir_all(&backup)?;
+    durability::create_directories(&incoming, durable)?;
+    durability::create_directories(&backup, durable)?;
     // Structural directory operations own their entire subtree. Existing
     // directories receive only metadata so disjoint sibling files survive.
     let structural: BTreeSet<_> = paths.iter().filter(|p| {
@@ -221,27 +235,35 @@ pub(super) fn publish(state: &Path, manifest: &Manifest, next: &Manifest, change
         let target = stage.join("tree").join(&change.path);
         let metadata_only = host.get(&path).is_some_and(|f| f.directory) && target.is_dir();
         let index = operations.len().to_string();
-        if source.exists() && !metadata_only { copy_tree(&source, &backup.join(&index))?; }
-        if target.exists() && !metadata_only { copy_publication(&target, &incoming.join(&index))?; }
+        if source.exists() && !metadata_only { copy_tree_durable(&source, &backup.join(&index), durable)?; }
+        if target.exists() && !metadata_only { copy_publication(&target, &incoming.join(&index), durable)?; }
         operations.push(Operation { path: change.path.clone(), existed: source.exists(), metadata_only,
             old_metadata: if metadata_only { Some(Metadata::read(&source)?) } else { None } });
     }
     let publication = Publication { id: uuid::Uuid::new_v4().to_string(), session: manifest.session_id.clone(), changes: BTreeMap::new() };
     let mut tx = Transaction { state: state.into(), stage: stage.into(), operations, manifest: next.clone(), baseline: baseline.clone(), publication, committed: false };
     let journal = parent.join("publish.json");
-    write_json(&journal, &tx)?;
-    let result = (|| {
+    if durable {
+        durability::directory(stage)?;
+        durability::directory(state)?;
+        durability::point("publish_stage_barrier")?;
+    }
+    write_json_durable(&journal, &tx, durable)?;
+    if durable { durability::point("publish_prepared_barrier")?; }
+    let result: Result<()> = (|| {
         for (index, op) in tx.operations.iter().enumerate() {
             let target = manifest.source.join(&op.path);
             if op.metadata_only { continue; }
             remove(&target)?;
             let source = incoming.join(index.to_string());
-            if source.exists() { copy_tree(&source, &target)?; }
+            if source.exists() { copy_tree_durable(&source, &target, durable)?; }
+            if durable { durability::parents(&target, &manifest.source)?; durability::point("publish_path_barrier")?; }
             crash_point("private_publish_path_applied");
         }
         for op in tx.operations.iter().filter(|op| op.metadata_only) {
-            Metadata::read(&stage.join("tree").join(&op.path))?.restore(&manifest.source.join(&op.path))?;
+            Metadata::read(&stage.join("tree").join(&op.path))?.restore_durable(&manifest.source.join(&op.path), durable)?;
         }
+        if durable { durability::point("publish_host_barrier")?; }
         let after = scan(&manifest.source)?;
         for path in &validate {
             if let Some(value) = after.get(path) { baseline.entries.insert(path.clone(), value.clone()); }
@@ -251,14 +273,17 @@ pub(super) fn publish(state: &Path, manifest: &Manifest, next: &Manifest, change
         baseline.seen = publications.len() + usize::from(!tx.publication.changes.is_empty());
         tx.baseline = baseline;
         tx.committed = true;
-        write_json(&journal, &tx)?;
+        write_json_durable(&journal, &tx, durable)?;
+        if durable { durability::point("publish_decision_barrier")?; }
         crash_point("private_publish_committed");
         Ok(())
     })();
-    // Resolve an interrupted application before allowing another operation.
-    let committed = read_json::<Transaction>(&journal)?.committed;
+    // A visible decision after a failed barrier does not establish durability.
+    // Leave recovery information intact and require reopen; never turn I/O
+    // failure into a successful commit by rereading the cached decision.
+    result?;
     recover_locked(parent)?;
-    if committed { Ok(folded) } else { result.map(|_| folded) }
+    Ok(folded)
 }
 
 pub(super) fn sync(engine: &mut Engine, changes: &[Change]) -> Result<SyncResult> {
@@ -287,7 +312,7 @@ pub(super) fn sync(engine: &mut Engine, changes: &[Change]) -> Result<SyncResult
         if let Some(value) = value { baseline.entries.insert(path, value); } else { baseline.entries.remove(&path); }
     }
     baseline.seen = publications.len();
-    write_json(&engine.state.join("baseline.json"), &baseline)?;
+    write_json_durable(&engine.state.join("baseline.json"), &baseline, engine.manifest.durable())?;
     Ok(result)
 }
 

@@ -117,18 +117,33 @@ fn powershell_through_lifecycle_and_isolation() {
 #[test]
 #[ignore = "requires installed WinFsp and native MXC PSEC filesystem-deny support; run explicitly on a supported Windows host"]
 fn private_sessions_isolate_publish_sync_and_recover() {
+    private_sessions_lifecycle(false);
+}
+
+#[test]
+#[ignore = "requires installed WinFsp, local NTFS and native MXC PSEC filesystem-deny support"]
+fn strict_private_sessions_isolate_publish_sync_and_recover() {
+    private_sessions_lifecycle(true);
+}
+
+fn private_sessions_lifecycle(durable: bool) {
     let root = tempfile::tempdir().unwrap();
     let project = root.path().join("private project with spaces");
     fs::create_dir(&project).unwrap();
     fs::write(project.join("a.txt"), b"old").unwrap();
     fs::write(project.join("b.txt"), b"old").unwrap();
     let mut s = Session {root, project, id: String::new()};
-    let start = |s: &Session| s.json(&["session", "start", s.project.to_str().unwrap(), "--fs-mode", "cbcow-private", "--require-fs-mode", "--json"]);
+    let start = |s: &Session| {
+        let mut args = vec!["session", "start", s.project.to_str().unwrap(), "--fs-mode", "cbcow-private", "--require-fs-mode", "--json"];
+        if durable { args.push("--durable"); }
+        s.json(&args)
+    };
     let info = start(&s);
     s.id = info["session_id"].as_str().unwrap().into();
     assert_eq!(info["resolved_fs_mode"], "cbcow-private");
     assert_eq!(info["host_visibility"], "on-commit");
     assert_eq!(info["rollback_guarantee"], "private-live-tree");
+    assert_eq!(info["durability"], if durable {"strict"} else {"process-crash"});
     let sibling = start(&s)["session_id"].as_str().unwrap().to_owned();
     // Keep the sibling in a guard as well, so failures always stop both helpers.
     struct StopSession<'a> { session: &'a Session, id: &'a str }
@@ -146,6 +161,17 @@ fn private_sessions_isolate_publish_sync_and_recover() {
     let through = s.raw(&["session", "start", s.project.to_str().unwrap(), "--fs-mode", "cbcow-through"]);
     assert!(!through.status.success());
     s.write("a.txt", "ours");
+    if durable {
+        for script in [
+            "[IO.File]::WriteAllText('native.txt','native strict')",
+            "New-Item -ItemType Directory -Path 'native-dir' | Out-Null; [IO.File]::WriteAllText('native-dir/child.txt','child')",
+            "Move-Item -LiteralPath 'native-dir' -Destination 'renamed-dir'",
+            "Remove-Item -LiteralPath 'native.txt'",
+            "[IO.File]::SetAttributes('a.txt',[IO.FileAttributes]::ReadOnly)",
+            "[IO.File]::SetAttributes('a.txt',[IO.FileAttributes]::Normal)",
+        ] { s.powershell(script); }
+        assert!(!s.project.join("renamed-dir").exists());
+    }
     let view = PathBuf::from(info["mountpoint"].as_str().unwrap());
     assert_eq!(fs::read(view.join("a.txt")).unwrap(), b"ours");
     assert_eq!(fs::read(s.project.join("a.txt")).unwrap(), b"old");

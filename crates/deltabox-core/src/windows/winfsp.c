@@ -6,13 +6,15 @@
 
 typedef NTSTATUS (*DB_ACTION)(void *);
 extern NTSTATUS db_check(void *, const WCHAR *, int);
-extern NTSTATUS db_mutate(void *, UINT32, const WCHAR *, const WCHAR *, UINT64, UINT64, DB_ACTION, void *);
+extern NTSTATUS db_mutate(void *, UINT32, const WCHAR *, const WCHAR *, UINT64, UINT64, DB_ACTION, void *, const HANDLE *);
+extern void db_io_failed(void *);
 
 typedef struct {
     FSP_FILE_SYSTEM *fs;
     void *engine;
     WCHAR *root;
     volatile LONG writers;
+    BOOL strict;
 } DB_FS;
 typedef struct {
     HANDLE handle;
@@ -148,9 +150,9 @@ static NTSTATUS create_action(void *opaque) {
     NTSTATUS status=join_path(args->db,args->name,&path); if (!NT_SUCCESS(status)) return status;
     BOOL directory=0 != (args->options&FILE_DIRECTORY_FILE);
     if (directory && !CreateDirectoryW(path,NULL)) { status=last_error(); free(path); return status; }
-    HANDLE h=CreateFileW(path,args->access,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+    HANDLE h=CreateFileW(path,args->access|(args->db->strict?GENERIC_WRITE:0),FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
         NULL,directory ? OPEN_EXISTING : CREATE_NEW,
-        args->attributes|FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OVERLAPPED|FILE_FLAG_OPEN_REPARSE_POINT,NULL);
+        args->attributes|FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OVERLAPPED|FILE_FLAG_OPEN_REPARSE_POINT|(args->db->strict?FILE_FLAG_WRITE_THROUGH:0),NULL);
     if (h == INVALID_HANDLE_VALUE) status=last_error();
     else { args->file->handle=h; args->file->directory=directory; }
     free(path); return status;
@@ -162,7 +164,7 @@ static NTSTATUS create_file(FSP_FILE_SYSTEM *fs,PWSTR name,UINT32 options,UINT32
     DB_FILE *file=(DB_FILE *)calloc(1,sizeof(*file)); if (!file) return STATUS_INSUFFICIENT_RESOURCES;
     file->owner=owner(fs);
     CREATE_ARGS args={owner(fs),name,options,access,attributes,sd,file};
-    NTSTATUS status=db_mutate(owner(fs)->engine,2,name,NULL,0,0,create_action,&args);
+    NTSTATUS status=db_mutate(owner(fs)->engine,2,name,NULL,0,0,create_action,&args,&file->handle);
     if (!NT_SUCCESS(status)) { if (file->handle && file->handle != INVALID_HANDLE_VALUE) CloseHandle(file->handle); free(file); return status; }
     file->writer=writable(access); if (file->writer) InterlockedIncrement(&file->owner->writers);
     *context=file; return file_info(file->handle,info);
@@ -172,7 +174,7 @@ static NTSTATUS open_file(FSP_FILE_SYSTEM *fs,PWSTR name,UINT32 options,UINT32 a
     (void)options;
     WCHAR *path; NTSTATUS status=make_path(owner(fs),name,writable(access),&path); if (!NT_SUCCESS(status)) return status;
     HANDLE h=CreateFileW(path,access,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,NULL,OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OVERLAPPED|FILE_FLAG_OPEN_REPARSE_POINT,NULL);
+        FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OVERLAPPED|FILE_FLAG_OPEN_REPARSE_POINT|(owner(fs)->strict?FILE_FLAG_WRITE_THROUGH:0),NULL);
     free(path); if (h == INVALID_HANDLE_VALUE) return last_error();
     status=file_info(h,info);
     if (!NT_SUCCESS(status) || (writable(access) && info->HardLinks>1)) { CloseHandle(h); return NT_SUCCESS(status) ? STATUS_NOT_SUPPORTED : status; }
@@ -184,15 +186,17 @@ static NTSTATUS open_file(FSP_FILE_SYSTEM *fs,PWSTR name,UINT32 options,UINT32 a
 
 static void close_file(FSP_FILE_SYSTEM *fs,PVOID context) {
     (void)fs; DB_FILE *file=(DB_FILE *)context;
-    CloseHandle(file->handle);
+    if (!CloseHandle(file->handle) && file->owner->strict) db_io_failed(file->owner->engine);
     if (file->writer) InterlockedDecrement(&file->owner->writers);
     free(file);
 }
 
 static void cleanup(FSP_FILE_SYSTEM *fs,PVOID context,PWSTR name,ULONG flags) {
     (void)fs; (void)name; (void)flags;
-    DB_FILE *file=(DB_FILE *)context;
-    if (file->writer) FlushFileBuffers(file->handle);
+    (void)context;
+    /* Rust checks the data/metadata flush before APPLIED. The command boundary
+       flushes surviving parents after all writer handles close (including
+       delete-on-close). A void cleanup callback must not hide a failed flush. */
 }
 
 static NTSTATUS read_file(FSP_FILE_SYSTEM *fs,PVOID context,PVOID buffer,UINT64 offset,ULONG length,PULONG transferred) {
@@ -225,7 +229,7 @@ static NTSTATUS write_file(FSP_FILE_SYSTEM *fs,PVOID context,PVOID buffer,UINT64
         if (length>(UINT64)size.QuadPart-offset) length=(ULONG)((UINT64)size.QuadPart-offset);
     }
     WRITE_ARGS args={file,buffer,offset,length,transferred};
-    status=db_mutate(owner(fs)->engine,1,name,NULL,offset,length,write_action,&args);
+    status=db_mutate(owner(fs)->engine,1,name,NULL,offset,length,write_action,&args,&file->handle);
     free(name); return NT_SUCCESS(status) ? file_info(file->handle,info) : status;
 }
 
@@ -243,7 +247,7 @@ static NTSTATUS set_size(FSP_FILE_SYSTEM *fs,PVOID context,UINT64 size,BOOLEAN a
     DB_FILE *file=(DB_FILE *)context; WCHAR *name;
     NTSTATUS status=current_name(file,&name); if (!NT_SUCCESS(status)) return status;
     SIZE_ARGS args={file,size,allocation};
-    status=db_mutate(owner(fs)->engine,3,name,NULL,size,0,size_action,&args);
+    status=db_mutate(owner(fs)->engine,3,name,NULL,size,0,size_action,&args,&file->handle);
     free(name); return NT_SUCCESS(status) ? file_info(file->handle,info) : status;
 }
 typedef struct {DB_FILE *file;UINT32 attributes;BOOLEAN replace;UINT64 allocation;} OVERWRITE_ARGS;
@@ -263,7 +267,7 @@ static NTSTATUS overwrite(FSP_FILE_SYSTEM *fs,PVOID context,UINT32 attributes,BO
     DB_FILE *file=(DB_FILE *)context;WCHAR *name;
     NTSTATUS status=current_name(file,&name);if(!NT_SUCCESS(status))return status;
     OVERWRITE_ARGS args={file,attributes,replace,allocation};
-    status=db_mutate(owner(fs)->engine,3,name,NULL,0,0,overwrite_action,&args);
+    status=db_mutate(owner(fs)->engine,3,name,NULL,0,0,overwrite_action,&args,&file->handle);
     free(name);return NT_SUCCESS(status)?file_info(file->handle,info):status;
 }
 
@@ -275,10 +279,12 @@ static NTSTATUS basic_action(void *opaque) {
 static NTSTATUS set_basic(FSP_FILE_SYSTEM *fs,PVOID context,UINT32 attributes,UINT64 creation,UINT64 access,UINT64 write,UINT64 change,FSP_FSCTL_FILE_INFO *info) {
     DB_FILE *file=(DB_FILE *)context; WCHAR *name;
     NTSTATUS status=current_name(file,&name); if (!NT_SUCCESS(status)) return status;
-    BASIC_ARGS args={0}; args.file=file; args.basic.FileAttributes=attributes==INVALID_FILE_ATTRIBUTES ? 0 : attributes;
+    BASIC_ARGS args={0}; args.file=file;
+    /* WinFsp strips NORMAL to zero; native FileBasicInfo uses zero for "keep". */
+    args.basic.FileAttributes=attributes==INVALID_FILE_ATTRIBUTES ? 0 : (attributes?attributes:FILE_ATTRIBUTE_NORMAL);
     args.basic.CreationTime.QuadPart=creation; args.basic.LastAccessTime.QuadPart=access;
     args.basic.LastWriteTime.QuadPart=write; args.basic.ChangeTime.QuadPart=change;
-    status=db_mutate(owner(fs)->engine,6,name,NULL,0,0,basic_action,&args);
+    status=db_mutate(owner(fs)->engine,6,name,NULL,0,0,basic_action,&args,&file->handle);
     free(name); return NT_SUCCESS(status) ? file_info(file->handle,info) : status;
 }
 
@@ -295,7 +301,7 @@ static NTSTATUS set_delete(FSP_FILE_SYSTEM *fs,PVOID context,PWSTR name,BOOLEAN 
     }
     if (file->delete_pending) return STATUS_SUCCESS;
     DELETE_ARGS args={file,TRUE};
-    NTSTATUS status=db_mutate(owner(fs)->engine,4,name,NULL,0,0,delete_action,&args);
+    NTSTATUS status=db_mutate(owner(fs)->engine,4,name,NULL,0,0,delete_action,&args,&file->handle);
     if (NT_SUCCESS(status)) file->delete_pending=TRUE;
     return status;
 }
@@ -314,7 +320,7 @@ static NTSTATUS rename_action(void *opaque) {
 static NTSTATUS rename_file(FSP_FILE_SYSTEM *fs,PVOID context,PWSTR name,PWSTR target,BOOLEAN replace) {
     if (!_wcsicmp(name,target)) return STATUS_NOT_SUPPORTED;
     RENAME_ARGS args={(DB_FILE *)context,target,replace};
-    return db_mutate(owner(fs)->engine,5,name,target,0,0,rename_action,&args);
+    return db_mutate(owner(fs)->engine,5,name,target,0,0,rename_action,&args,&args.file->handle);
 }
 
 static NTSTATUS get_info(FSP_FILE_SYSTEM *fs,PVOID context,FSP_FSCTL_FILE_INFO *info) {
@@ -323,7 +329,11 @@ static NTSTATUS get_info(FSP_FILE_SYSTEM *fs,PVOID context,FSP_FSCTL_FILE_INFO *
 static NTSTATUS flush(FSP_FILE_SYSTEM *fs,PVOID context,FSP_FSCTL_FILE_INFO *info) {
     (void)fs; if (!context) return STATUS_SUCCESS;
     DB_FILE *file=(DB_FILE *)context;
-    if (file->writer && !file->directory && !FlushFileBuffers(file->handle)) return last_error();
+    if (file->writer && !file->directory && !FlushFileBuffers(file->handle)) {
+        NTSTATUS status=last_error();
+        if (owner(fs)->strict) db_io_failed(owner(fs)->engine);
+        return status;
+    }
     return file_info(file->handle,info);
 }
 static NTSTATUS get_security(FSP_FILE_SYSTEM *fs,PVOID context,PSECURITY_DESCRIPTOR descriptor,SIZE_T *size) {
@@ -393,10 +403,10 @@ static FSP_FILE_SYSTEM_INTERFACE db_interface={
     .Rename=rename_file,.GetSecurity=get_security,.ReadDirectory=read_directory,.SetDelete=set_delete
 };
 
-__declspec(dllexport) NTSTATUS db_mount(const WCHAR *root,const WCHAR *view,const WCHAR *prefix,void *engine,void **result) {
+__declspec(dllexport) NTSTATUS db_mount(const WCHAR *root,const WCHAR *view,const WCHAR *prefix,void *engine,BOOL strict,void **result) {
     NTSTATUS status=load_winfsp(); if(!NT_SUCCESS(status))return status;
     DB_FS *db=(DB_FS *)calloc(1,sizeof(*db));if(!db)return STATUS_INSUFFICIENT_RESOURCES;
-    db->root=_wcsdup(root);db->engine=engine;
+    db->root=_wcsdup(root);db->engine=engine;db->strict=strict;
     FSP_FSCTL_VOLUME_PARAMS params={0}; params.Version=sizeof(params);params.SectorSize=512;
     params.SectorsPerAllocationUnit=8;params.MaxComponentLength=255;params.FileInfoTimeout=0;
     params.CasePreservedNames=1;params.UnicodeOnDisk=1;params.PersistentAcls=1;

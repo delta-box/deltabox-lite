@@ -17,7 +17,7 @@ pub struct CoordinatorOptions {
     pub state_dir: Option<PathBuf>,pub runtime_dir: Option<PathBuf>,pub embedded_fast: bool,
 }
 
-pub struct SessionCoordinator { project: PathBuf,state: PathBuf,runtime: PathBuf,helper_bin: PathBuf }
+pub struct SessionCoordinator { project: PathBuf,state: PathBuf,runtime: PathBuf,helper_bin: PathBuf,created_state_dirs: Vec<PathBuf> }
 
 impl SessionCoordinator {
     pub fn new(project: &Path,worker_bin: Option<PathBuf>) -> Result<Self> {
@@ -32,6 +32,7 @@ impl SessionCoordinator {
         let local=std::env::var_os("LOCALAPPDATA").map(PathBuf::from).ok_or_else(||Error::Backend("LOCALAPPDATA unavailable".into()))?.join("deltabox-lite");
         let base=options.state_dir.or_else(||std::env::var_os("DELTABOX_STATE_DIR").map(PathBuf::from)).unwrap_or_else(||local.join("state"));
         let runtime=options.runtime_dir.or_else(||std::env::var_os("DELTABOX_RUNTIME_DIR").map(PathBuf::from)).unwrap_or_else(||local.join("runtime"));
+        let mut created_state_dirs=crate::windows::durability::missing_directories(&base);
         fs::create_dir_all(&base)?;fs::create_dir_all(&runtime)?;
         let (base,runtime)=(base.canonicalize()?,runtime.canonicalize()?);
         let inside=|a:&Path,b:&Path| { let (a,b)=(a.to_string_lossy().to_lowercase(),b.to_string_lossy().to_lowercase());a==b||a.starts_with(&(b+"\\")) };
@@ -39,8 +40,8 @@ impl SessionCoordinator {
             return Err(Error::Backend("Windows state and runtime must be outside the project; runtime must also be outside state".into()));
         }
         let key=format!("{:x}",Sha256::digest(project.to_string_lossy().to_lowercase().as_bytes()));
-        let state=base.join("projects").join(&key[..32]);fs::create_dir_all(&state)?;
-        Ok(Self { project,state,runtime,helper_bin:options.helper_bin.unwrap_or(std::env::current_exe()?) })
+        let state=base.join("projects").join(&key[..32]);created_state_dirs.extend(crate::windows::durability::missing_directories(&state));fs::create_dir_all(&state)?;
+        Ok(Self { project,state,runtime,helper_bin:options.helper_bin.unwrap_or(std::env::current_exe()?),created_state_dirs })
     }
     fn store(&self,id:&str)->Result<PathBuf> {
         uuid::Uuid::parse_str(id).map_err(|_|Error::SessionNotFound(id.into()))?;
@@ -60,7 +61,13 @@ impl SessionCoordinator {
             FilesystemMode::CopyPrivate=>return Err(Error::Unsupported("Windows copy-private provider is reserved and not implemented".into())),
             FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate=>{}
         }
-        if durability!=DurabilityMode::Fast || group.is_some() {return Err(Error::Unsupported("Windows strict durability and group commit are not implemented".into()));}
+        if group.is_some() {return Err(Error::Unsupported("Windows group commit is not implemented".into()));}
+        if durability==DurabilityMode::Strict {
+            if mode!=FilesystemMode::CbcowPrivate {return Err(Error::Unsupported("Windows strict durability requires cbcow-private".into()));}
+            crate::windows::durability::qualify(&self.project)?;
+            crate::windows::durability::qualify(&self.state)?;
+            crate::windows::durability::persist_directories(&self.created_state_dirs)?;
+        }
         crate::windows::sandbox::available()?;
         let _admission=helper::lock(&self.state.join("project.lock"),Duration::from_secs(30))?;
         let active=self.state.join("active.json");
@@ -85,7 +92,7 @@ impl SessionCoordinator {
         let views=self.runtime.join("views");let scratch=self.runtime.join("scratch").join(&id);
         fs::create_dir_all(&views)?;fs::create_dir_all(&scratch)?;
         let manifest=Manifest {
-            version:1,session_id:id.clone(),source:self.project.clone(),fs_mode:mode,live:None,view:views.join(&id),scratch,
+            version:1,session_id:id.clone(),source:self.project.clone(),fs_mode:mode,durability,live:None,view:views.join(&id),scratch,
             token:format!("{}{}",uuid::Uuid::new_v4(),uuid::Uuid::new_v4()),started_at_ms:now_ms(),status:SessionStatus::Running,
             policy:match policy {Some(path)=>crate::policy::Policy::load(path)?,None=>crate::policy::Policy::default_agent()},
             next_id:1,accepted:checkpoint.clone(),checkpoints:vec![Savepoint {info:CheckpointInfo {id:checkpoint,label:Some("initial".into()),created_at_ms:now_ms(),change_count:0,committed:true},cursor:0}],review:None,rollback:None,
@@ -98,7 +105,7 @@ impl SessionCoordinator {
             if mode == FilesystemMode::CbcowThrough { let _=fs::remove_file(&active); }
             let mut failed = self.manifest(&id)?;
             failed.status = SessionStatus::Stopped;
-            write_json(&store.join("session.json"), &failed)?;
+            crate::windows::engine::write_json_durable(&store.join("session.json"), &failed, failed.durable())?;
         }
         result
     }

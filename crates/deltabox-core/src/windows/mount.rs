@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 type Action = unsafe extern "C" fn(*mut c_void) -> i32;
 extern "C" {
-    fn db_mount(source: *const u16, view: *const u16, prefix: *const u16, engine: *mut c_void, mount: *mut *mut c_void) -> i32;
+    fn db_mount(source: *const u16, view: *const u16, prefix: *const u16, engine: *mut c_void, strict: i32, mount: *mut *mut c_void) -> i32;
     fn db_unmount(mount: *mut c_void);
     fn db_writers(mount: *mut c_void) -> i32;
     fn db_mountpoint(mount: *mut c_void) -> *const u16;
@@ -22,9 +22,10 @@ impl Mount {
         let e = engine.lock().map_err(|_| Error::Backend("filesystem mutex poisoned".into()))?;
         let (source, view) = (wide(e.manifest.live()), wide(&e.manifest.view));
         let prefix=wide(std::path::Path::new(&format!("\\deltabox\\{}",e.manifest.session_id)));
+        let strict=i32::from(e.manifest.durable());
         drop(e);
         let mut raw = std::ptr::null_mut();
-        let status = unsafe { db_mount(source.as_ptr(), view.as_ptr(), prefix.as_ptr(), Arc::as_ptr(&engine) as *mut c_void, &mut raw) };
+        let status = unsafe { db_mount(source.as_ptr(), view.as_ptr(), prefix.as_ptr(), Arc::as_ptr(&engine) as *mut c_void, strict, &mut raw) };
         if status < 0 { return Err(Error::FilesystemUnavailable(format!("WinFsp mount failed (NTSTATUS 0x{:08x})", status as u32))); }
         let mounted=Self { raw, _engine: engine.clone() };
         let point=unsafe {db_mountpoint(raw)};
@@ -43,7 +44,7 @@ impl Mount {
             if std::time::Instant::now() >= deadline { return Err(Error::SessionBusy("open writable handles in the WinFsp view".into())); }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        Ok(())
+        self._engine.lock().map_err(|_| Error::Backend("filesystem mutex poisoned".into()))?.boundary()
     }
 }
 
@@ -77,12 +78,22 @@ unsafe extern "C" fn db_check(context: *mut c_void, path: *const u16, write: i32
 
 #[no_mangle]
 unsafe extern "C" fn db_mutate(context: *mut c_void, op: u32, path: *const u16, second: *const u16,
-    offset: u64, length: u64, action: Action, opaque: *mut c_void) -> i32 {
+    offset: u64, length: u64, action: Action, opaque: *mut c_void, handle: *const windows_sys::Win32::Foundation::HANDLE) -> i32 {
     std::panic::catch_unwind(|| {
         let (path,second)=(name(path)?,name(second)?);
         let engine=&*(context as *const Mutex<Engine>);
         let mut engine=engine.lock().map_err(|_| Error::Backend("filesystem mutex poisoned".into()))?;
         let record=engine.prepare(op,&path,&second,offset,length)?;
-        engine.finish(record,action(opaque))
+        let result=action(opaque);
+        engine.finish_native(record,result,if handle.is_null() {std::ptr::null_mut()} else {*handle})
     }).unwrap_or_else(|_| Err(Error::Backend("filesystem callback panicked".into()))).unwrap_or_else(status)
+}
+
+/// Close/flush callbacks can lack an error return channel. Retain their failure
+/// so the next command boundary cannot report success or reclaim undo records.
+#[no_mangle]
+unsafe extern "C" fn db_io_failed(context: *mut c_void) {
+    let _=std::panic::catch_unwind(|| {
+        if let Ok(mut engine)=(*(context as *const Mutex<Engine>)).lock() {engine.fail();}
+    });
 }
