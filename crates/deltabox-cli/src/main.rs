@@ -24,6 +24,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Print supported execution-scoped network protocol version.
+    NetworkCapabilities,
     /// Create and manage sandbox sessions.
     Session {
         #[command(subcommand)]
@@ -424,6 +426,7 @@ fn main() -> anyhow::Result<()> {
                 env,
                 label: args.label,
                 execution_profile: args.execution_profile.unwrap_or_default(),
+                network_allow: Vec::new(),
             })?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
@@ -649,6 +652,7 @@ fn main() -> anyhow::Result<()> {
                 worker_bin: std::env::current_exe()?,
             })?;
         }
+        Command::NetworkCapabilities => { println!("{{\"version\":1}}"); }
         Command::Serve => {
             let project = std::env::current_dir()?;
             let mut server = Server::new(&project, Box::new(default_backend()))?;
@@ -753,6 +757,7 @@ fn run_transaction(args: RunArgs) -> anyhow::Result<i32> {
             env,
             label: args.label,
             execution_profile: Default::default(),
+            network_allow: Vec::new(),
         })?;
         std::io::stdout()
             .lock()

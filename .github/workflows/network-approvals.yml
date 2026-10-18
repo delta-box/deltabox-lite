@@ -1,0 +1,22 @@
+name: Network approval regression
+on:
+  pull_request:
+  push:
+    branches: [main, codex/network-approvals]
+permissions:
+  contents: read
+jobs:
+  network:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+      - run: cargo test -p deltabox-core --lib
+      - run: cargo test -p deltabox --test network_approvals
+      - run: cargo check -p deltabox-node

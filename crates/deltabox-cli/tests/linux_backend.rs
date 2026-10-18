@@ -41,6 +41,7 @@ fn exec_sh(manager: &mut SessionManager, session_id: &str, script: &str) -> (i32
             env: None,
             label: None,
             execution_profile: Default::default(),
+                network_allow: Vec::new(),
         })
         .unwrap();
     (result.exit_code.unwrap_or(-1), result.stdout, result.stderr)
@@ -334,6 +335,7 @@ fn exec_cwd_and_env() {
             env: Some(vec![("DBX_VAR".into(), "hello-env".into())]),
             label: Some("cwd-env".into()),
             execution_profile: Default::default(),
+                network_allow: Vec::new(),
         })
         .unwrap();
     assert_eq!(result.exit_code, Some(0));

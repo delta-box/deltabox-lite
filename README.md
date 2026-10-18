@@ -407,3 +407,48 @@ This project utilizes excellent work of existing sandbox projects like **[`sandl
 
 
 **⭐ Star this repo if you find deltabox-lite helpful!**
+
+### Execution-scoped network grants
+
+Trusted orchestrators can opt into narrow network approvals in session policy:
+
+```toml
+[network]
+mode = "allowlist"
+allow_approval = true
+allow = ["registry.npmjs.org:443"]
+deny = ["blocked.example:443"]
+allow_private = false
+```
+
+With `allow_approval`, the platform sandbox permits egress only through an
+execution-scoped authenticated HTTP/CONNECT proxy. The proxy enforces exact
+`host:port` targets, deny precedence, and resolved-address private/local-network
+checks. Connections use the checked IP without a second DNS lookup. The mode
+supports proxy-aware HTTP/HTTPS clients; direct TCP, UDP, QUIC, and raw SSH are
+not enabled. This controls destinations, not request contents or remote effects.
+
+A trusted caller may add `network_allow: ["example.com:443"]` to one
+`session.exec` RPC, or pass a final `networkAllow` array to native `exec()`.
+The caller must obtain user approval first: the core trusts the authenticated
+host/RPC caller, just as it trusts `execution_profile`; it does not present a UI
+or accept grants directly from sandboxed programs. At most 32 exact targets are
+accepted per execution; URLs, wildcards, and prohibited targets are rejected.
+Temporary grants are applied to a cloned policy and never saved into the session.
+Filesystem profiles remain independent of networking. Trusted/`none` execution
+rejects approval-enabled policies and grants.
+
+The command helper closes approval-enabled sandbox runtimes and all tracked
+proxy connections after each command. A reused session therefore retains its
+standing policy but no previous execution's network grant. Proxy denials appear
+as `network_denials: [{"target":"example.com:443","reason":"not-authorized"}]`
+in execution results. Reasons include `policy-denied` and `private-address`;
+OS-level direct-connection denials and ordinary DNS/TLS failures do not generate
+proxy denial events. The core never retries commands automatically.
+
+Probe `network.capabilities` over stdio, `deltabox network-capabilities`, or
+native `networkApprovalsVersion()` before enabling this feature. Protocol v1
+requires matching addon and helper builds; the native probe also checks its
+helper binary. Existing policies without `allow_approval` retain their previous
+behavior. Static legacy allowlists retain their platform-specific behavior;
+the stricter proxy/address checks above apply to approval-enabled policies.

@@ -39,6 +39,7 @@ struct SessionState {
     mapper: PathMapper,
     profile: String,
     proxy: Option<ProxyHandle>,
+    network_proxy: Option<crate::network::NetworkProxy>,
     rustup_home: Option<PathBuf>,
 }
 
@@ -307,7 +308,10 @@ impl SeatbeltBackend {
             .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))
     }
 
-    fn build_state(&self, spec: &SessionSpec, root: PathBuf) -> Result<SessionState> {
+    fn build_state(&self, original: &SessionSpec, root: PathBuf) -> Result<SessionState> {
+        let mut effective = original.clone();
+        let network_proxy = crate::network::NetworkProxy::prepare(&mut effective.policy)?;
+        let spec = &effective;
         let runtime = spec.store_dir.join("macos-runtime");
         std::fs::create_dir_all(runtime.join("home/.cache"))?;
         std::fs::create_dir_all(runtime.join("home/.config"))?;
@@ -352,6 +356,7 @@ impl SeatbeltBackend {
             mapper,
             profile,
             proxy,
+            network_proxy,
             rustup_home,
         })
     }
@@ -424,8 +429,11 @@ impl SandboxBackend for SeatbeltBackend {
         Ok(())
     }
 
-    fn exec(&mut self, session_id: &str, req: ExecRequest) -> Result<ExecResult> {
+    fn exec(&mut self, session_id: &str, mut req: ExecRequest) -> Result<ExecResult> {
         let state = self.state(session_id)?;
+        if let Some(proxy) = &state.network_proxy {
+            proxy.environment(&mut req);
+        }
         if req.argv.is_empty() {
             return Err(Error::InvalidPolicy("empty argv".into()));
         }
@@ -540,6 +548,10 @@ impl SandboxBackend for SeatbeltBackend {
             stderr,
             duration_ms: start.elapsed().as_millis() as u64,
             truncated: out_truncated || err_truncated,
+            network_denials: state
+                .network_proxy
+                .as_ref()
+                .map_or_else(Vec::new, |p| p.denials()),
         })
     }
 

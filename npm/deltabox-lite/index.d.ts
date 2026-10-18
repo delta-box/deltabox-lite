@@ -51,6 +51,7 @@ export interface NativeExecResult {
   stderr: string
   duration_ms: number
   truncated: boolean
+  network_denials: Array<{ target: string; reason: string }>
 }
 
 /**
@@ -112,6 +113,7 @@ export interface NativeAbortResult {
 }
 
 export interface NativeDeltaboxInstance {
+  networkApprovalsVersion(): number
   startSession(
     policy?: string,
     durability?: 'fast' | 'strict',
@@ -128,6 +130,7 @@ export interface NativeDeltaboxInstance {
     environment?: NativeEnvironmentEntry[],
     label?: string,
     executionProfile?: NativeExecutionProfile,
+    networkAllow?: string[],
   ): Promise<NativeExecResult>
   readFile(sessionId: string, path: string): Promise<Buffer>
   writeFile(sessionId: string, path: string, content: Buffer): Promise<void>
