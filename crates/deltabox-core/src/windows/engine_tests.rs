@@ -10,17 +10,243 @@ impl Fixture {
         let root=tempfile::tempdir().unwrap();
         let source=root.path().join("source");fs::create_dir(&source).unwrap();
         let checkpoint="initial".to_owned();
-        let manifest=Manifest {version:1,session_id:uuid::Uuid::new_v4().to_string(),source:source.canonicalize().unwrap(),view:root.path().join("view"),scratch:root.path().join("scratch"),token:"test-token".into(),started_at_ms:now_ms(),status:SessionStatus::Running,policy:Policy::default_agent(),next_id:1,accepted:checkpoint.clone(),checkpoints:vec![Savepoint {info:CheckpointInfo {id:checkpoint,label:None,created_at_ms:now_ms(),change_count:0,committed:true},cursor:0}],review:None,rollback:None};
+        let manifest=Manifest {version:1,session_id:uuid::Uuid::new_v4().to_string(),source:source.canonicalize().unwrap(),fs_mode:crate::protocol::FilesystemMode::CbcowThrough,live:None,view:root.path().join("view"),scratch:root.path().join("scratch"),token:"test-token".into(),started_at_ms:now_ms(),status:SessionStatus::Running,policy:Policy::default_agent(),next_id:1,accepted:checkpoint.clone(),checkpoints:vec![Savepoint {info:CheckpointInfo {id:checkpoint,label:None,created_at_ms:now_ms(),change_count:0,committed:true},cursor:0}],review:None,rollback:None};
         let engine=Engine::create(&root.path().join("state"),manifest).unwrap();
         Self {root,engine}
     }
     fn source(&self,name:&str)->std::path::PathBuf {self.engine.manifest.source.join(name)}
     fn write(&mut self,name:&str,offset:u64,data:&[u8]) {
         let record=self.engine.prepare(WRITE,name,"",offset,data.len() as u64).unwrap();
-        let mut f=OpenOptions::new().write(true).open(self.source(name)).unwrap();
+        let mut f=OpenOptions::new().write(true).open(self.engine.path(name,true).unwrap()).unwrap();
         f.seek(SeekFrom::Start(offset)).unwrap();f.write_all(data).unwrap();drop(f);
         self.engine.finish(record,0).unwrap();
     }
+}
+
+impl Fixture {
+    fn private(files: &[(&str, &[u8])]) -> Self {
+        let mut fixture = Self::new();
+        for (name, bytes) in files {
+            let path = fixture.source(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+        let mut manifest = fixture.engine.manifest.clone();
+        manifest.fs_mode = crate::protocol::FilesystemMode::CbcowPrivate;
+        fixture.engine = Engine::create(&fixture.root.path().join("private"), manifest).unwrap();
+        fixture
+    }
+    fn sibling(&self) -> Engine {
+        let mut manifest = self.engine.manifest.clone();
+        manifest.session_id = uuid::Uuid::new_v4().to_string();
+        manifest.live = None;
+        Engine::create(&self.root.path().join(&manifest.session_id), manifest).unwrap()
+    }
+    fn live(&self, name: &str) -> std::path::PathBuf { self.engine.manifest.live().join(name) }
+    fn create(&mut self, name: &str, bytes: &[u8]) {
+        let record = self.engine.prepare(CREATE, name, "", 0, 0).unwrap();
+        fs::write(self.live(name), bytes).unwrap();
+        self.engine.finish(record, 0).unwrap();
+    }
+    fn rename(&mut self, old: &str, new: &str) {
+        let record = self.engine.prepare(RENAME, old, new, 0, 0).unwrap();
+        fs::rename(self.live(old), self.live(new)).unwrap();
+        self.engine.finish(record, 0).unwrap();
+    }
+}
+
+#[test]
+fn private_writes_abort_and_commit_stay_isolated_across_restarts() {
+    let mut f = Fixture::private(&[("a", b"old")]);
+    f.write("a", 0, b"new");
+    f.create("new.txt", b"created");
+    assert_eq!(fs::read(f.source("a")).unwrap(), b"old");
+    assert!(!f.source("new.txt").exists());
+    f.engine = Engine::open(&f.engine.state).unwrap();
+    assert_eq!(f.engine.diff(None, None).unwrap().pending_changes, 2);
+    f.engine.abort(None).unwrap();
+    assert_eq!(fs::read(f.live("a")).unwrap(), b"old");
+    assert!(!f.live("new.txt").exists());
+    f.write("a", 0, b"new");
+    let (_, applied, _) = f.engine.commit_private(None, false).unwrap();
+    assert_eq!(applied, 1);
+    assert_eq!(fs::read(f.source("a")).unwrap(), b"new");
+    f.write("a", 0, b"bad");
+    f.engine = Engine::open(&f.engine.state).unwrap();
+    f.engine.abort(None).unwrap();
+    assert_eq!(fs::read(f.live("a")).unwrap(), b"new");
+    assert_eq!(fs::read(f.source("a")).unwrap(), b"new");
+}
+
+#[test]
+fn private_checkpoint_commit_publishes_the_selected_version_and_keeps_later_undo() {
+    let mut f = Fixture::private(&[("a", b"old")]);
+    f.write("a", 0, b"one");
+    let checkpoint = f.engine.checkpoint(None).unwrap();
+    f.write("a", 0, b"two");
+    f.engine.commit(Some(&checkpoint.id)).unwrap();
+    assert_eq!(fs::read(f.source("a")).unwrap(), b"one");
+    assert_eq!(fs::read(f.live("a")).unwrap(), b"two");
+    f.engine = Engine::open(&f.engine.state).unwrap();
+    f.engine.abort(None).unwrap();
+    assert_eq!(fs::read(f.live("a")).unwrap(), b"one");
+}
+
+#[test]
+fn private_disjoint_commits_preserve_sibling_work_and_overlap_conflicts() {
+    let mut f = Fixture::private(&[("dir/a", b"old"), ("dir/b", b"old")]);
+    let mut sibling = f.sibling();
+    f.write("dir\\a", 0, b"one");
+    sibling.write_draft("dir\\b", b"two").unwrap();
+    f.engine.commit(None).unwrap();
+    let (_, _, folded) = sibling.commit_private(None, false).unwrap();
+    assert_eq!(folded, 1);
+    assert_eq!(fs::read(f.source("dir/a")).unwrap(), b"one");
+    assert_eq!(fs::read(f.source("dir/b")).unwrap(), b"two");
+    f.write("dir\\b", 0, b"bad");
+    let error = f.engine.commit(None).unwrap_err();
+    assert!(matches!(error, crate::Error::ProjectConflict(_)), "{error}");
+    assert_eq!(fs::read(f.source("dir/b")).unwrap(), b"two");
+    assert_eq!(fs::read(f.live("dir/b")).unwrap(), b"bad");
+}
+
+#[test]
+fn private_sync_materializes_rollbackable_drafts_and_never_publishes_them() {
+    let mut f = Fixture::private(&[("a", b"old"), ("b", b"old")]);
+    let mut sibling = f.sibling();
+    sibling.write_draft("a", b"theirs").unwrap();
+    sibling.write_draft("b", b"stale").unwrap();
+    sibling.commit(None).unwrap();
+    f.write("a", 0, b"our");
+    let sync = f.engine.sync().unwrap();
+    assert_eq!(sync.folded_publications, 1);
+    assert_eq!(sync.stale_paths, ["b"]);
+    assert_eq!(sync.conflicts.len(), 1);
+    assert_eq!(sync.conflicts[0].theirs.as_deref(), Some("a.deltabox-theirs"));
+    assert_eq!(fs::read(f.live("a.deltabox-theirs")).unwrap(), b"theirs");
+    f.engine.commit(None).unwrap();
+    assert_eq!(fs::read(f.source("a")).unwrap(), b"our");
+    assert_eq!(fs::read(f.source("b")).unwrap(), b"stale");
+    assert!(!f.source("a.deltabox-theirs").exists());
+    assert_eq!(f.engine.sync().unwrap().folded_publications, 0);
+}
+
+#[test]
+fn private_ours_accepts_only_endorsed_sibling_content() {
+    let mut f = Fixture::private(&[("a", b"old")]);
+    let mut sibling = f.sibling();
+    sibling.write_draft("a", b"sibling").unwrap();
+    sibling.commit(None).unwrap();
+    f.write("a", 0, b"our");
+    f.engine.commit_private(None, true).unwrap();
+    assert_eq!(fs::read(f.source("a")).unwrap(), b"our");
+    fs::write(f.source("a"), b"external").unwrap();
+    f.write("a", 0, b"bad");
+    assert!(matches!(f.engine.commit_private(None, true), Err(crate::Error::ProjectConflict(_))));
+    assert_eq!(fs::read(f.source("a")).unwrap(), b"external");
+}
+
+#[test]
+fn private_conflicts_use_content_even_when_size_and_timestamps_match() {
+    let mut f = Fixture::private(&[("a", b"old")]);
+    let metadata = Metadata::read(&f.source("a")).unwrap();
+    f.write("a", 0, b"our");
+    fs::write(f.source("a"), b"bad").unwrap();
+    metadata.restore(&f.source("a")).unwrap();
+    assert!(matches!(f.engine.commit(None), Err(crate::Error::ProjectConflict(_))));
+    assert_eq!(fs::read(f.source("a")).unwrap(), b"bad");
+}
+
+#[test]
+fn private_commit_preserves_timestamp_only_changes() {
+    use std::os::windows::fs::MetadataExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::Storage::FileSystem::SetFileTime;
+    let mut f = Fixture::private(&[("a", b"old")]);
+    let old = fs::metadata(f.source("a")).unwrap().last_write_time();
+    let changed = old - 100_000_000;
+    let record = f.engine.prepare(METADATA, "a", "", 0, 0).unwrap();
+    let file = OpenOptions::new().write(true).open(f.live("a")).unwrap();
+    let time = FILETIME { dwLowDateTime: changed as u32, dwHighDateTime: (changed >> 32) as u32 };
+    assert_ne!(unsafe { SetFileTime(file.as_raw_handle(), std::ptr::null(), std::ptr::null(), &time) }, 0);
+    drop(file);
+    f.engine.finish(record, 0).unwrap();
+    assert_eq!(f.engine.diff(None, None).unwrap().pending_changes, 1);
+    assert_eq!(fs::metadata(f.source("a")).unwrap().last_write_time(), old);
+    f.engine.commit(None).unwrap();
+    assert_eq!(fs::metadata(f.source("a")).unwrap().last_write_time(), changed);
+    assert_eq!(fs::read(f.source("a")).unwrap(), b"old");
+}
+
+#[test]
+fn private_directory_rename_checks_descendants_and_publishes_only_its_subtree() {
+    let mut f = Fixture::private(&[("dir/a", b"old"), ("unrelated", b"old")]);
+    f.rename("dir", "moved");
+    fs::write(f.source("dir/external"), b"new child").unwrap();
+    assert!(matches!(f.engine.commit(None), Err(crate::Error::ProjectConflict(_))));
+    assert!(f.source("dir/external").exists());
+    fs::remove_file(f.source("dir/external")).unwrap();
+    fs::write(f.source("unrelated"), b"external").unwrap();
+    f.engine.commit(None).unwrap();
+    assert!(!f.source("dir").exists());
+    assert_eq!(fs::read(f.source("moved/a")).unwrap(), b"old");
+    assert_eq!(fs::read(f.source("unrelated")).unwrap(), b"external");
+}
+
+#[test]
+fn private_drafts_inside_new_directories_never_cross_the_host_boundary() {
+    let mut f = Fixture::private(&[]);
+    let record = f.engine.prepare(CREATE, "new", "", 0, 0).unwrap();
+    fs::create_dir(f.live("new")).unwrap();
+    f.engine.finish(record, 0).unwrap();
+    f.create("new\\file", b"publish");
+    f.create("new\\file.deltabox-theirs", b"keep private");
+    f.engine.commit(None).unwrap();
+    assert_eq!(fs::read(f.source("new/file")).unwrap(), b"publish");
+    assert!(!f.source("new/file.deltabox-theirs").exists());
+    assert!(f.live("new/file.deltabox-theirs").exists());
+}
+
+#[test]
+fn private_publish_crash_child() {
+    let Some(state) = std::env::var_os("DELTABOX_TEST_PRIVATE_STATE") else { return; };
+    Engine::open(std::path::Path::new(&state)).unwrap().commit(None).unwrap();
+    panic!("the requested crash point was not reached");
+}
+
+#[test]
+fn private_publication_recovers_both_sides_of_the_commit_decision() {
+    for point in ["private_publish_path_applied", "private_publish_committed"] {
+        let mut f = Fixture::private(&[("a", b"old"), ("b", b"old")]);
+        f.write("a", 0, b"new");
+        f.write("b", 0, b"new");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "windows::engine_tests::private_publish_crash_child", "--nocapture"])
+            .env("DELTABOX_TEST_PRIVATE_STATE", &f.engine.state)
+            .env("DELTABOX_TEST_CRASH_POINT", point).output().unwrap();
+        assert_eq!(output.status.code(), Some(86), "{}", String::from_utf8_lossy(&output.stderr));
+        f.engine = Engine::open(&f.engine.state).unwrap();
+        let committed = point == "private_publish_committed";
+        for name in ["a", "b"] {
+            assert_eq!(fs::read(f.source(name)).unwrap(), if committed { b"new" } else { b"old" });
+            assert_eq!(fs::read(f.live(name)).unwrap(), b"new");
+        }
+        assert_eq!(f.engine.diff(None, None).unwrap().pending_changes, if committed { 0 } else { 2 });
+        f.engine.abort(None).unwrap();
+        assert!(!f.root.path().join("publish.json").exists());
+    }
+}
+
+#[test]
+fn legacy_windows_manifests_default_to_through_mode() {
+    let f = Fixture::new();
+    let mut value = serde_json::to_value(&f.engine.manifest).unwrap();
+    value.as_object_mut().unwrap().remove("fs_mode");
+    value.as_object_mut().unwrap().remove("live");
+    let manifest: Manifest = serde_json::from_value(value).unwrap();
+    assert_eq!(manifest.fs_mode, crate::protocol::FilesystemMode::CbcowThrough);
+    assert_eq!(manifest.live(), manifest.source);
 }
 
 #[test]

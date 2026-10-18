@@ -55,11 +55,10 @@ impl SessionCoordinator {
         self.start_with_durability(policy,requested,required,DurabilityMode::Fast,None)
     }
     pub fn start_with_durability(&self,policy:Option<&Path>,requested:Option<FilesystemMode>,_required:bool,durability:DurabilityMode,group:Option<u64>)->Result<SessionInfo> {
-        // Keep distinct dispatch arms so future providers cannot silently inherit through semantics.
-        match requested.unwrap_or(FilesystemMode::CbcowThrough) {
-            FilesystemMode::CbcowPrivate=>return Err(Error::Unsupported("Windows cbcow-private provider is reserved and not implemented".into())),
+        let mode = requested.unwrap_or(FilesystemMode::CbcowThrough);
+        match mode {
             FilesystemMode::CopyPrivate=>return Err(Error::Unsupported("Windows copy-private provider is reserved and not implemented".into())),
-            FilesystemMode::CbcowThrough=>{}
+            FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate=>{}
         }
         if durability!=DurabilityMode::Fast || group.is_some() {return Err(Error::Unsupported("Windows strict durability and group commit are not implemented".into()));}
         crate::windows::sandbox::available()?;
@@ -70,22 +69,36 @@ impl SessionCoordinator {
             if self.manifest(&id)?.status==SessionStatus::Stopped {fs::remove_file(&active)?;}
             else {return Err(Error::SessionBusy(format!("through session {id} owns this project; stop or recover it first")));}
         }
+        // Private sessions share admission; a through writer remains exclusive.
+        if mode == FilesystemMode::CbcowThrough {
+            for entry in fs::read_dir(&self.state)? {
+                let entry = entry?;
+                if !entry.path().join("session.json").is_file() { continue; }
+                let m: Manifest = serde_json::from_slice(&fs::read(entry.path().join("session.json"))?)?;
+                if m.status != SessionStatus::Stopped {
+                    return Err(Error::SessionBusy(format!("session {} owns this project; stop it first", m.session_id)));
+                }
+            }
+        }
         let id=uuid::Uuid::new_v4().to_string();let checkpoint=uuid::Uuid::new_v4().to_string();
         let store=self.store(&id)?;
         let views=self.runtime.join("views");let scratch=self.runtime.join("scratch").join(&id);
         fs::create_dir_all(&views)?;fs::create_dir_all(&scratch)?;
         let manifest=Manifest {
-            version:1,session_id:id.clone(),source:self.project.clone(),view:views.join(&id),scratch,
+            version:1,session_id:id.clone(),source:self.project.clone(),fs_mode:mode,live:None,view:views.join(&id),scratch,
             token:format!("{}{}",uuid::Uuid::new_v4(),uuid::Uuid::new_v4()),started_at_ms:now_ms(),status:SessionStatus::Running,
             policy:match policy {Some(path)=>crate::policy::Policy::load(path)?,None=>crate::policy::Policy::default_agent()},
             next_id:1,accepted:checkpoint.clone(),checkpoints:vec![Savepoint {info:CheckpointInfo {id:checkpoint,label:Some("initial".into()),created_at_ms:now_ms(),change_count:0,committed:true},cursor:0}],review:None,rollback:None,
         };
         Engine::create(&store,manifest)?;
-        write_json(&active,&id)?;
+        if mode == FilesystemMode::CbcowThrough { write_json(&active,&id)?; }
         let result=self.status(&id);
         if result.is_err() {
             // No command has been dispatched, so a failed mount owns no host mutations.
-            let _=fs::remove_file(&active);
+            if mode == FilesystemMode::CbcowThrough { let _=fs::remove_file(&active); }
+            let mut failed = self.manifest(&id)?;
+            failed.status = SessionStatus::Stopped;
+            write_json(&store.join("session.json"), &failed)?;
         }
         result
     }
@@ -138,7 +151,7 @@ impl SessionCoordinator {
     pub fn remove_stopped(&self,id:&str)->Result<()> {
         let m=self.manifest(id)?;
         if m.status!=SessionStatus::Stopped {return Err(Error::SessionBusy(id.into()));}
-        fs::remove_dir_all(self.store(id)?)?;
+        crate::windows::engine::remove(&self.store(id)?)?;
         Ok(())
     }
     pub fn exec(&self,p:ExecParams)->Result<ExecResult> {let id=p.session_id.clone();self.call(&id,Method::SessionExec(p))}
@@ -159,7 +172,7 @@ impl SessionCoordinator {
     pub fn diff(&self,p:DiffParams)->Result<DiffResult> {let id=p.session_id.clone();self.call(&id,Method::DiffList(p))}
     pub fn commit(&self,p:CommitParams)->Result<CommitResult> {let id=p.session_id.clone();self.call(&id,Method::ChangesCommit(p))}
     pub fn abort(&self,p:AbortParams)->Result<AbortResult> {let id=p.session_id.clone();self.call(&id,Method::ChangesAbort(p))}
-    pub fn sync(&self,id:&str)->Result<SyncResult> {Err(Error::Unsupported(format!("session.sync is reserved for Windows cbcow-private ({id})")))}
+    pub fn sync(&self,id:&str)->Result<SyncResult> {self.call(id,Method::SessionSync(SyncParams {session_id:id.into()}))}
     pub fn begin_review(&self,p:ReviewBeginParams)->Result<ActiveReview> {let id=p.session_id.clone();self.call(&id,Method::ReviewBegin(p))}
     pub fn review_status(&self,id:&str)->Result<Option<ActiveReview>> {self.call(id,Method::ReviewStatus(ReviewStatusParams {session_id:id.into()}))}
     pub fn review_diff(&self,id:&str)->Result<DiffResult> {self.call(id,Method::ReviewDiff(ReviewStatusParams {session_id:id.into()}))}

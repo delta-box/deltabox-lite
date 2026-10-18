@@ -2,7 +2,7 @@
 use crate::changeset::{describe_change, ChangeKind, DEFAULT_TEXT_SIZE_LIMIT};
 use crate::error::{Error, Result};
 use crate::policy::Policy;
-use crate::protocol::{ActiveReview, CheckpointInfo, DiffResult, SessionStatus};
+use crate::protocol::{ActiveReview, CheckpointInfo, DiffResult, FilesystemMode, SessionStatus};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -27,6 +27,11 @@ pub struct Manifest {
     pub version: u32,
     pub session_id: String,
     pub source: PathBuf,
+    /// Absent in journals written before private mode was introduced.
+    #[serde(default = "through_mode")]
+    pub fs_mode: FilesystemMode,
+    #[serde(default)]
+    pub live: Option<PathBuf>,
     pub view: PathBuf,
     pub scratch: PathBuf,
     pub token: String,
@@ -40,6 +45,12 @@ pub struct Manifest {
     pub rollback: Option<u64>,
 }
 
+fn through_mode() -> FilesystemMode { FilesystemMode::CbcowThrough }
+
+impl Manifest {
+    pub fn live(&self) -> &Path { self.live.as_deref().unwrap_or(&self.source) }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Savepoint {
     pub info: CheckpointInfo,
@@ -47,7 +58,7 @@ pub struct Savepoint {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct Metadata {
+pub(super) struct Metadata {
     attributes: u32,
     creation: u64,
     access: u64,
@@ -55,11 +66,11 @@ struct Metadata {
 }
 
 impl Metadata {
-    fn read(path: &Path) -> Result<Self> {
+    pub(super) fn read(path: &Path) -> Result<Self> {
         let m = fs::symlink_metadata(path)?;
         Ok(Self { attributes: m.file_attributes(), creation: m.creation_time(), access: m.last_access_time(), write: m.last_write_time() })
     }
-    fn restore(&self, path: &Path) -> Result<()> {
+    pub(super) fn restore(&self, path: &Path) -> Result<()> {
         let f = OpenOptions::new().read(true).access_mode(0x100).share_mode(7)
             .custom_flags(0x02000000).open(path)?;
         let time = |n: u64| FILETIME { dwLowDateTime: n as u32, dwHighDateTime: (n >> 32) as u32 };
@@ -139,7 +150,7 @@ fn read_write(path: &Path) -> std::io::Result<File> {
     OpenOptions::new().read(true).write(true).share_mode(7).open(path)
 }
 
-fn remove(path: &Path) -> Result<()> {
+pub(crate) fn remove(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.into()),
@@ -149,13 +160,18 @@ fn remove(path: &Path) -> Result<()> {
                     return Err(std::io::Error::last_os_error().into());
                 }
             }
-            if m.is_dir() { fs::remove_dir_all(path)?; } else { fs::remove_file(path)?; }
+            if m.is_dir() {
+                if m.file_attributes() & 0x400 == 0 {
+                    for entry in fs::read_dir(path)? { remove(&entry?.path())?; }
+                }
+                fs::remove_dir(path)?;
+            } else { fs::remove_file(path)?; }
             Ok(())
         }
     }
 }
 
-fn copy_tree(source: &Path, target: &Path) -> Result<()> {
+pub(super) fn copy_tree(source: &Path, target: &Path) -> Result<()> {
     let m = match fs::symlink_metadata(source) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         other => other?,
@@ -183,14 +199,18 @@ fn identity(path: &Path) -> Result<u64> {
 }
 
 impl Engine {
-    pub fn create(state: &Path, manifest: Manifest) -> Result<Self> {
+    pub fn create(state: &Path, mut manifest: Manifest) -> Result<Self> {
         fs::create_dir_all(state.join("preimages"))?;
+        if manifest.fs_mode == FilesystemMode::CbcowPrivate {
+            super::private::initialize(state, &mut manifest)?;
+        }
         OpenOptions::new().write(true).create_new(true).open(state.join("journal.jsonl"))?.sync_all()?;
         write_json(&state.join("session.json"), &manifest)?;
         Self::open(state)
     }
 
     pub fn open(state: &Path) -> Result<Self> {
+        super::private::recover(state)?;
         let manifest: Manifest = serde_json::from_slice(&fs::read(state.join("session.json"))?)?;
         if manifest.version != 1 { return Err(Error::Unsupported("unknown Windows journal version".into())); }
         let bytes = fs::read(state.join("journal.jsonl"))?;
@@ -227,7 +247,7 @@ impl Engine {
         let accepted = engine.cursor_for(Some(&engine.manifest.accepted))?;
         engine.records.retain(|r| r.id > accepted);
         if let Some(record) = pending {
-            if record.id > accepted { engine.undo_at(&record.undo, &engine.manifest.source)?; }
+            if record.id > accepted { engine.undo_at(&record.undo, engine.manifest.live())?; }
             engine.append(&Event::Undone(record.id))?;
         }
         if let Some(target) = engine.manifest.rollback { engine.rollback_to(target)?; }
@@ -260,7 +280,7 @@ impl Engine {
             return Err(Error::Backend("invalid path in Windows filesystem view".into()));
         }
         self.check_policy_name(relative,write)?;
-        let mut target = self.manifest.source.clone();
+        let mut target = self.manifest.live().to_path_buf();
         for c in path.components() {
             target.push(c);
             match fs::symlink_metadata(&target) {
@@ -268,7 +288,7 @@ impl Engine {
                 Ok(_) => {
                     // NTFS 8.3 aliases must not bypass secret or .git rules.
                     let actual=target.canonicalize()?;
-                    let actual=actual.strip_prefix(&self.manifest.source).map_err(|_|Error::Backend("path escaped backing project".into()))?;
+                    let actual=actual.strip_prefix(self.manifest.live()).map_err(|_|Error::Backend("path escaped backing project".into()))?;
                     self.check_policy_name(&actual.to_string_lossy(),write)?;
                 },
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
@@ -373,7 +393,7 @@ impl Engine {
 
     pub fn finish(&mut self, record: Record, status: i32) -> Result<i32> {
         if status < 0 {
-            self.undo_at(&record.undo, &self.manifest.source)?;
+            self.undo_at(&record.undo, self.manifest.live())?;
             self.append(&Event::Undone(record.id))?;
         } else {
             self.append(&Event::Applied(record.id))?;
@@ -421,7 +441,7 @@ impl Engine {
             Undo::Rename { old, new, identity: expected, replaced } => {
                 let (old, new) = (root.join(old), root.join(new));
                 // Scratch objects have new file IDs; live recovery uses stable IDs for idempotence.
-                let live = root == self.manifest.source;
+                let live = root == self.manifest.live();
                 let move_back = new.exists() && (!live || identity(&new)? == *expected);
                 if move_back {
                     if old.exists() { remove(&old)?; }
@@ -444,6 +464,13 @@ impl Engine {
     }
 
     pub fn commit(&mut self, target: Option<&str>) -> Result<(String, usize)> {
+        if self.manifest.fs_mode == FilesystemMode::CbcowPrivate {
+            return self.commit_private(target, false).map(|(id, applied, _)| (id, applied));
+        }
+        self.accept(target)
+    }
+
+    fn accept(&mut self, target: Option<&str>) -> Result<(String, usize)> {
         let target = match target { Some(id) => id.to_owned(), None => self.checkpoint(Some("accepted".into()))?.id };
         let cursor = self.cursor_for(Some(&target))?;
         let applied = self.diff(None, Some(&target))?.pending_changes;
@@ -454,6 +481,72 @@ impl Engine {
         self.records.retain(|r| r.id > cursor);
         self.prune_preimages()?;
         Ok((target, applied))
+    }
+
+    pub fn commit_private(&mut self, target: Option<&str>, ours: bool) -> Result<(String, usize, u64)> {
+        let target = match target { Some(id) => id.to_owned(), None => self.checkpoint(Some("accepted".into()))?.id };
+        let cursor = self.cursor_for(Some(&target))?;
+        let changes = self.diff(None, Some(&target))?.changes;
+        let stage = self.state.join(format!("publish-{}", uuid::Uuid::new_v4()));
+        let result = (|| {
+            self.materialize(cursor, &stage.join("tree"))?;
+            let mut next = self.manifest.clone();
+            next.accepted = target.clone();
+            next.checkpoints.retain(|p| p.cursor >= cursor);
+            for p in &mut next.checkpoints { p.info.committed = p.info.id == target; }
+            next.review = None;
+            let folded = super::private::publish(&self.state, &self.manifest, &next, &changes, &stage, ours)?;
+            self.manifest = next;
+            self.records.retain(|r| r.id > cursor);
+            self.prune_preimages()?;
+            Ok((target, changes.iter().filter(|c| !super::private::is_draft(&c.path)).count(), folded))
+        })();
+        // A failed recovery must keep its backups and block further mutations.
+        if !self.state.parent().unwrap().join("publish.json").exists() {
+            let _ = remove(&stage);
+        } else { self.poisoned = true; }
+        result
+    }
+
+    /// Reconstruct a checkpoint without changing LIVE or the journal.
+    fn materialize(&self, cursor: u64, root: &Path) -> Result<()> {
+        if self.poisoned { return Err(Error::Backend("journal recovery required".into())); }
+        fs::create_dir_all(root)?;
+        let touched: BTreeSet<_> = self.records.iter().flat_map(|r| r.touched.iter().cloned()).collect();
+        for path in &touched {
+            if !touched.iter().any(|parent| parent != path && Path::new(path).starts_with(parent)) {
+                copy_tree(&self.manifest.live().join(path), &root.join(path))?;
+            }
+        }
+        for record in self.records.iter().rev().filter(|r| r.id > cursor) {
+            self.undo_at(&record.undo, root)?;
+        }
+        Ok(())
+    }
+
+    pub fn sync(&mut self) -> Result<crate::protocol::SyncResult> {
+        if self.manifest.fs_mode != FilesystemMode::CbcowPrivate {
+            return Err(Error::Unsupported("session.sync requires a cbcow-private session".into()));
+        }
+        if self.poisoned { return Err(Error::Backend("journal recovery required".into())); }
+        let changes = self.diff(None, None)?.changes;
+        super::private::sync(self, &changes)
+    }
+
+    /// Used for merge drafts, which must have the same rollback behavior as routed writes.
+    pub(super) fn write_draft(&mut self, relative: &str, bytes: &[u8]) -> Result<bool> {
+        let path = self.path(relative, true)?;
+        if !path.parent().unwrap().is_dir() { return Ok(false); }
+        let id = self.manifest.next_id;
+        self.manifest.next_id += 1;
+        let (snapshot, size) = self.snapshot(&path, id, "draft")?;
+        let record = Record { id, touched: vec![relative.into()], undo: Undo::Restore { path: relative.into(), snapshot }, bytes: size };
+        self.append(&Event::Ready(record.clone()))?;
+        self.poisoned = true;
+        let status = if fs::write(path, bytes).is_ok() { 0 } else { -1 };
+        self.finish(record, status)?;
+        if status < 0 { return Err(Error::Backend("could not materialize merge draft".into())); }
+        Ok(true)
     }
 
     pub fn abort(&mut self, target: Option<&str>) -> Result<(String, usize)> {
@@ -469,7 +562,7 @@ impl Engine {
     fn rollback_to(&mut self, cursor: u64) -> Result<()> {
         while self.records.last().is_some_and(|r| r.id > cursor) {
             let record = self.records.last().unwrap();
-            self.undo_at(&record.undo, &self.manifest.source)?;
+            self.undo_at(&record.undo, self.manifest.live())?;
             self.append(&Event::Undone(record.id))?;
             self.records.pop();
         }
@@ -511,22 +604,25 @@ impl Engine {
                 fs::create_dir_all(root)?;
                 for path in &touched {
                     if !touched.iter().any(|parent| parent != path && Path::new(path).starts_with(parent)) {
-                        copy_tree(&self.manifest.source.join(path), &root.join(path))?;
+                        copy_tree(&self.manifest.live().join(path), &root.join(path))?;
                     }
                 }
             }
             for (root, cursor) in [(&old, from_cursor), (&new, to_cursor)] {
                 for record in self.records.iter().rev().filter(|r| r.id > cursor) { self.undo_at(&record.undo, root)?; }
             }
-            let before = scan(&old)?;
-            let after = scan(&new)?;
+            let metadata_paths: BTreeSet<_> = self.records.iter().filter_map(|r| match &r.undo {
+                Undo::Metadata { path, .. } => Some(path.replace('/', "\\").to_lowercase()), _ => None,
+            }).collect();
+            let before = scan(&old, &metadata_paths)?;
+            let after = scan(&new, &metadata_paths)?;
             let keys: BTreeSet<_> = before.keys().chain(after.keys()).cloned().collect();
             let mut changes = Vec::new();
             for path in keys {
                 let (a,b) = (before.get(&path), after.get(&path));
                 if a == b { continue; }
                 let kind = if a.is_none() { ChangeKind::Added } else if b.is_none() { ChangeKind::Deleted } else { ChangeKind::Modified };
-                let read = |root: &Path, entry: Option<&(bool,u64,u32,String)>| -> Option<Vec<u8>> {
+                let read = |root: &Path, entry: Option<&DiffEntry>| -> Option<Vec<u8>> {
                     entry.filter(|e| !e.0 && e.1 <= DEFAULT_TEXT_SIZE_LIMIT).and_then(|_| fs::read(root.join(&path)).ok())
                 };
                 let (ab,bb) = (read(&old,a),read(&new,b));
@@ -547,7 +643,9 @@ impl Engine {
     }
 }
 
-fn scan(root: &Path) -> Result<BTreeMap<String,(bool,u64,u32,String)>> {
+type DiffEntry = (bool,u64,u32,String,u64,u64);
+
+fn scan(root: &Path, metadata_paths: &BTreeSet<String>) -> Result<BTreeMap<String,DiffEntry>> {
     let mut out = BTreeMap::new();
     for entry in walkdir::WalkDir::new(root).min_depth(1) {
         let entry = entry.map_err(|e| Error::Backend(e.to_string()))?;
@@ -560,7 +658,9 @@ fn scan(root: &Path) -> Result<BTreeMap<String,(bool,u64,u32,String)>> {
             loop { let n=f.read(&mut buffer)?; if n==0 {break;} hasher.update(&buffer[..n]); }
             format!("{:x}",hasher.finalize())
         } else { String::new() };
-        out.insert(path,(m.is_dir(), if m.is_file() { m.len() } else { 0 }, m.file_attributes(),hash));
+        let times = m.is_file() || metadata_paths.contains(&path.replace('/', "\\").to_lowercase());
+        out.insert(path,(m.is_dir(), if m.is_file() { m.len() } else { 0 }, m.file_attributes(),hash,
+            if times { m.creation_time() } else { 0 }, if times { m.last_write_time() } else { 0 }));
     }
     Ok(out)
 }

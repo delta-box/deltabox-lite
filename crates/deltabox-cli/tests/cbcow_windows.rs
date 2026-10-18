@@ -108,10 +108,89 @@ fn powershell_through_lifecycle_and_isolation() {
     assert!(s.project.join("allowed.txt").exists());
     assert!(!s.root.path().join("outside.txt").exists());
     s.action("abort",&[]);
-    for mode in ["cbcow-private","copy-private"] {
-        let out=s.raw(&["session","start",s.project.to_str().unwrap(),"--fs-mode",mode]);
-        assert!(!out.status.success());assert!(String::from_utf8_lossy(&out.stderr).contains("reserved"));
-    }
+    let out=s.raw(&["session","start",s.project.to_str().unwrap(),"--fs-mode","copy-private"]);
+    assert!(!out.status.success());assert!(String::from_utf8_lossy(&out.stderr).contains("reserved"));
     let out=s.raw(&["session","start",s.project.to_str().unwrap(),"--durable"]);
     assert!(!out.status.success());assert!(String::from_utf8_lossy(&out.stderr).contains("strict durability"));
+}
+
+#[test]
+#[ignore = "requires installed WinFsp and native MXC PSEC filesystem-deny support; run explicitly on a supported Windows host"]
+fn private_sessions_isolate_publish_sync_and_recover() {
+    let root = tempfile::tempdir().unwrap();
+    let project = root.path().join("private project with spaces");
+    fs::create_dir(&project).unwrap();
+    fs::write(project.join("a.txt"), b"old").unwrap();
+    fs::write(project.join("b.txt"), b"old").unwrap();
+    let mut s = Session {root, project, id: String::new()};
+    let start = |s: &Session| s.json(&["session", "start", s.project.to_str().unwrap(), "--fs-mode", "cbcow-private", "--require-fs-mode", "--json"]);
+    let info = start(&s);
+    s.id = info["session_id"].as_str().unwrap().into();
+    assert_eq!(info["resolved_fs_mode"], "cbcow-private");
+    assert_eq!(info["host_visibility"], "on-commit");
+    assert_eq!(info["rollback_guarantee"], "private-live-tree");
+    let sibling = start(&s)["session_id"].as_str().unwrap().to_owned();
+    // Keep the sibling in a guard as well, so failures always stop both helpers.
+    struct StopSession<'a> { session: &'a Session, id: &'a str }
+    impl Drop for StopSession<'_> {
+        fn drop(&mut self) {
+            let _ = self.session.raw(&["session", "stop", self.id, "--project", self.session.project.to_str().unwrap()]);
+        }
+    }
+    let sibling_guard = StopSession { session: &s, id: &sibling };
+    let sibling_action = |action: &str, extra: &[&str]| {
+        let mut args = vec![action, &sibling, "--project", s.project.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        s.json(&args)
+    };
+    let through = s.raw(&["session", "start", s.project.to_str().unwrap(), "--fs-mode", "cbcow-through"]);
+    assert!(!through.status.success());
+    s.write("a.txt", "ours");
+    let view = PathBuf::from(info["mountpoint"].as_str().unwrap());
+    assert_eq!(fs::read(view.join("a.txt")).unwrap(), b"ours");
+    assert_eq!(fs::read(s.project.join("a.txt")).unwrap(), b"old");
+    let out = s.raw(&["write", &sibling, "--project", s.project.to_str().unwrap(), "b.txt", "--content", "sibling"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    s.action("commit", &[]);
+    assert_eq!(sibling_action("commit", &[])["folded_publications"], 1);
+    assert_eq!(fs::read(s.project.join("a.txt")).unwrap(), b"ours");
+    assert_eq!(fs::read(s.project.join("b.txt")).unwrap(), b"sibling");
+    s.write("b.txt", "overlap");
+    let conflict = s.raw(&["commit", &s.id, "--project", s.project.to_str().unwrap()]);
+    assert!(!conflict.status.success());
+    assert!(String::from_utf8_lossy(&conflict.stderr).contains("host paths changed"));
+    let sync = s.action("sync", &[]);
+    assert_eq!(sync["conflicts"][0]["path"], "b.txt");
+    assert_eq!(fs::read(view.join("b.txt.deltabox-theirs")).unwrap(), b"sibling");
+    s.action("commit", &[]);
+    assert_eq!(fs::read(s.project.join("b.txt")).unwrap(), b"overlap");
+    assert!(!s.project.join("b.txt.deltabox-theirs").exists());
+    s.write("a.txt", "pending");
+    let status = s.json(&["session", "status", &s.id, "--project", s.project.to_str().unwrap()]);
+    let killed = Command::new("taskkill.exe").args(["/F", "/PID", &status["helper_pid"].to_string()]).output().unwrap();
+    assert!(killed.status.success());
+    s.action("abort", &[]);
+    assert_eq!(fs::read(s.project.join("a.txt")).unwrap(), b"ours");
+    let status = s.json(&["session", "status", &s.id, "--project", s.project.to_str().unwrap()]);
+    let reopened_view = PathBuf::from(status["mountpoint"].as_str().unwrap());
+    assert_eq!(fs::read(reopened_view.join("a.txt")).unwrap(), b"ours");
+    fs::write(s.project.join("a.txt"), b"external").unwrap();
+    s.write("a.txt", "should conflict");
+    assert!(!s.raw(&["commit", &s.id, "--project", s.project.to_str().unwrap(), "--ours"]).status.success());
+    s.action("abort", &[]);
+    let script = format!(r#"
+      foreach($p in @({host},{live})) {{
+        try {{[void][IO.File]::ReadAllBytes($p);throw "unexpected read: $p"}}
+        catch [UnauthorizedAccessException] {{}}
+      }}
+      [IO.File]::WriteAllText('sandbox.txt','private')
+    "#, host = quoted(&s.project.join("a.txt")), live = {
+        let project_state = fs::read_dir(s.root.path().join("state/projects")).unwrap().next().unwrap().unwrap().path();
+        quoted(&project_state.join(&s.id).join("live/a.txt"))
+    });
+    s.powershell(&script);
+    assert!(!s.project.join("sandbox.txt").exists());
+    sibling_action("abort", &[]);
+    s.json(&["session", "stop", &sibling, "--project", s.project.to_str().unwrap()]);
+    drop(sibling_guard);
 }

@@ -18,7 +18,7 @@ pub struct Ready { pub address: std::net::SocketAddr, pub pid: u32 }
 #[derive(Serialize, Deserialize)]
 struct Request { token: String, method: Method }
 #[derive(Serialize, Deserialize)]
-struct Response { result: Option<Value>, error: Option<String> }
+struct Response { result: Option<Value>, error: Option<String>, #[serde(default)] conflict: Option<crate::error::ConflictReport> }
 
 pub fn lock(path: &Path, timeout: Duration) -> Result<File> {
     let deadline=Instant::now()+timeout;
@@ -42,6 +42,7 @@ pub fn request(state: &Path, method: Method) -> Result<Value> {
     let mut line=String::new();
     BufReader::new(stream).take(32*1024*1024).read_line(&mut line)?;
     let response: Response=serde_json::from_str(&line)?;
+    if let Some(report) = response.conflict { return Err(Error::ProjectConflict(report)); }
     match (response.result,response.error) {
         (value,None)=>Ok(value.unwrap_or(Value::Null)),
         (_,Some(error))=>Err(Error::Backend(error)),
@@ -49,10 +50,12 @@ pub fn request(state: &Path, method: Method) -> Result<Value> {
 }
 
 pub fn session_info(engine: &Engine, pid: Option<u32>) -> Result<SessionInfo> {
-    let mut filesystem=FilesystemInfo::cbcow_through(engine.manifest.view.clone(),pid.unwrap_or(0),0);
+    let mut filesystem=if engine.manifest.fs_mode == FilesystemMode::CbcowPrivate {
+        FilesystemInfo::cbcow_private(engine.manifest.view.clone(),pid.unwrap_or(0),0)
+    } else { FilesystemInfo::cbcow_through(engine.manifest.view.clone(),pid.unwrap_or(0),0) };
     filesystem.state_provider=Some("windows-winfsp".into());
     filesystem.isolation_provider=Some("mxc-psec-filesystem".into());
-    filesystem.rollback_guarantee="winfsp-routed-writes-only".into();
+    if engine.manifest.fs_mode == FilesystemMode::CbcowThrough { filesystem.rollback_guarantee="winfsp-routed-writes-only".into(); }
     filesystem.helper_pid=pid;
     filesystem.degraded_protections=Some(vec!["network-policy".into(),"resource-limits".into()]);
     Ok(SessionInfo {
@@ -94,7 +97,10 @@ pub fn run(state: &Path) -> Result<()> {
         let stopping=matches!(request.method,Method::SessionStop(_));
         let result=dispatch(&engine,&mount,state,request.method);
         let stop=stopping && result.is_ok();
-        let response=match result { Ok(value)=>Response { result: Some(value),error: None },Err(error)=>Response { result: None,error: Some(error.to_string()) } };
+        let response=match result {
+            Ok(value)=>Response { result: Some(value),error: None,conflict: None },
+            Err(error)=>Response { result: None,conflict: match &error {Error::ProjectConflict(report)=>Some(report.clone()),_=>None},error: Some(error.to_string()) }
+        };
         // The operation is authoritative even when its client has disappeared.
         let _=serde_json::to_writer(&mut stream,&response);
         let _=stream.write_all(b"\n");
@@ -145,9 +151,13 @@ fn dispatch(engine: &Arc<Mutex<Engine>>,mount: &Mount,state: &Path,method: Metho
                 Method::CheckpointCreate(p)=>serde_json::to_value(e.checkpoint(p.label)?)?,
                 Method::DiffList(p)=>serde_json::to_value(e.diff(p.from.as_deref(),p.to.as_deref())?)?,
                 Method::ChangesCommit(p)=> {
-                    if p.ours { return Err(Error::Unsupported("through mode has no private publications to override".into())); }
-                    let (checkpoint_id,applied)=e.commit(p.checkpoint.as_deref())?;
-                    serde_json::to_value(CommitResult {checkpoint_id,applied,folded_publications: None})?
+                    let (checkpoint_id,applied,folded) = if e.manifest.fs_mode == FilesystemMode::CbcowPrivate {
+                        e.commit_private(p.checkpoint.as_deref(),p.ours)?
+                    } else {
+                        if p.ours { return Err(Error::Unsupported("through mode has no private publications to override".into())); }
+                        let (id,applied)=e.commit(p.checkpoint.as_deref())?;(id,applied,0)
+                    };
+                    serde_json::to_value(CommitResult {checkpoint_id,applied,folded_publications: (folded>0).then_some(folded)})?
                 }
                 Method::ChangesAbort(p)=> {
                     let (checkpoint_id,restored)=e.abort(p.checkpoint.as_deref())?;
@@ -168,9 +178,9 @@ fn dispatch(engine: &Arc<Mutex<Engine>>,mount: &Mount,state: &Path,method: Metho
                 }
                 Method::ReviewCommit(p)=> {
                     if e.manifest.review.is_none() { return Err(Error::ReviewNotActive(p.session_id)); }
-                    let (checkpoint_id,applied)=e.commit(None)?;
+                    let (checkpoint_id,applied,folded)=if e.manifest.fs_mode == FilesystemMode::CbcowPrivate {e.commit_private(None,false)?} else {let (id,applied)=e.commit(None)?;(id,applied,0)};
                     e.manifest.review=None;e.save()?;
-                    serde_json::to_value(CommitResult {checkpoint_id,applied,folded_publications: None})?
+                    serde_json::to_value(CommitResult {checkpoint_id,applied,folded_publications: (folded>0).then_some(folded)})?
                 }
                 Method::ReviewAbort(p)=> {
                     let checkpoint=e.manifest.review.as_ref().ok_or_else(||Error::ReviewNotActive(p.session_id))?.checkpoint_id.clone();
@@ -181,7 +191,7 @@ fn dispatch(engine: &Arc<Mutex<Engine>>,mount: &Mount,state: &Path,method: Metho
                     let review=e.manifest.review.take().ok_or_else(||Error::ReviewNotActive(p.session_id))?;
                     e.save()?;serde_json::to_value(review)?
                 }
-                Method::SessionSync(_)=>return Err(Error::Unsupported("session.sync is reserved for Windows cbcow-private".into())),
+                Method::SessionSync(_)=>serde_json::to_value(e.sync()?)?,
                 _=>return Err(Error::Unsupported("method is unavailable in Windows filesystem helper".into())),
             };
             Ok(value)

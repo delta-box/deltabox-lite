@@ -20,7 +20,7 @@ pub struct Mount {
 impl Mount {
     pub fn new(engine: Arc<Mutex<Engine>>) -> Result<Self> {
         let e = engine.lock().map_err(|_| Error::Backend("filesystem mutex poisoned".into()))?;
-        let (source, view) = (wide(&e.manifest.source), wide(&e.manifest.view));
+        let (source, view) = (wide(e.manifest.live()), wide(&e.manifest.view));
         let prefix=wide(std::path::Path::new(&format!("\\deltabox\\{}",e.manifest.session_id)));
         drop(e);
         let mut raw = std::ptr::null_mut();
