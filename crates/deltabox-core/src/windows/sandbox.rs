@@ -103,6 +103,25 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
     if manifest.policy.filesystem.write.iter().any(|p|p != Path::new(".")) {
         return Err(Error::Unsupported("Windows filesystem write grants currently support only the project view".into()));
     }
+    let mut writable_roots=vec![unicode(&view)?,unicode(&manifest.scratch)?];
+    // PSEC's root grant on a WinFsp network volume does not propagate to
+    // directories that already exist. New directories inherit it, so grant
+    // each existing view directory before launch, without exposing backing paths.
+    let directories=walkdir::WalkDir::new(manifest.live()).min_depth(1).follow_links(false).into_iter().filter_entry(|entry| {
+        if entry.depth()==0 { return true; }
+        if !entry.file_type().is_dir() { return false; }
+        let Ok(relative)=entry.path().strip_prefix(manifest.live()) else { return false; };
+        let normalized=relative.to_string_lossy().replace('\\',"/").to_lowercase();
+        !normalized.split('/').any(|part|part==".deltabox")
+            && !manifest.policy.filesystem.deny.iter().any(|pattern|crate::policy::deny_matches(&pattern.replace('\\',"/").to_lowercase(),&normalized))
+    });
+    for entry in directories {
+        let entry=entry.map_err(|e|Error::Backend(e.to_string()))?;
+        if entry.file_type().is_dir() {
+            let relative=entry.path().strip_prefix(manifest.live()).map_err(|e|Error::Backend(e.to_string()))?;
+            writable_roots.push(unicode(&view.join(relative))?);
+        }
+    }
     let request=ExecutionRequest {
         schema_version: "0.8.0-alpha".into(),
         script_code: cmdline_from_argv_for_context(&argv,CommandLineContext::WindowsCreateProcess).map_err(|e|Error::Backend(e.to_string()))?,
@@ -111,7 +130,7 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
         script_timeout: 600_000,
         policy: ContainerPolicy {
             capabilities: vec!["registryRead".into()],
-            readwrite_paths: vec![unicode(&view)?,unicode(&manifest.scratch)?],
+            readwrite_paths: writable_roots,
             readonly_paths: read,
             denied_paths: vec![unicode(&manifest.source)?,unicode(state.parent().unwrap())?],
             fallback: FallbackPolicy { allow_dacl_mutation: false },

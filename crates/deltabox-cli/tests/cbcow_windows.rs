@@ -28,7 +28,7 @@ impl Session {
         let encoded=base64::engine::general_purpose::STANDARD.encode(bytes);
         let shell=PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/WindowsPowerShell/v1.0/powershell.exe");
         let value=self.action("exec",&["--",shell.to_str().unwrap(),"-NoLogo","-NoProfile","-NonInteractive","-EncodedCommand",&encoded]);
-        assert_eq!(value["exit_code"],0,"{value}");value
+        assert_eq!(value["exit_code"],0,"{body}: {value}");value
     }
     fn write(&self,name:&str,contents:&str) {
         let out=self.raw(&["write",&self.id,"--project",self.project.to_str().unwrap(),name,"--content",contents]);
@@ -50,12 +50,19 @@ fn powershell_through_lifecycle_and_isolation() {
     fs::write(project.join(".env"),b"secret").unwrap();
     fs::create_dir(project.join("folder")).unwrap();
     fs::write(project.join("folder/child.txt"),b"child").unwrap();
+    fs::create_dir_all(project.join("folder/existing/deeper")).unwrap();
+    fs::write(project.join("folder/existing/deeper/input.txt"),b"existing nested file").unwrap();
+    fs::create_dir(project.join(".ssh")).unwrap();
+    fs::write(project.join(".ssh/id_rsa"),b"secret").unwrap();
     let mut s=Session {root,project,id:String::new()};
     let info=s.json(&["session","start",s.project.to_str().unwrap(),"--fs-mode","cbcow-through","--require-fs-mode","--json"]);
     s.id=info["session_id"].as_str().unwrap().into();
     assert_eq!(info["host_visibility"],"immediate");
     assert_eq!(info["state_provider"],"windows-winfsp");
     s.powershell(r#"
+      if ((Get-Content -LiteralPath 'folder/existing/deeper/input.txt' -Raw) -ne 'existing nested file') {throw 'existing nested read failed'}
+      Set-Content -LiteralPath 'folder/existing/deeper/new.txt' -Value 'existing nested write'
+      if ((Get-Content -LiteralPath 'folder/existing/deeper/new.txt' -Raw).Trim() -ne 'existing nested write') {throw 'existing nested write failed'}
       $f=[IO.File]::Open('a.txt',[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite)
       try { $f.Position=2; $f.Write([Text.Encoding]::UTF8.GetBytes('XY'),0,2) } finally { $f.Dispose() }
       Set-Content -LiteralPath 'new.txt' -Value 'new'
@@ -73,6 +80,8 @@ fn powershell_through_lifecycle_and_isolation() {
     assert_eq!(fs::read(s.project.join("a.txt")).unwrap(),b"abcdefgh");
     assert_eq!(fs::read(s.project.join("deleted.txt")).unwrap(),b"restore me");
     assert!(s.project.join("folder/child.txt").is_file());
+    assert_eq!(fs::read(s.project.join("folder/existing/deeper/input.txt")).unwrap(),b"existing nested file");
+    assert!(!s.project.join("folder/existing/deeper/new.txt").exists());
     for name in ["new.txt","sub","moved","renamed.txt"] {assert!(!s.project.join(name).exists(),"{name}");}
 
     s.write("a.txt","checkpoint");
@@ -95,7 +104,7 @@ fn powershell_through_lifecycle_and_isolation() {
     let project_state=fs::read_dir(s.root.path().join("state/projects")).unwrap().next().unwrap().unwrap().path();
     let state=project_state.join(&s.id).join("session.json");
     let script=format!(r#"
-      foreach($p in @({source},{state},'.env')) {{
+      foreach($p in @({source},{state},'.env','.ssh/id_rsa')) {{
         try {{[void][IO.File]::ReadAllBytes($p);throw "unexpected read: $p"}}
         catch [UnauthorizedAccessException] {{}}
       }}
