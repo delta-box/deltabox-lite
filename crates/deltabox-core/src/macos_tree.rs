@@ -153,6 +153,36 @@ pub(crate) fn remove_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `remove_path` for trees cloned from a project, which can carry read-only
+/// directories and locked (`uchg`) files that plain removal refuses.
+pub(crate) fn remove_tree(path: &Path) -> Result<()> {
+    if remove_path(path).is_ok() {
+        return Ok(());
+    }
+    unlock_tree(path)?;
+    remove_path(path)
+}
+
+/// Clear lock flags below `path` and give the owner full access to every
+/// directory, so that everything in it can be listed and unlinked. Parents
+/// come first, so each directory is opened up before its entries are read.
+pub(crate) fn unlock_tree(path: &Path) -> Result<()> {
+    for entry in walkdir::WalkDir::new(path).follow_links(false) {
+        let entry = entry.map_err(|error| Error::Io(std::io::Error::other(error)))?;
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.st_flags() != 0 {
+            set_flags(entry.path(), 0, metadata.file_type().is_symlink())?;
+        }
+        if metadata.is_dir() && metadata.mode() & 0o700 != 0o700 {
+            fs::set_permissions(
+                entry.path(),
+                fs::Permissions::from_mode(metadata.mode() | 0o700),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn sync_tree(root: &Path) -> Result<()> {
     let mut directories = Vec::new();
     for entry in walkdir::WalkDir::new(root).follow_links(false) {

@@ -318,6 +318,117 @@ fn sid_of(output: &Output) -> String {
         .to_string()
 }
 
+impl SharedProject {
+    fn run<const N: usize>(&self, args: [&str; N]) -> Output {
+        let output = command(self.project.path(), self.state.path(), args);
+        assert_ok(&output);
+        output
+    }
+
+    fn start(&self, mode: &str) -> String {
+        let output = self.try_start(mode);
+        assert_ok(&output);
+        sid_of(&output)
+    }
+
+    /// A session's engine state, located through its public record.
+    fn state_root(&self, sid: &str) -> PathBuf {
+        let project_state = std::fs::read_dir(self.state.path().join("projects"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let record: Value = serde_json::from_slice(
+            &std::fs::read(project_state.join(sid).join("macos-native.json")).unwrap(),
+        )
+        .unwrap();
+        PathBuf::from(record["state_root"].as_str().unwrap())
+    }
+}
+
+/// Wait for the detached reclaimer to empty the retired directory next to a
+/// session's state root.
+fn reclaimed(state_root: &Path) -> bool {
+    let retired = state_root.with_file_name("retired");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if std::fs::read_dir(&retired).is_ok_and(|mut entries| entries.next().is_none()) {
+            return true;
+        }
+        if std::time::Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn stopped_sessions_release_their_native_state() {
+    let env = SharedProject::new();
+    let project = env.project.path().to_str().unwrap();
+    // Clones of a read-only directory refuse plain removal.
+    let read_only = env.project.path().join("read-only");
+    std::fs::create_dir(&read_only).unwrap();
+    std::fs::write(read_only.join("file.txt"), "accepted").unwrap();
+    std::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(0o555)).unwrap();
+    for mode in ["cbcow-through", "cbcow-private"] {
+        let sid = env.start(mode);
+        let root = env.state_root(&sid);
+        env.run([
+            "exec",
+            &sid,
+            "--project",
+            project,
+            "--",
+            "/bin/sh",
+            "-c",
+            "echo x > b.txt",
+        ]);
+        assert!(root.join("engine/base/read-only/file.txt").exists());
+        env.run(["session", "stop", &sid, "--project", project]);
+
+        assert!(!root.join("engine").exists(), "{mode} kept its engine");
+        assert!(
+            !root.join("runtime").exists(),
+            "{mode} kept command scratch"
+        );
+        assert!(root.join("command-helper.log").exists());
+        let status: Value = serde_json::from_slice(
+            &env.run(["session", "status", &sid, "--project", project])
+                .stdout,
+        )
+        .unwrap();
+        assert_eq!(status["status"], "stopped");
+        assert!(reclaimed(&root), "{mode} state was never deleted");
+    }
+    std::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn start_releases_state_that_stopped_sessions_still_hold() {
+    let env = SharedProject::new();
+    let project = env.project.path().to_str().unwrap();
+    let old = env.start("cbcow-private");
+    let old_root = env.state_root(&old);
+    env.run(["session", "stop", &old, "--project", project]);
+    assert!(reclaimed(&old_root));
+
+    // Older versions kept the engine of every stopped session, and a
+    // reclaimer may have been killed half way.
+    std::fs::create_dir_all(old_root.join("engine/base")).unwrap();
+    std::fs::write(old_root.join("engine/base/a.txt"), "stale").unwrap();
+    let retired = old_root.with_file_name("retired");
+    std::fs::create_dir_all(retired.join("interrupted")).unwrap();
+    std::fs::write(retired.join("interrupted/a.txt"), "stale").unwrap();
+
+    let new = env.start("cbcow-private");
+    assert!(!old_root.join("engine").exists());
+    assert!(env.state_root(&new).join("engine/base/a.txt").exists());
+    assert!(reclaimed(&old_root));
+    env.run(["session", "stop", &new, "--project", project]);
+}
+
 // Mode-aware admission: private sessions coexist; through, which writes the
 // host tree directly, excludes everything and is excluded by anything live.
 #[test]

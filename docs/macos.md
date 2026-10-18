@@ -39,6 +39,16 @@ writes as tainted, and refuse abort until those writes are accepted. Private
 mode keeps its `LIVE` tree separate and conflict-checks touched host paths at
 commit.
 
+Stopping a session releases its filesystem state: the accepted base, private
+`LIVE`, checkpoints, indexes, and the commands' scratch `HOME` and `TMPDIR`.
+They are renamed into a `retired` directory beside the session state roots, so
+`session stop` returns at once, and a detached `macos-reclaim` helper deletes
+them at background priority. The helper pauses while any session start is
+underway, because deleting a large tree slows a concurrent clone. The session
+record, journal, and command-helper log stay until the session is removed, so
+`session status` keeps working. A later `session start` also releases state
+that stopped sessions still hold, such as sessions stopped by older versions.
+
 ## Path mapping
 
 The public `deltabox_core::pathmap::PathMapper` maps:
