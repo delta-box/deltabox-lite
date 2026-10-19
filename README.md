@@ -31,6 +31,40 @@ commit.
 Think of it as Git for agent sessions: less ceremony, more control, and no
 anxiety about binary or large files.
 
+## 📰 News
+
+- **[2026/10/19]** Added Windows WinFsp support with strict durability for private sessions, plus execution-scoped network approvals ([PR #33](https://github.com/delta-box/deltabox-lite/pull/33), [PR #35](https://github.com/delta-box/deltabox-lite/pull/35)).
+- **[2026/10/16]** Open-sourced DeltaBox Lite and published the introduction “DeltaBox Lite: A Lightweight File Sandbox for Terminal AI Agents.”
+- **[2026/10/14]** Released `v0.1.0` and `v0.1.1`, updated DSH / Pi integrations, and fixed `read-write` execution in macOS sessions.
+- **[2026/09]** Expanded the Native Node API and execution profiles; added npm, Homebrew, an install script, and a multi-platform prebuilt release pipeline.
+- **[2026/08]** Built Linux / macOS file sandboxing, the CB-CoW state engine, and the diff / commit / abort workflow; added DSH / Pi integrations and concurrent private sessions for multiple agents.
+
+<details>
+<summary>View full history</summary>
+
+### 2026
+
+- **[10/19]** Added Windows WinFsp sessions with `cbcow-through` and `cbcow-private` modes, and fixed access permissions for existing view directories ([PR #33](https://github.com/delta-box/deltabox-lite/pull/33)).
+- **[10/19]** Added execution-scoped network approvals: a proxy restricts destination hosts and ports, and temporary grants expire when the command finishes ([PR #35](https://github.com/delta-box/deltabox-lite/pull/35)).
+- **[10/16]** Open-sourced the project and published the introduction “DeltaBox Lite: A Lightweight File Sandbox for Terminal AI Agents.”
+- **[10/15]** Added an installation prompt for AI agents and environment checks.
+- **[10/14]** Released `v0.1.0` and `v0.1.1`, updated DSH / Pi plugins and installation guides, and fixed protected `read-write` execution in macOS through sessions ([PR #32](https://github.com/delta-box/deltabox-lite/pull/32)).
+- **[09/22]** Added the npm launcher, tag-triggered multi-platform prebuilds, release tooling, Homebrew support, and an install script ([PR #29](https://github.com/delta-box/deltabox-lite/pull/29)).
+- **[09/19]** Added embedded native execution and the Native Node API, and exposed execution profiles through the native API and CLI ([PR #22](https://github.com/delta-box/deltabox-lite/pull/22), [PR #23](https://github.com/delta-box/deltabox-lite/pull/23)).
+- **[08/31]** Added concurrent private sessions for multiple agents with publish-lock arbitration, and optimized staging and digest computation before commit ([PR #4](https://github.com/delta-box/deltabox-lite/pull/4), [PR #14](https://github.com/delta-box/deltabox-lite/pull/14)).
+- **[08/25]** Merged the native Pi plugin integration and optimized DeltaFS control-response transport ([PR #8](https://github.com/delta-box/deltabox-lite/pull/8), [PR #11](https://github.com/delta-box/deltabox-lite/pull/11)).
+- **[08/18]** Merged the DSH plugin integration, moved default session state into the project's `.deltabox` directory, and fixed macOS session access after state relocation.
+- **[08/15]** Added single-command transactions with `deltabox run --commit` / `--abort` to keep or discard changes.
+- **[08/13]** Added a persistent session command executor that reuses the execution environment to reduce overhead across commands.
+- **[08/10]** Added native macOS CB-CoW support using APFS and FSEvents, packaged the native runtime, and exposed structured session interfaces.
+- **[08/09]** Added private CB-CoW and strict durability modes, and expanded Linux filesystem operation support.
+- **[08/08]** Implemented the commit-biased state engine and integrated it with Linux FUSE.
+- **[08/07]** Added the native macOS Seatbelt sandbox backend and began building the CB-CoW architecture.
+- **[08/06]** Added durable sessions without a global service, persistent review state, crash recovery, and stronger sandbox policies.
+- **[08/05]** Initialized the project with Linux Sandlock sessions, checkpoint / commit / abort, fast snapshots, incremental state handling, and readable diffs.
+
+</details>
+
 ## Demo
 
 Run a command, inspect its change set, and choose whether to keep or discard it:
