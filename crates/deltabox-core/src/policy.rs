@@ -39,6 +39,12 @@ pub struct NetworkPolicy {
     pub mode: NetworkMode,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow: Vec<String>,
+    /// Permit a trusted orchestrator to add exact destinations for one exec.
+    pub allow_approval: bool,
+    /// Exact destinations that even an approved exec cannot add.
+    pub deny: Vec<String>,
+    /// Allow proxy connections to private/local addresses. Default: false.
+    pub allow_private: bool,
 }
 
 impl Default for NetworkPolicy {
@@ -46,6 +52,9 @@ impl Default for NetworkPolicy {
         Self {
             mode: NetworkMode::AllowAudit,
             allow: Vec::new(),
+            allow_approval: false,
+            deny: Vec::new(),
+            allow_private: false,
         }
     }
 }
@@ -79,6 +88,9 @@ impl Default for NetworkModeWire {
 struct NetworkPolicyWire {
     mode: NetworkModeWire,
     allow: Vec<String>,
+    allow_approval: bool,
+    deny: Vec<String>,
+    allow_private: bool,
 }
 
 impl<'de> Deserialize<'de> for NetworkPolicy {
@@ -98,7 +110,13 @@ impl<'de> Deserialize<'de> for NetworkPolicy {
                 (NetworkMode::Allowlist, allowlist)
             }
         };
-        Ok(Self { mode, allow })
+        Ok(Self {
+            mode,
+            allow,
+            allow_approval: wire.allow_approval,
+            deny: wire.deny,
+            allow_private: wire.allow_private,
+        })
     }
 }
 
@@ -160,6 +178,9 @@ impl Policy {
             network: NetworkPolicy {
                 mode: NetworkMode::AllowAudit,
                 allow: Vec::new(),
+                allow_approval: false,
+                deny: Vec::new(),
+                allow_private: false,
             },
             limits: LimitsPolicy {
                 // sandlock's memory limiter is opt-in because it is not
@@ -174,7 +195,56 @@ impl Policy {
         }
     }
 
+    /// The RPC caller is the trusted approval authority, as for execution_profile.
+    /// Grants are applied to a clone and never persisted into session policy.
+    pub fn apply_network_allow(&mut self, targets: &[String]) -> Result<()> {
+        if targets.is_empty() {
+            return Ok(());
+        }
+        if !self.network.allow_approval || self.network.mode != NetworkMode::Allowlist {
+            return Err(Error::InvalidPolicy(
+                "network approvals are disabled by session policy".into(),
+            ));
+        }
+        if targets.len() > 32 {
+            return Err(Error::InvalidPolicy(
+                "at most 32 network targets per exec".into(),
+            ));
+        }
+        for target in targets {
+            let target = crate::network::normalize_target(target)?;
+            if self
+                .network
+                .deny
+                .iter()
+                .any(|denied| crate::network::normalize_target(denied).is_ok_and(|v| v == target))
+            {
+                return Err(Error::InvalidPolicy(format!(
+                    "network target is prohibited: {target}"
+                )));
+            }
+            if !self.network.allow.contains(&target) {
+                self.network.allow.push(target);
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<()> {
+        if self.network.allow_approval {
+            if self.network.mode != NetworkMode::Allowlist {
+                return Err(Error::InvalidPolicy(
+                    "allow_approval requires network allowlist mode".into(),
+                ));
+            }
+            for target in self.network.allow.iter().chain(&self.network.deny) {
+                crate::network::normalize_target(target)?;
+            }
+        } else if !self.network.deny.is_empty() || self.network.allow_private {
+            return Err(Error::InvalidPolicy(
+                "network deny and allow_private require allow_approval".into(),
+            ));
+        }
         match self.network.mode {
             NetworkMode::Allowlist => {
                 for target in &self.network.allow {
@@ -345,6 +415,27 @@ mode = { allowlist = ["example.com:443"] }
         legacy.validate().unwrap();
         assert_eq!(legacy.network.mode, NetworkMode::Allowlist);
         assert_eq!(legacy.network.allow, ["example.com:443"]);
+    }
+
+    #[test]
+    fn approved_network_grants_are_additive_local_and_deny_preserving() {
+        let base: Policy = toml::from_str(r#"
+[network]
+mode = "allowlist"
+allow_approval = true
+allow = ["fixed.example:443"]
+deny = ["blocked.example:443"]
+"#).unwrap();
+        base.validate().unwrap();
+        let mut command = base.clone();
+        command.apply_network_allow(&["NEW.example.:443".into()]).unwrap();
+        assert_eq!(base.network.allow, ["fixed.example:443"]);
+        assert_eq!(command.network.allow, ["fixed.example:443", "new.example:443"]);
+        assert!(command.apply_network_allow(&["BLOCKED.example:443".into()]).is_err());
+        assert!(command.apply_network_allow(&["*:443".into()]).is_err());
+        assert!(Policy::default_agent().apply_network_allow(&["new.example:443".into()]).is_err());
+        command.apply_execution_profile(crate::protocol::ExecutionProfile::ReadWrite);
+        assert_eq!(command.network.deny, ["blocked.example:443"]);
     }
 
     #[test]

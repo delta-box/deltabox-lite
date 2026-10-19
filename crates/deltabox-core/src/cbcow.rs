@@ -4,6 +4,7 @@ use crate::command_executor::{self, Endpoint as CommandEndpoint};
 use crate::coordinator::CommandExecutionMode;
 use crate::error::{Error, Result};
 use crate::journal::{Journal, JournalEntry, JournalKind};
+use crate::locks::Lock;
 use crate::pathmap::PathMapper;
 use crate::policy::Policy;
 use crate::private_publish::{
@@ -16,7 +17,6 @@ use crate::protocol::{
     FilesystemInfo, FsReadResult, ReviewBeginParams, SessionInfo, SessionSpec, SessionStatus,
 };
 use crate::session::{now_ms, SessionMeta, SessionRegistry};
-use crate::locks::Lock;
 use crate::state_layout::{publish_lock_path, runtime_base, state_base, state_root, SessionLayout};
 use base64::Engine;
 use deltafs_fuse::control::{self, Command as ControlCommand, ResultValue};
@@ -125,6 +125,9 @@ impl Manager {
             Some(path) => Policy::load(path)?,
             None => Policy::default_agent(),
         };
+        if policy.network.allow_approval && self.execution_mode == CommandExecutionMode::Trusted {
+            return Err(Error::Unsupported("network approvals require deltabox isolation".into()));
+        }
         let deny_paths = resolve_deny_paths(&policy, &self.project)?;
         let quota_bytes = policy.limits.max_storage_bytes.unwrap_or(u64::MAX);
 
@@ -477,7 +480,13 @@ impl Manager {
             env,
             label,
             execution_profile,
+            network_allow,
         } = params;
+        if self.execution_mode == CommandExecutionMode::Trusted && !network_allow.is_empty() {
+            return Err(Error::Unsupported(
+                "network grants require deltabox isolation".into(),
+            ));
+        }
         let _lock = self.exec_lock(&session_id)?;
         let meta = self.running_meta(&session_id)?;
         let result = match self.execution_mode {
@@ -537,6 +546,7 @@ impl Manager {
                 let mapper = PathMapper::new(&self.project, &record.mountpoint);
                 let mut policy = self.policy(&meta)?;
                 policy.apply_execution_profile(execution_profile);
+                policy.apply_network_allow(&network_allow)?;
                 execution_profile
                     .ensure_backing_project_is_deniable(&record.mountpoint, &self.project)?;
                 let deny_paths: Vec<PathBuf> =

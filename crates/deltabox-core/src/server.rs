@@ -51,6 +51,7 @@ impl Server {
 
     fn dispatch(&mut self, method: Method) -> CoreResult<Value> {
         let value = match method {
+            Method::NetworkCapabilities {} => serde_json::json!({"version": 1}),
             Method::SessionStart(p) => {
                 // serve is bound to one project at startup; silently ignoring
                 // the request's project misled adapters for a long time.
@@ -88,9 +89,7 @@ impl Server {
             Method::DiffList(p) => serde_json::to_value(self.manager.diff(p)?)?,
             Method::ChangesCommit(p) => serde_json::to_value(self.manager.commit(p)?)?,
             Method::ChangesAbort(p) => serde_json::to_value(self.manager.abort(p)?)?,
-            Method::SessionSync(p) => {
-                serde_json::to_value(self.manager.sync(&p.session_id)?)?
-            }
+            Method::SessionSync(p) => serde_json::to_value(self.manager.sync(&p.session_id)?)?,
             Method::ReviewBegin(p) => serde_json::to_value(self.manager.begin_review(p)?)?,
             Method::ReviewStatus(p) => {
                 serde_json::to_value(self.manager.review_status(&p.session_id)?)?

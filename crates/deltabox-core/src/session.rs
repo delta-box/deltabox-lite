@@ -259,6 +259,11 @@ impl SessionManager {
     }
 
     pub fn exec(&mut self, params: ExecParams) -> Result<ExecResult> {
+        if !params.network_allow.is_empty() {
+            return Err(Error::Unsupported(
+                "network grants require the service-free coordinator".into(),
+            ));
+        }
         let label = params.label.clone();
         self.ensure_running(&params.session_id)?;
         let req = ExecRequest {
@@ -684,6 +689,7 @@ mod tests {
                 stderr: String::new(),
                 duration_ms: 1,
                 truncated: false,
+                network_denials: Vec::new(),
             })
         }
         fn read_file(&mut self, _session_id: &str, _path: &Path) -> Result<Option<Vec<u8>>> {
@@ -758,6 +764,7 @@ mod tests {
                 env: None,
                 label: Some("greeting".into()),
                 execution_profile: Default::default(),
+                network_allow: Vec::new(),
             })
             .unwrap();
         assert_eq!(exec.stdout, "echo hi");

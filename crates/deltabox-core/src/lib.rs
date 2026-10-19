@@ -19,6 +19,7 @@ pub mod journal;
 pub mod macos_cbcow;
 #[cfg(target_os = "macos")]
 mod macos_tree;
+pub mod network;
 pub mod pathmap;
 pub mod policy;
 #[cfg(target_os = "linux")]
