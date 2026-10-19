@@ -13,6 +13,7 @@ use crate::protocol::{
 };
 use crate::session::{now_ms, SessionMeta, SessionRegistry};
 use crate::locks::Lock;
+use crate::macos_tree::{remove_tree, unlock_tree};
 use crate::state_layout;
 use base64::Engine;
 use deltafs_fuse::macos::{
@@ -26,7 +27,8 @@ use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -39,6 +41,15 @@ const SESSION_META: &str = "session.json";
 const ACTIVE_REVIEW: &str = "active_review.json";
 const SESSION_LOCK: &str = "session.lock";
 const PROJECT_LEASE: &str = "active-cbcow";
+/// Inside a session's state root: the commands' scratch HOME and TMPDIR.
+const COMMAND_STORE: &str = "runtime";
+/// Beside the session state roots: state of stopped sessions awaiting deletion.
+const RETIRED_DIR: &str = "retired";
+/// Beside the session state roots: held shared while a session starts, so
+/// reclaimers can wait for it.
+const STARTING_LOCK: &str = "starting.lock";
+const RECLAIM_BATCH: usize = 256;
+const RECLAIM_GRACE: Duration = Duration::from_secs(1);
 const EVENT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -181,6 +192,8 @@ impl Manager {
         let started = (|| -> Result<SessionInfo> {
             fs::create_dir_all(&state_root)?;
             fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700))?;
+            // Reclaimers of retired state wait while any start is underway.
+            let _starting = Lock::acquire_shared(&state_root.with_file_name(STARTING_LOCK))?;
             // The probe source must live on the project's volume: clonefile only
             // works within one volume, and the session root now lives under the
             // external state base, which may be a different volume. The in-project
@@ -211,7 +224,7 @@ impl Manager {
             crate::test_hooks::maybe_pause("start_scan_shared");
             let mut state = State::create(
                 &self.project,
-                &state_root.join("engine"),
+                &state_root.join(state_layout::ENGINE_DIR),
                 mode,
                 durable,
                 event_id,
@@ -293,7 +306,9 @@ impl Manager {
                     &session_id,
                 );
             }
-            let _ = fs::remove_dir_all(&state_root);
+            self.discard_state(&state_root);
+        } else {
+            self.release_stopped_sessions();
         }
         started
     }
@@ -383,7 +398,7 @@ impl Manager {
                     );
                 }
                 if let Ok(base) = state_base(&self.project) {
-                    let _ = fs::remove_dir_all(base.join(session_id));
+                    self.discard_state(&base.join(session_id));
                 }
                 return Ok(info_from_stopped(meta));
             }
@@ -426,7 +441,9 @@ impl Manager {
             {
                 sessions.remove(session_id);
             }
-            command_executor::cleanup_stopped(&command_endpoint(&self.record(session_id)?));
+            let record = self.record(session_id)?;
+            command_executor::cleanup_stopped(&command_endpoint(&record));
+            self.release_state(&record);
             return Ok(info);
         }
         let _lock = self.lock(session_id)?;
@@ -451,7 +468,81 @@ impl Manager {
         );
         self.append(&record, session_id, JournalKind::SessionStop, None)?;
         command_executor::cleanup_stopped(&command_endpoint(&record));
+        self.release_state(&record);
         Ok(info_from_stopped(meta))
+    }
+
+    /// Release a stopped session's filesystem state: the engine (accepted
+    /// base, private LIVE, checkpoints, indexes) and its commands' scratch
+    /// HOME and TMPDIR. The record, journal and helper log stay for `status`
+    /// and post-mortems until `remove_stopped`. Deleting trees as large as
+    /// the project takes seconds, so they are only renamed aside here and a
+    /// detached helper deletes them. Best effort: whatever fails to move is
+    /// picked up again by a later `start`.
+    fn release_state(&self, record: &Record) {
+        if let Some(retired) = retire_state(&record.state_root) {
+            self.spawn_reclaimer(&retired);
+        }
+    }
+
+    /// Delete the state root of a start that never became a usable session,
+    /// without waiting on its project-sized trees either.
+    fn discard_state(&self, state_root: &Path) {
+        if let Some(retired) = retire_state(state_root) {
+            self.spawn_reclaimer(&retired);
+        }
+        let _ = remove_tree(state_root);
+    }
+
+    /// Release the state that this project's stopped sessions still hold:
+    /// sessions stopped by an older version, or whose release did not finish.
+    fn release_stopped_sessions(&self) {
+        let Ok(registry) = SessionRegistry::load(&self.root) else {
+            return;
+        };
+        let mut retired = std::collections::BTreeSet::new();
+        for session in registry.sessions {
+            let stopped = self
+                .load_meta(&session.session_id)
+                .is_ok_and(|meta| meta.status == SessionStatus::Stopped);
+            if !stopped {
+                continue;
+            }
+            if let Ok(record) = self.record(&session.session_id) {
+                retired.extend(retire_state(&record.state_root));
+            }
+        }
+        // A reclaimer that was interrupted leaves its directory non-empty.
+        if let Ok(base) = state_base(&self.project) {
+            let leftover = base.join(RETIRED_DIR);
+            if fs::read_dir(&leftover).is_ok_and(|mut entries| entries.next().is_some()) {
+                retired.insert(leftover);
+            }
+        }
+        for directory in retired {
+            self.spawn_reclaimer(&directory);
+        }
+    }
+
+    /// Delete `retired` from a detached `macos-reclaim` helper. A long-lived
+    /// embedding process reaps it from a thread; a CLI process that exits
+    /// first leaves it to launchd.
+    fn spawn_reclaimer(&self, retired: &Path) {
+        let Ok(mut child) = Command::new(&self.helper_bin)
+            .arg("macos-reclaim")
+            .arg("--dir")
+            .arg(retired)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+        else {
+            return;
+        };
+        thread::spawn(move || {
+            let _ = child.wait();
+        });
     }
 
     pub fn remove_stopped(&self, session_id: &str) -> Result<()> {
@@ -472,7 +563,10 @@ impl Manager {
         if runtime.exists() {
             fs::remove_dir_all(runtime)?;
         }
-        fs::remove_dir_all(record.state_root)?;
+        // Whatever `stop` could not retire is retired now, so this never waits
+        // on a project-sized deletion either.
+        self.release_state(&record);
+        remove_tree(&record.state_root)?;
         fs::remove_dir_all(self.store(session_id))?;
         Ok(())
     }
@@ -554,7 +648,7 @@ impl Manager {
                 let spec = SessionSpec {
                     project: state.live(),
                     host_project: Some(self.project.clone()),
-                    store_dir: record.state_root.join("runtime"),
+                    store_dir: record.state_root.join(COMMAND_STORE),
                     policy,
                     resolved_deny_paths: Some(vec![
                         self.root.clone(),
@@ -1451,6 +1545,12 @@ impl Manager {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             if let Ok(batch) = request() {
+                // The helper lives until the session stops. Reap it then, so
+                // a long-lived embedding process does not keep one zombie per
+                // stopped session.
+                thread::spawn(move || {
+                    let _ = child.wait();
+                });
                 return Ok(batch);
             }
             if let Some(status) = child.try_wait()? {
@@ -1483,7 +1583,7 @@ impl Manager {
     }
 
     fn open_state(&self, record: &Record) -> Result<State> {
-        let engine = record.state_root.join("engine");
+        let engine = record.state_root.join(state_layout::ENGINE_DIR);
         // State::open rolls back a torn transaction when one is on disk; that
         // host mutation must not interleave with a sibling's publication.
         // The lock-free existence check keeps ordinary operations cheap; the
@@ -1667,6 +1767,115 @@ fn state_base(project: &Path) -> Result<PathBuf> {
         .join(format!("{:016x}", hasher.finish())))
 }
 
+/// Move a session's engine and command scratch out of `state_root` into the
+/// retired directory beside it, and return that directory if anything moved.
+fn retire_state(state_root: &Path) -> Option<PathBuf> {
+    let retired = state_root.parent()?.join(RETIRED_DIR);
+    // Owner-only like the state roots: the trees inside stay a copy of the
+    // project until the reclaimer gets to them.
+    let mut retired_dir = fs::DirBuilder::new();
+    retired_dir.recursive(true).mode(0o700);
+    let mut moved = false;
+    for name in [state_layout::ENGINE_DIR, COMMAND_STORE] {
+        let source = state_root.join(name);
+        if fs::symlink_metadata(&source).is_err() || retired_dir.create(&retired).is_err() {
+            continue;
+        }
+        moved |= fs::rename(&source, retired.join(Uuid::new_v4().to_string())).is_ok();
+    }
+    moved.then_some(retired)
+}
+
+/// Delete everything in a retired directory, at background priority. One
+/// reclaimer works on a directory at a time; it keeps going while stops
+/// retire more, and leaves behind only entries it cannot delete.
+pub fn reclaim_retired(retired: &Path) -> Result<()> {
+    // Everything inside is deleted, so refuse any directory but our own, and
+    // a link planted under its name.
+    let own = retired.file_name() == Some(std::ffi::OsStr::new(RETIRED_DIR))
+        && fs::symlink_metadata(retired).is_ok_and(|metadata| metadata.is_dir());
+    if !own {
+        return Err(Error::Backend(format!(
+            "not a retired state directory: {}",
+            retired.display()
+        )));
+    }
+    unsafe { libc::setpriority(libc::PRIO_DARWIN_THREAD, 0, libc::PRIO_DARWIN_BG) };
+    let Some(_reclaiming) = Lock::try_acquire(&retired.with_extension("lock"))? else {
+        return Ok(());
+    };
+    // A stop is often followed right away by a start (a client restarting,
+    // or switching projects); give that start the head start.
+    thread::sleep(RECLAIM_GRACE);
+    let starting = retired.with_file_name(STARTING_LOCK);
+    loop {
+        let entries = match fs::read_dir(retired) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        let mut removed = false;
+        for entry in entries {
+            removed |= delete_yielding(&entry?.path(), &starting).is_ok();
+        }
+        if !removed {
+            return Ok(());
+        }
+    }
+}
+
+/// Delete `root` children first, in small batches, and before each batch
+/// wait while a session start holds `starting`. A start materializes with
+/// clones and a deletion unlinks, both through the volume's metadata
+/// transactions: deleting a large tree beside a start slowed it by 40% in
+/// measurements, while pausing costs the start at most one batch.
+fn delete_yielding(root: &Path, starting: &Path) -> Result<()> {
+    drop(Lock::acquire(starting)?);
+    let entries = match tree_entries(root) {
+        Ok(entries) => entries,
+        Err(_) => {
+            unlock_tree(root)?;
+            tree_entries(root)?
+        }
+    };
+    for batch in entries.rchunks(RECLAIM_BATCH) {
+        drop(Lock::acquire(starting)?);
+        for (path, directory) in batch.iter().rev() {
+            if remove_entry(path, *directory).is_err() {
+                unlock_tree(root)?;
+                remove_entry(path, *directory)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every path below `root`, `root` included, parents before children, with
+/// whether it is a directory.
+fn tree_entries(root: &Path) -> Result<Vec<(PathBuf, bool)>> {
+    walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .map(|entry| {
+            entry
+                .map(|entry| (entry.path().to_path_buf(), entry.file_type().is_dir()))
+                .map_err(|error| Error::Io(std::io::Error::other(error)))
+        })
+        .collect()
+}
+
+fn remove_entry(path: &Path, directory: bool) -> std::io::Result<()> {
+    let removed = if directory {
+        fs::remove_dir(path)
+    } else {
+        fs::remove_file(path)
+    };
+    match removed {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        removed => removed,
+    }
+}
+
 fn probe_clonefile(project_state: &Path, state_root: &Path, session_id: &str) -> Result<()> {
     // Concurrent unlocked starts share the probe scratch directory, so the
     // source name must be per-session or create/remove would race.
@@ -1830,4 +2039,79 @@ fn write_file(path: &Path, bytes: &[u8], durable: bool) -> Result<()> {
         File::open(path.parent().expect("written path has parent"))?.sync_all()?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A read-only directory holding a locked file, as a clone of a project
+    /// can contain; plain recursive removal refuses both.
+    fn locked_tree(root: &Path) {
+        let directory = root.join("read-only");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("locked.txt"), "locked").unwrap();
+        let status = Command::new("/usr/bin/chflags")
+            .arg("uchg")
+            .arg(directory.join("locked.txt"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o555)).unwrap();
+        // A directory without owner access cannot even be listed.
+        let closed = root.join("deep/no-access");
+        fs::create_dir_all(&closed).unwrap();
+        fs::write(closed.join("file.txt"), "unreachable").unwrap();
+        fs::set_permissions(&closed, fs::Permissions::from_mode(0)).unwrap();
+    }
+
+    #[test]
+    fn reclaimer_refuses_a_retired_directory_that_is_a_symlink() {
+        let base = tempfile::tempdir().unwrap();
+        let victim = base.path().join("victim");
+        fs::create_dir(&victim).unwrap();
+        fs::write(victim.join("keep.txt"), "keep").unwrap();
+        let retired = base.path().join(RETIRED_DIR);
+        std::os::unix::fs::symlink(&victim, &retired).unwrap();
+        assert!(reclaim_retired(&retired).is_err());
+        assert!(victim.join("keep.txt").exists());
+    }
+
+    #[test]
+    fn remove_tree_opens_read_only_and_locked_entries() {
+        let base = tempfile::tempdir().unwrap();
+        let tree = base.path().join("tree");
+        locked_tree(&tree);
+        assert!(fs::remove_dir_all(&tree).is_err());
+        remove_tree(&tree).unwrap();
+        assert!(!tree.exists());
+    }
+
+    #[test]
+    fn reclaimer_refuses_directories_it_did_not_retire() {
+        let base = tempfile::tempdir().unwrap();
+        fs::write(base.path().join("keep.txt"), "keep").unwrap();
+        assert!(reclaim_retired(base.path()).is_err());
+        assert!(base.path().join("keep.txt").exists());
+    }
+
+    #[test]
+    fn reclaimer_waits_for_starts_then_deletes_everything_retired() {
+        let base = tempfile::tempdir().unwrap();
+        let retired = base.path().join(RETIRED_DIR);
+        locked_tree(&retired.join("first"));
+        locked_tree(&retired.join("second"));
+        let starting = Lock::acquire_shared(&base.path().join(STARTING_LOCK)).unwrap();
+        let reclaimer = {
+            let retired = retired.clone();
+            thread::spawn(move || reclaim_retired(&retired))
+        };
+        thread::sleep(RECLAIM_GRACE + Duration::from_millis(500));
+        assert!(retired.join("first/read-only/locked.txt").exists());
+        assert!(retired.join("second/read-only/locked.txt").exists());
+
+        drop(starting);
+        reclaimer.join().unwrap().unwrap();
+        assert_eq!(fs::read_dir(&retired).unwrap().count(), 0);
+    }
 }

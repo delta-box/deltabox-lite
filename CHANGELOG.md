@@ -9,6 +9,18 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+### Fixed
+
+- Release a macOS native session's filesystem state when it stops. Each
+  stopped session kept a full APFS clone of the project (two in
+  `cbcow-private`) until it was removed, which only `deltabox run` did, so
+  clients such as dsh-deltabox accumulated one clone per session. `stop` now
+  moves that state aside and a detached helper deletes it at background
+  priority, pausing while a session starts; the next start also clears what
+  earlier sessions left behind.
+- Reap the macOS FSEvents helper once its session stops, so long-lived
+  embedders no longer keep one zombie process per stopped session.
+
 ## [0.1.1] - 2026-10-14
 
 ### Fixed

@@ -63,6 +63,10 @@ enum Command {
     #[cfg(target_os = "macos")]
     #[command(hide = true)]
     MacosEvents(MacosEventsArgs),
+    /// Delete the state that stopped macOS sessions retired.
+    #[cfg(target_os = "macos")]
+    #[command(hide = true)]
+    MacosReclaim(MacosReclaimArgs),
     /// Run a session-scoped persistent command executor.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[command(hide = true)]
@@ -309,6 +313,13 @@ struct MacosEventsArgs {
     live: PathBuf,
     #[arg(long)]
     since: u64,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(clap::Args)]
+struct MacosReclaimArgs {
+    #[arg(long)]
+    dir: PathBuf,
 }
 
 #[cfg(target_os = "linux")]
@@ -637,6 +648,10 @@ fn main() -> anyhow::Result<()> {
                 args.since,
                 std::time::Duration::from_secs(30),
             )?;
+        }
+        #[cfg(target_os = "macos")]
+        Command::MacosReclaim(args) => {
+            deltabox_core::macos_cbcow::reclaim_retired(&args.dir)?;
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         Command::CommandHelper(args) => {
