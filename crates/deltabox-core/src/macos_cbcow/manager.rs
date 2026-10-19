@@ -583,7 +583,10 @@ impl Manager {
         self.enforce_storage_limit(&meta, &state)?;
         let from = parse_checkpoint(params.from.as_deref())?;
         let to = parse_checkpoint(params.to.as_deref())?;
-        let changes = state.diff(from, to)?;
+        let mut changes = state.diff(from, to)?;
+        // Session-private `.git` mutations never publish; keep them out of the
+        // reviewed diff so what you see is what a commit would land.
+        changes.retain(|change| !crate::publog::is_git_path(&change.path));
         self.append(&record, &params.session_id, JournalKind::Diff, None)?;
         Ok(DiffResult {
             from: params.from,
