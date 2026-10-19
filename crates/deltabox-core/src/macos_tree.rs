@@ -164,21 +164,22 @@ pub(crate) fn remove_tree(path: &Path) -> Result<()> {
 }
 
 /// Clear lock flags below `path` and give the owner full access to every
-/// directory, so that everything in it can be listed and unlinked. Parents
-/// come first, so each directory is opened up before its entries are read.
+/// directory, so that everything in it can be listed and unlinked. Each
+/// directory is opened up before it is read: one without owner access can
+/// neither be listed nor have its entries unlinked.
 pub(crate) fn unlock_tree(path: &Path) -> Result<()> {
-    for entry in walkdir::WalkDir::new(path).follow_links(false) {
-        let entry = entry.map_err(|error| Error::Io(std::io::Error::other(error)))?;
-        let metadata = fs::symlink_metadata(entry.path())?;
-        if metadata.st_flags() != 0 {
-            set_flags(entry.path(), 0, metadata.file_type().is_symlink())?;
-        }
-        if metadata.is_dir() && metadata.mode() & 0o700 != 0o700 {
-            fs::set_permissions(
-                entry.path(),
-                fs::Permissions::from_mode(metadata.mode() | 0o700),
-            )?;
-        }
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.st_flags() != 0 {
+        set_flags(path, 0, metadata.file_type().is_symlink())?;
+    }
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+    if metadata.mode() & 0o700 != 0o700 {
+        fs::set_permissions(path, fs::Permissions::from_mode(metadata.mode() | 0o700))?;
+    }
+    for entry in fs::read_dir(path)? {
+        unlock_tree(&entry?.path())?;
     }
     Ok(())
 }

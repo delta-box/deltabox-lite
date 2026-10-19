@@ -394,6 +394,13 @@ fn stopped_sessions_release_their_native_state() {
             "{mode} kept command scratch"
         );
         assert!(root.join("command-helper.log").exists());
+        assert_eq!(
+            std::fs::metadata(root.with_file_name("retired"))
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o700
+        );
         let status: Value = serde_json::from_slice(
             &env.run(["session", "status", &sid, "--project", project])
                 .stdout,

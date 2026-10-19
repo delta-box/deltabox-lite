@@ -27,7 +27,7 @@ use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -1771,10 +1771,14 @@ fn state_base(project: &Path) -> Result<PathBuf> {
 /// retired directory beside it, and return that directory if anything moved.
 fn retire_state(state_root: &Path) -> Option<PathBuf> {
     let retired = state_root.parent()?.join(RETIRED_DIR);
+    // Owner-only like the state roots: the trees inside stay a copy of the
+    // project until the reclaimer gets to them.
+    let mut retired_dir = fs::DirBuilder::new();
+    retired_dir.recursive(true).mode(0o700);
     let mut moved = false;
     for name in [state_layout::ENGINE_DIR, COMMAND_STORE] {
         let source = state_root.join(name);
-        if fs::symlink_metadata(&source).is_err() || fs::create_dir_all(&retired).is_err() {
+        if fs::symlink_metadata(&source).is_err() || retired_dir.create(&retired).is_err() {
             continue;
         }
         moved |= fs::rename(&source, retired.join(Uuid::new_v4().to_string())).is_ok();
@@ -1786,8 +1790,11 @@ fn retire_state(state_root: &Path) -> Option<PathBuf> {
 /// reclaimer works on a directory at a time; it keeps going while stops
 /// retire more, and leaves behind only entries it cannot delete.
 pub fn reclaim_retired(retired: &Path) -> Result<()> {
-    // Everything inside is deleted, so refuse any directory but our own.
-    if retired.file_name() != Some(std::ffi::OsStr::new(RETIRED_DIR)) {
+    // Everything inside is deleted, so refuse any directory but our own, and
+    // a link planted under its name.
+    let own = retired.file_name() == Some(std::ffi::OsStr::new(RETIRED_DIR))
+        && fs::symlink_metadata(retired).is_ok_and(|metadata| metadata.is_dir());
+    if !own {
         return Err(Error::Backend(format!(
             "not a retired state directory: {}",
             retired.display()
@@ -2051,6 +2058,23 @@ mod tests {
             .unwrap();
         assert!(status.success());
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o555)).unwrap();
+        // A directory without owner access cannot even be listed.
+        let closed = root.join("deep/no-access");
+        fs::create_dir_all(&closed).unwrap();
+        fs::write(closed.join("file.txt"), "unreachable").unwrap();
+        fs::set_permissions(&closed, fs::Permissions::from_mode(0)).unwrap();
+    }
+
+    #[test]
+    fn reclaimer_refuses_a_retired_directory_that_is_a_symlink() {
+        let base = tempfile::tempdir().unwrap();
+        let victim = base.path().join("victim");
+        fs::create_dir(&victim).unwrap();
+        fs::write(victim.join("keep.txt"), "keep").unwrap();
+        let retired = base.path().join(RETIRED_DIR);
+        std::os::unix::fs::symlink(&victim, &retired).unwrap();
+        assert!(reclaim_retired(&retired).is_err());
+        assert!(victim.join("keep.txt").exists());
     }
 
     #[test]
