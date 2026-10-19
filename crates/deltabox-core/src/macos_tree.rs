@@ -78,15 +78,36 @@ pub(crate) fn clone_tree(source: &Path, destination: &Path) -> Result<()> {
     }
 }
 
-/// Copy only the access and modification times from `source`.
-pub(crate) fn copy_times(source: &Path, destination: &Path) -> Result<()> {
-    let metadata = fs::symlink_metadata(source)?;
-    set_times(
-        destination,
-        timestamp_ns(metadata.atime(), metadata.atime_nsec()),
-        timestamp_ns(metadata.mtime(), metadata.mtime_nsec()),
-        metadata.file_type().is_symlink(),
-    )
+/// Set the access and modification times of `path` to `mtime_ns`.
+pub(crate) fn restore_times(path: &Path, mtime_ns: i64, symlink: bool) -> Result<()> {
+    set_times(path, mtime_ns, mtime_ns, symlink)
+}
+
+/// Make `link` another name of `existing`. A locked file refuses new names,
+/// so its flags, which every name shares, are lifted around the link.
+pub(crate) fn link_entry(existing: &Path, link: &Path) -> Result<()> {
+    let flags = fs::symlink_metadata(existing)?.st_flags();
+    if flags != 0 {
+        set_flags(existing, 0, false)?;
+    }
+    let linked = fs::hard_link(existing, link);
+    if flags != 0 {
+        set_flags(existing, flags, false)?;
+    }
+    Ok(linked?)
+}
+
+/// Clear the lock flags of `path` itself, so that it can be replaced.
+pub(crate) fn unlock_entry(path: &Path) -> Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.st_flags() != 0 {
+        set_flags(path, 0, metadata.file_type().is_symlink())?;
+    }
+    Ok(())
 }
 
 /// Let a repair create or remove `path` even when its parent directory was
