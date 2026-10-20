@@ -14,7 +14,7 @@ Give agents a confined workspace with explicit diff, commit, and abort semantics
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#license)
 [![npm](https://img.shields.io/npm/v/deltabox-lite?logo=npm)](https://www.npmjs.com/package/deltabox-lite)
-[![Rust](https://img.shields.io/badge/rust-1.87+-orange.svg)](#)
+[![Rust](https://img.shields.io/badge/rust-1.89+-orange.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)](#)
 [![Pi](https://img.shields.io/badge/pi-deltabox-purple.svg)](https://github.com/delta-box/pi-deltabox)
 [![DSH](https://img.shields.io/badge/dsh-deltabox-blue.svg)](https://github.com/delta-box/dsh-deltabox)

@@ -41,7 +41,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.87.0
+      - uses: dtolnay/rust-toolchain@1.89.0
         with:
           targets: ${{ matrix.target }}
       - uses: actions/setup-node@v4
