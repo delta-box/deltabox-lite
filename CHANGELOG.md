@@ -9,6 +9,20 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-20
+
+### Added
+
+- Execution-scoped network approvals that restrict destination hosts and ports
+  and expire when the command finishes.
+- Environment checks and updated installation guidance for the CLI and plugins.
+
+### Fixed
+
+- Detect same-size file changes with unchanged timestamps during Linux
+  incremental snapshot copies.
+- Reject rooted and drive-prefixed paths in worker file writes.
+
 ## [0.1.1] - 2026-10-14
 
 ### Fixed

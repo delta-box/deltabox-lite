@@ -306,14 +306,17 @@ fn write_file(root: &Path, rel: &str, content_base64: &str) -> Result<()> {
 
 fn resolve_within(root: &Path, rel: &str) -> Result<PathBuf> {
     let p = Path::new(rel);
-    if p.is_absolute() {
+    if p.has_root() {
         return Err(Error::InvalidPolicy(
             "fs.write path must be relative".into(),
         ));
     }
-    if p.components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
+    if p.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::Prefix(_) | std::path::Component::ParentDir
+        )
+    }) {
         return Err(Error::InvalidPolicy(
             "fs.write path escapes the project".into(),
         ));
