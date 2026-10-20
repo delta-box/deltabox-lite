@@ -64,6 +64,78 @@ Localhost is not implicitly privileged and must be listed explicitly. macOS
 normalizes `localhost`, `127.0.0.0/8` and `::1` spellings to Seatbelt's
 `localhost` filter while retaining the exact listed port.
 
+### Execution-scoped network grants
+
+Sessions can opt into just-in-time, per-command network approvals by enabling
+`allow_approval = true` in their standing policy:
+
+```toml
+[network]
+mode = "allowlist"
+allow_approval = true
+allow = ["registry.npmjs.org:443"]     # Optional: static standing allowlist
+deny = ["blocked.example:443"]         # Optional: prohibited destinations
+allow_private = false                  # Optional: block LAN / loopback / metadata (default: false)
+```
+
+When enabled, the platform sandbox blocks direct egress at the kernel level and
+restricts outbound traffic to an execution-scoped authenticated HTTP/CONNECT proxy.
+
+#### Dynamic approvals (API)
+
+A trusted orchestrator can grant temporary network access for a single command:
+- **JSON-RPC (`serve`)**: Pass `network_allow: ["example.com:443"]` in `session.exec`.
+- **Node.js binding**: Pass the optional `networkAllow` array to native `exec()`.
+
+**Constraints & rules:**
+- **Exact targets**: Destinations must be exact `host:port` (or `[ipv6]:port`). Wildcards (`*`), URLs, and paths are rejected.
+- **Quota**: At most 32 targets per execution.
+- **Deny precedence**: Targets listed in standing `deny` cannot be granted and return an error immediately.
+- **No persistence**: Dynamic grants apply only to a cloned policy for that turn and are never persisted to the session.
+- **Unsandboxed execution**: Trusted/`none` execution mode rejects approval-enabled policies and grants.
+
+#### Enforcement & Security Model
+
+- **Direct egress blocked**: Sandbox backends (Linux Landlock, macOS Seatbelt) permit egress exclusively to the local loopback proxy (`127.0.0.1:<port>`). Direct raw TCP/UDP out to other addresses is denied by the OS kernel.
+- **Proxy environment**: The command helper automatically injects proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and empty `NO_PROXY`) with per-execution random Basic Auth credentials.
+- **Private IP guard (`allow_private = false`)**: The proxy resolves DNS on the host and validates that the resolved IP is public before connecting. Connections use the checked IP directly without a second lookup (preventing DNS rebinding). Requests resolving to private, loopback, link-local, or cloud metadata addresses (e.g. `169.254.169.254`) are blocked.
+- **Lifecycle cleanup**: The helper terminates the confined runtime and tears down all tracked proxy sockets immediately after each command. No connections or credentials survive across commands.
+- **Protocol scope**: Supports HTTP and HTTPS via CONNECT tunnels. Direct TCP, UDP, QUIC (HTTP/3), and raw SSH are not proxied and remain blocked.
+
+#### Denial reporting
+
+Rejections enforced by the proxy are reported in the execution result under `network_denials`:
+
+```json
+{
+  "exit_code": 1,
+  "network_denials": [
+    { "target": "example.com:443", "reason": "not-authorized" }
+  ]
+}
+```
+
+| Reason | Meaning |
+|---|---|
+| `not-authorized` | Target was not present in standing `allow` or execution `network_allow`. |
+| `policy-denied` | Target matched standing `deny`. |
+| `private-address` | Target resolved to a private/local IP while `allow_private = false`. |
+
+*(Note: OS-level socket rejections and ordinary DNS/network failures do not generate proxy denial events.)*
+
+#### Capability probe & Compatibility
+
+Probe protocol capability before issuing network grants:
+- **RPC**: Call `network.capabilities` (returns `{"version": 1}`).
+- **CLI**: Run `deltabox network-capabilities`.
+- **Node.js**: Call `native.networkApprovalsVersion()`.
+
+**Platform notes:**
+- **Linux & macOS**: Fully enforced via Landlock/Seatbelt and the internal proxy.
+- **Windows**: MXC PSEC currently enforces filesystem boundaries only; network policy is unenforced and reported as a `degraded_protection` in session status.
+- **Legacy static allowlists**: Policies with `allow_approval = false` retain their previous behavior without token authentication, strict private IP validation, or execution-scoped teardown.
+
+
 ## Execution profiles
 
 The policy above is the session's *standing* policy. One command can request a
