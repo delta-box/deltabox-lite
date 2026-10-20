@@ -15,7 +15,7 @@ Give agents a confined workspace with explicit diff, commit, and abort semantics
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#license)
 [![npm](https://img.shields.io/npm/v/deltabox-lite?logo=npm)](https://www.npmjs.com/package/deltabox-lite)
 [![Rust](https://img.shields.io/badge/rust-1.87+-orange.svg)](#)
-[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey.svg)](#)
+[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)](#)
 [![Pi](https://img.shields.io/badge/pi-deltabox-purple.svg)](https://github.com/delta-box/pi-deltabox)
 [![DSH](https://img.shields.io/badge/dsh-deltabox-blue.svg)](https://github.com/delta-box/dsh-deltabox)
 
@@ -25,8 +25,8 @@ deltabox-lite is a standalone sandbox runtime for AI coding agents. Agents keep
 full execution freedom inside a confined filesystem view, and every change
 they make can be **reviewed**, **committed**, or **aborted** - per task or per
 tool call. Linux defaults to a commit-biased FUSE view; macOS uses native APFS
-clones and FSEvents. Private modes keep changes hidden from the host until
-commit.
+clones and FSEvents; Windows uses a WinFsp view. Private modes keep changes
+hidden from the host until commit.
 
 Think of it as Git for agent sessions: less ceremony, more control, and no
 anxiety about binary or large files.
@@ -74,7 +74,8 @@ Run a command, inspect its change set, and choose whether to keep or discard it:
 ## Highlights
 
 - **Native isolation, not a container** - Linux composes Sandlock/Landlock/
-  seccomp with DeltaFS FUSE; macOS uses Seatbelt plus APFS clones and FSEvents.
+  seccomp with DeltaFS FUSE; macOS uses Seatbelt plus APFS clones and FSEvents;
+  Windows uses MXC process security with WinFsp filesystem routing.
 - **Service-free durable sessions** - Linux starts a session-scoped filesystem
   helper and macOS starts a session-scoped event helper automatically. Durable
   files remain authoritative across independent CLI processes; no global daemon
@@ -114,14 +115,27 @@ directly into your agent.
 
 ### Manual Install
 
-Run the following on Mac or Linux to install deltabox-lite CLI:
+Run the following on macOS or Linux to install the deltabox-lite CLI:
 
 ```
 curl -fsSL https://raw.githubusercontent.com/delta-box/deltabox-lite/main/scripts/install.sh | sh
 ```
 
-The prebuilt binaries ship for macOS (arm64, x64) and Linux (x64, arm64) can be found on
+The prebuilt binaries ship for macOS (arm64, x64), Linux (x64, arm64), and
+Windows (x64). They can be found on the
 [GitHub release](https://github.com/delta-box/deltabox-lite/releases).
+
+On Windows, install [WinFsp](https://winfsp.dev/rel/) first, then use PowerShell:
+
+```powershell
+npm install --global deltabox-lite
+deltabox --version
+```
+
+Windows `deltabox` commands run directly from PowerShell. Pi's `bash` tool uses
+Pi's own shell selection, which defaults to Git Bash on Windows. The CLI does
+not require Git Bash. Sandboxed command execution needs Windows MXC process
+security support; if it is unavailable, session startup reports an error.
 
 deltabox-lite CLI can also be installed via the following package managers:
 
@@ -179,7 +193,7 @@ or discard changes. See the
 configuration, including explicit command isolation settings.
 
 Both integrations use FUSE on Linux for CB-CoW (`/dev/fuse` and `fusermount3`
-or `fusermount`) and APFS/FSEvents on macOS.
+or `fusermount`), APFS/FSEvents on macOS, and WinFsp on Windows.
 
 ## Quick start
 
@@ -268,7 +282,8 @@ a terminal on stdin, so use non-interactive flags for tools such as Git.
 ### Choosing a filesystem mode
 
 Linux and macOS request `cbcow-through` by default and visibly fall back to
-`copy-private` if the native provider is unavailable. Select the mode
+`copy-private` if the native provider is unavailable. Windows supports
+`cbcow-through` and `cbcow-private` with WinFsp. Select the mode
 explicitly when a workflow requires it:
 
 ```bash
