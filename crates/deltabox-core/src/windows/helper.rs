@@ -58,7 +58,7 @@ pub fn session_info(engine: &Engine, pid: Option<u32>) -> Result<SessionInfo> {
     filesystem.isolation_provider=Some("mxc-psec-filesystem".into());
     if engine.manifest.fs_mode == FilesystemMode::CbcowThrough { filesystem.rollback_guarantee="winfsp-routed-writes-only".into(); }
     filesystem.helper_pid=pid;
-    filesystem.degraded_protections=Some(vec!["network-policy".into(),"resource-limits".into()]);
+    filesystem.degraded_protections=Some(vec!["resource-limits".into()]);
     Ok(SessionInfo {
         session_id: engine.manifest.session_id.clone(), project: engine.manifest.source.clone(),
         started_at_ms: engine.manifest.started_at_ms,status: engine.manifest.status.clone(),

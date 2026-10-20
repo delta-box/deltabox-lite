@@ -1,4 +1,4 @@
-#![cfg(any(target_os = "linux", target_os = "macos"))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 //! End-to-end service-free RPC test with a local origin, no public internet.
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -15,12 +15,15 @@ fn rpc(input: &mut impl Write, output: &mut impl BufRead, id: u64, method: &str,
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "requires native MXC PSEC networking; run explicitly on a supported Windows host")]
 fn approved_network_is_one_exec_only_and_direct_connections_stay_denied() {
     let root = tempfile::tempdir().unwrap();
     let project = root.path().join("project");
     std::fs::create_dir(&project).unwrap();
     let policy = root.path().join("policy.toml");
-    std::fs::write(&policy, "[filesystem]\nread = [\".\", \"/usr\", \"/bin\", \"/etc\", \"/lib\", \"/lib64\", \"/run\"]\nwrite = [\".\"]\n[network]\nmode = \"allowlist\"\nallow_approval = true\nallow_private = true\n").unwrap();
+    let read = if cfg!(windows) { "[\".\"]" } else { "[\".\", \"/usr\", \"/bin\", \"/etc\", \"/lib\", \"/lib64\", \"/run\"]" };
+    std::fs::write(&policy, format!("[filesystem]\nread = {read}\nwrite = [\".\"]\n[network]\nmode = \"allowlist\"\nallow_approval = true\nallow_private = true\n")).unwrap();
+    let curl = if cfg!(windows) { format!("{}\\System32\\curl.exe", std::env::var("SystemRoot").unwrap()) } else { "/usr/bin/curl".to_string() };
     let origin = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     origin.set_nonblocking(true).unwrap();
     let target = format!("127.0.0.1:{}", origin.local_addr().unwrap().port());
@@ -35,7 +38,7 @@ fn approved_network_is_one_exec_only_and_direct_connections_stay_denied() {
     let start = rpc(&mut input, &mut output, 2, "session.start", json!({"project": project, "policy": policy, "fs_mode": "copy-private", "require_fs_mode": true}));
     let sid = start["result"]["session_id"].as_str().expect("session.start succeeded").to_owned();
     let request = |extra: Value, direct: bool| {
-        let mut params = json!({"session_id": sid, "argv": ["/usr/bin/curl", "--max-time", "3", "--silent", "--show-error", "--fail", format!("http://{target}/")]});
+        let mut params = json!({"session_id": sid, "argv": [curl, "--max-time", "3", "--silent", "--show-error", "--fail", format!("http://{target}/")]});
         if direct { params["argv"].as_array_mut().unwrap().extend([json!("--noproxy"), json!("*")]); }
         if !extra.is_null() { params["network_allow"] = extra; }
         params

@@ -80,6 +80,12 @@ impl Session {
         let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe");
         self.raw(&self.args(&["exec"], &["--", shell.to_str().unwrap(), "/c", body]))
     }
+    /// Run `program` as the sandboxed command itself.
+    fn exec(&self, program: &str, args: &[&str]) -> Output {
+        let mut extra = vec!["--", program];
+        extra.extend_from_slice(args);
+        self.raw(&self.args(&["exec"], &extra))
+    }
 }
 impl Drop for Session {
     fn drop(&mut self) {
@@ -104,6 +110,31 @@ fn short_name(dir: &Path, name: &str) -> Option<String> {
     let out = Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]).output().unwrap();
     let short = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     (!short.is_empty() && !short.eq_ignore_ascii_case(name)).then_some(short)
+}
+
+/// Answer every connection with a small HTTP 200 until the test process ends.
+fn serve_ok(listener: std::net::TcpListener) {
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+            let (mut header, mut byte) = (Vec::new(), [0]);
+            while !header.ends_with(b"\r\n\r\n") {
+                if std::io::Read::read_exact(&mut stream, &mut byte).is_err() { break; }
+                header.push(byte[0]);
+            }
+            let _ = std::io::Write::write_all(&mut stream, b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        }
+    });
+}
+
+fn network_policy(mode: &str, allow: &[String]) -> String {
+    let mut policy = format!("[filesystem]\nread = [\".\"]\nwrite = [\".\"]\n\n[network]\nmode = \"{mode}\"\n");
+    if !allow.is_empty() {
+        let entries: Vec<String> = allow.iter().map(|entry| format!("\"{entry}\"")).collect();
+        policy.push_str(&format!("allow = [{}]\n", entries.join(", ")));
+    }
+    policy
 }
 
 /// Set a directory's creation time (seconds after the Unix epoch).
@@ -540,6 +571,61 @@ fn sync_draft_names_are_refused() {
     assert!(error.contains("reserved for cbcow-private sync drafts"), "{error}");
     fs::write(s.live().join("other.deltabox-theirs"), "x").unwrap();
     assert!(s.failure(&["commit"], &[]).contains("reserved for cbcow-private sync drafts"));
+}
+
+#[test]
+#[ignore = "requires native MXC PSEC networking; run explicitly on a supported Windows host"]
+fn network_modes_are_enforced_through_mxc_rules_and_the_proxy() {
+    let origin = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = origin.local_addr().unwrap().port();
+    serve_ok(origin);
+    let other = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let other_port = other.local_addr().unwrap().port();
+    serve_ok(other);
+    let curl = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32\\curl.exe");
+    let fetch = |s: &Session, url: &str, direct: bool| -> Value {
+        let mut args = vec!["--max-time", "3", "--silent", "--show-error", "--fail"];
+        if direct { args.extend(["--noproxy", "*"]); }
+        args.push(url);
+        let out = s.exec(curl.to_str().unwrap(), &args);
+        assert!(out.status.success(), "exec failed: {}", String::from_utf8_lossy(&out.stderr));
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let local = format!("http://127.0.0.1:{port}/");
+
+    let s = Session::start_with_policy(&[], Some(&network_policy("allow_audit", &[])));
+    let result = fetch(&s, &local, true);
+    assert_eq!(result["exit_code"], 0, "{result}");
+    assert_eq!(result["stdout"], "ok");
+    drop(s);
+
+    let s = Session::start_with_policy(&[], Some(&network_policy("deny_all", &[])));
+    let result = fetch(&s, &local, true);
+    assert_ne!(result["exit_code"], 0, "deny_all let a loopback connection through: {result}");
+    drop(s);
+
+    // A loopback entry goes through the proxy, which keeps it port-exact: the
+    // listed port answers, another is refused, and nothing passes the proxy.
+    let s = Session::start_with_policy(&[], Some(&network_policy("allowlist", &[format!("127.0.0.1:{port}")])));
+    assert_eq!(fetch(&s, &local, false)["stdout"], "ok");
+    let result = fetch(&s, &format!("http://127.0.0.1:{other_port}/"), false);
+    assert_ne!(result["exit_code"], 0, "an unlisted port was reachable: {result}");
+    assert_eq!(result["network_denials"][0]["reason"], "not-authorized", "{result}");
+    let result = fetch(&s, &local, true);
+    assert_ne!(result["exit_code"], 0, "a connection went past the proxy: {result}");
+    drop(s);
+
+    // A hostname entry is served by the proxy too; `localhost` stays behind
+    // the private guard while the listed literal is reached.
+    let s = Session::start_with_policy(&[], Some(&network_policy("allowlist", &[format!("localhost:{port}"), format!("127.0.0.1:{port}")])));
+    let result = fetch(&s, &local, false);
+    assert_eq!(result["exit_code"], 0, "{result}");
+    assert_eq!(result["stdout"], "ok");
+    let result = fetch(&s, &format!("http://localhost:{port}/"), false);
+    assert_ne!(result["exit_code"], 0, "{result}");
+    assert_eq!(result["network_denials"][0]["reason"], "private-address", "{result}");
+    let result = fetch(&s, &local, true);
+    assert_ne!(result["exit_code"], 0, "a direct connection bypassed the proxy: {result}");
 }
 
 #[test]

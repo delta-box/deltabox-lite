@@ -765,7 +765,7 @@ impl Session {
         let pending_changes = if self.manifest.status == SessionStatus::Running { self.pending_count()? } else { 0 };
         let mut filesystem = FilesystemInfo::copy_private(FilesystemMode::CopyPrivate, None);
         filesystem.isolation_provider = Some("mxc-psec-filesystem".into());
-        filesystem.degraded_protections = Some(vec!["network-policy".into(), "resource-limits".into()]);
+        filesystem.degraded_protections = Some(vec!["resource-limits".into()]);
         Ok(SessionInfo {
             session_id: self.manifest.session_id.clone(),
             project: self.manifest.source.clone(),

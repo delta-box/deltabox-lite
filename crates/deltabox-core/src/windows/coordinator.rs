@@ -144,6 +144,7 @@ impl SessionCoordinator {
     /// admission, so it waits for a through session but does not block siblings.
     fn start_copy_private(&self,policy:Option<&Path>)->Result<SessionInfo> {
         let policy=match policy {Some(path)=>crate::policy::Policy::load(path)?,None=>crate::policy::Policy::default_agent()};
+        crate::windows::sandbox::check_network_policy(&policy)?;
         let id=uuid::Uuid::new_v4().to_string();
         let store=self.store(&id)?;
         // The working copy lives under runtime, outside the state tree the sandbox denies.

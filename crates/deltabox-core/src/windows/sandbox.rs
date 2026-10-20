@@ -1,7 +1,12 @@
-//! MXC is used only for filesystem grants. Network policy is deliberately reported as unenforced.
+//! MXC PSEC grants for the filesystem and the network. Network policy maps onto
+//! PSEC's directional egress/ingress rules, which take IP literals only;
+//! hostname allowlists and per-exec approvals go through the loopback proxy in
+//! `crate::network`, the one destination the rules then allow.
 use super::engine::Manifest;
+use crate::network::NetworkProxy;
 use crate::pathmap::PathMapper;
-use crate::protocol::{ExecParams, ExecResult, ExecutionProfile};
+use crate::policy::{NetworkMode, Policy};
+use crate::protocol::{ExecParams, ExecRequest, ExecResult, ExecutionProfile};
 use crate::{Error, Result};
 use appcontainer_common::base_container_runner::BaseContainerRunner;
 use learning_mode_windows::SecurityEnvironmentApi;
@@ -9,7 +14,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use wxc_common::cmdline::{cmdline_from_argv_for_context, CommandLineContext};
 use wxc_common::logger::{Logger, Mode};
-use wxc_common::models::{BaseProcessUiConfig, ContainerPolicy, ExecutionRequest, FallbackPolicy, NetworkPolicy, UiPolicy};
+use wxc_common::models::{
+    BaseProcessUiConfig, ContainerPolicy, ExecutionRequest, FallbackPolicy, NetworkAction, NetworkCidr, NetworkEgressPolicy,
+    NetworkIngressPolicy, NetworkPeer, NetworkPolicy, NetworkPort, NetworkProtocol, NetworkRule, ProxyAddress, ProxyConfig, UiPolicy,
+};
 use wxc_common::sandbox_process::{SandboxBackend, StdioMode};
 
 #[link(name = "advapi32")]
@@ -59,6 +67,22 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
     if params.execution_profile != ExecutionProfile::WorkspaceWrite {
         return Err(Error::Unsupported("Windows read-write execution profiles are reserved; use workspace-write".into()));
     }
+    // Network: this command's grants, then the proxy where one is needed. The
+    // policy it leaves behind names only what PSEC rules can express.
+    let mut policy=manifest.policy.clone();
+    policy.apply_network_allow(&params.network_allow)?;
+    // PSEC rules express a non-loopback IP literal exactly; hostnames need
+    // the proxy, and so do loopback entries, since the loopback exemption is
+    // not per port. The proxy keeps them port-exact.
+    let direct=|entry: &str| crate::network::target_ip(entry).ok().flatten().is_some_and(|(ip,_)| !ip.is_loopback());
+    let proxy=match NetworkProxy::prepare(&mut policy)? { Some(proxy)=>Some(proxy), None=>NetworkProxy::prepare_static(&mut policy,&direct)? };
+    let proxy_env: Vec<(String,String)>=proxy.as_ref().map(|proxy| {
+        let mut request=ExecRequest { argv: Vec::new(), cwd: None, env: None };
+        proxy.environment(&mut request);
+        request.env.unwrap_or_default()
+    }).unwrap_or_default();
+    let proxy_url=proxy_env.iter().find(|(key,_)| key=="HTTP_PROXY").map(|(_,value)| value.clone());
+    let network=network_rules(&policy,proxy_url.as_deref())?;
     let mapper=PathMapper::new(&manifest.source,&manifest.view);
     let requested_cwd=params.cwd.as_deref().unwrap_or(&manifest.source);
     let cwd=if requested_cwd.is_absolute() { mapper.map_path(requested_cwd) } else { manifest.view.join(requested_cwd) };
@@ -89,6 +113,10 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
     std::fs::create_dir_all(&home)?;std::fs::create_dir_all(&tmp)?;
     for key in ["HOME","USERPROFILE"] { env.insert(key.into(),unicode(&home)?); }
     for key in ["TMP","TEMP"] { env.insert(key.into(),unicode(&tmp)?); }
+    // Proxy-aware clients find the proxy through the standard variables; the
+    // keys are upper-cased like every other entry, which Windows treats as
+    // case-insensitive anyway.
+    for (key,value) in proxy_env { env.insert(key.to_uppercase(),value); }
     let mut read=Vec::new();
     for key in ["SystemRoot","ProgramFiles","ProgramFiles(x86)","ProgramData"] {
         if let Some(path)=std::env::var_os(key).map(PathBuf::from).filter(|p|p.is_dir()) { read.push(unicode(&path)?); }
@@ -134,8 +162,12 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
             readonly_paths: read,
             denied_paths: vec![unicode(&manifest.source)?,unicode(state.parent().unwrap())?],
             fallback: FallbackPolicy { allow_dacl_mutation: false },
-            default_network_policy: NetworkPolicy::Allow,
+            default_network_policy: network.legacy,
             allow_local_network: true,
+            network_egress: network.egress,
+            network_ingress: network.ingress,
+            network_proxy: network.proxy,
+            runtime_network_proxy_specified: network.runtime_proxy,
             ui: UiPolicy { disable: false, ..Default::default() },
             base_process_ui: BaseProcessUiConfig { isolation: "desktop".into(), ..Default::default() },
             ..Default::default()
@@ -154,6 +186,79 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
     let exit=process.wait();
     let (stdout,out_cut)=out.join().map_err(|_|Error::Backend("stdout reader failed".into()))?;
     let (stderr,err_cut)=err.join().map_err(|_|Error::Backend("stderr reader failed".into()))?;
-    // Windows does not route traffic through the approval proxy yet, so no denials are recorded.
-    Ok(ExecResult { exit_code: Some(exit?),stdout,stderr,duration_ms: started.elapsed().as_millis() as u64,truncated: out_cut||err_cut,network_denials: Vec::new() })
+    // The proxy outlives the command (it is dropped on return), so its denials are complete here.
+    let network_denials=proxy.as_ref().map(|proxy| proxy.denials()).unwrap_or_default();
+    Ok(ExecResult { exit_code: Some(exit?),stdout,stderr,duration_ms: started.elapsed().as_millis() as u64,truncated: out_cut||err_cut,network_denials })
+}
+
+/// What the sandbox may reach, as PSEC sees it.
+struct Network {
+    legacy: NetworkPolicy,
+    egress: Option<NetworkEgressPolicy>,
+    ingress: Option<NetworkIngressPolicy>,
+    proxy: ProxyConfig,
+    runtime_proxy: bool,
+}
+
+/// Map a policy onto PSEC rules. With a proxy, PSEC's runtime-proxy shape
+/// (deny-all egress, the proxy as the one loopback endpoint) carries the
+/// proxy URL, credentials included, into the command's proxy variables.
+/// Otherwise the allowlist holds IP literals only and becomes egress rules.
+fn network_rules(policy: &Policy, proxy_url: Option<&str>) -> Result<Network> {
+    let direct=Network { legacy: NetworkPolicy::Block, egress: None, ingress: None, proxy: ProxyConfig::default(), runtime_proxy: false };
+    if let Some(url)=proxy_url {
+        let port=url.rsplit(':').next().and_then(|port| port.parse::<u16>().ok())
+            .ok_or_else(|| Error::Backend("network proxy address has no port".into()))?;
+        return Ok(Network {
+            egress: Some(NetworkEgressPolicy::default()),
+            ingress: Some(NetworkIngressPolicy { default: NetworkAction::Allow, host_loopback: NetworkAction::Allow }),
+            proxy: ProxyConfig { address: Some(ProxyAddress::from_url(url,"127.0.0.1".into(),port)), builtin_test_server: false },
+            runtime_proxy: true,
+            ..direct
+        });
+    }
+    let network=&policy.network;
+    match network.mode {
+        // Unrestricted, loopback included (the legacy flag alone left loopback closed).
+        NetworkMode::AllowAudit=>Ok(Network {
+            legacy: NetworkPolicy::Allow,
+            egress: Some(NetworkEgressPolicy { default: NetworkAction::Allow, allow: Vec::new(), deny: Vec::new() }),
+            ingress: Some(NetworkIngressPolicy { default: NetworkAction::Allow, host_loopback: NetworkAction::Allow }),
+            ..direct
+        }),
+        // No egress, no ingress, no loopback: localhost is not implicitly privileged.
+        NetworkMode::DenyAll=>Ok(Network {
+            egress: Some(NetworkEgressPolicy::default()),
+            ingress: Some(NetworkIngressPolicy { default: NetworkAction::Deny, host_loopback: NetworkAction::Deny }),
+            ..direct
+        }),
+        NetworkMode::Allowlist=>{
+            let mut allow=Vec::new();
+            for entry in &network.allow {
+                let Some((ip,port))=crate::network::target_ip(entry)?.filter(|(ip,_)| !ip.is_loopback()) else {
+                    return Err(Error::Backend(format!("network entry needs the proxy, which was not started: {entry}")));
+                };
+                // One exact address and port; TCP and UDP, like a Sandlock rule.
+                let port=|protocol| NetworkPort { protocol, port: Some(port), end_port: None };
+                allow.push(NetworkRule {
+                    to: vec![NetworkPeer { cidr: NetworkCidr { address: ip, prefix_length: if ip.is_ipv4() {32} else {128} }, except: Vec::new() }],
+                    ports: vec![port(NetworkProtocol::Tcp),port(NetworkProtocol::Udp)],
+                });
+            }
+            Ok(Network {
+                egress: Some(NetworkEgressPolicy { default: NetworkAction::Deny, allow, deny: Vec::new() }),
+                ingress: Some(NetworkIngressPolicy { default: NetworkAction::Deny, host_loopback: NetworkAction::Deny }),
+                ..direct
+            })
+        }
+    }
+}
+
+/// Reject at session start what every exec would reject: allowlist entries
+/// that are not exact `host:port` targets.
+pub fn check_network_policy(policy: &Policy) -> Result<()> {
+    if policy.network.mode==NetworkMode::Allowlist {
+        for entry in &policy.network.allow { crate::network::target_ip(entry)?; }
+    }
+    Ok(())
 }

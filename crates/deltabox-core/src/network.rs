@@ -1,4 +1,5 @@
-//! Execution-scoped HTTP/CONNECT egress for approval-enabled policies.
+//! Execution-scoped HTTP/CONNECT egress for approval-enabled policies, and
+//! for static allowlists on backends whose rules take IP literals only.
 //! The OS backend allows only this listener. Policy and DNS checks run outside
 //! the sandbox; environment variables alone are never the enforcement boundary.
 use crate::error::{Error, Result};
@@ -19,6 +20,13 @@ pub fn normalize_target(value: &str) -> Result<String> {
     } else {
         format!("{host}:{port}")
     })
+}
+
+/// The address and port of an exact target whose host is an IP literal;
+/// None for a hostname.
+pub fn target_ip(target: &str) -> Result<Option<(IpAddr, u16)>> {
+    let (host, port) = split_target(target)?;
+    Ok(host.parse::<IpAddr>().ok().map(|ip| (ip, port)))
 }
 
 fn split_target(value: &str) -> Result<(String, u16)> {
@@ -64,6 +72,9 @@ struct Shared {
     allow: Vec<String>,
     deny: Vec<String>,
     allow_private: bool,
+    /// A listed IP literal is reached even when private: the policy author
+    /// wrote it, and a literal cannot be rebound the way a hostname can.
+    trust_literals: bool,
     token: String,
 }
 
@@ -110,6 +121,29 @@ impl NetworkProxy {
             return Ok(None);
         }
         policy.validate()?;
+        Self::start(policy, false).map(Some)
+    }
+
+    /// A proxy for a static allowlist with entries the OS backend cannot
+    /// express as a rule of its own; `direct` says which entries it can.
+    /// Hostnames stay behind the private-address guard; listed IP literals
+    /// are trusted as written. None when every entry is direct or the policy
+    /// is not a static allowlist.
+    pub fn prepare_static(policy: &mut Policy, direct: &dyn Fn(&str) -> bool) -> Result<Option<Self>> {
+        if policy.network.mode != NetworkMode::Allowlist || policy.network.allow_approval {
+            return Ok(None);
+        }
+        for entry in &policy.network.allow {
+            target_ip(entry)?;
+        }
+        if policy.network.allow.iter().all(|entry| direct(entry)) {
+            return Ok(None);
+        }
+        policy.validate()?;
+        Self::start(policy, true).map(Some)
+    }
+
+    fn start(policy: &mut Policy, trust_literals: bool) -> Result<Self> {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         listener.set_nonblocking(true)?;
         let port = listener.local_addr()?.port();
@@ -131,6 +165,7 @@ impl NetworkProxy {
                 .map(|v| normalize_target(v))
                 .collect::<Result<_>>()?,
             allow_private: policy.network.allow_private,
+            trust_literals,
             token: uuid::Uuid::new_v4().simple().to_string(),
         });
         let state = Arc::clone(&shared);
@@ -177,11 +212,11 @@ impl NetworkProxy {
         policy.network.allow_approval = false;
         policy.network.deny.clear();
         policy.network.allow_private = false;
-        Ok(Some(Self {
+        Ok(Self {
             port,
             shared,
             listener: Some(handle),
-        }))
+        })
     }
 
     pub fn environment(&self, request: &mut ExecRequest) {
@@ -224,7 +259,31 @@ impl Drop for NetworkProxy {
     }
 }
 
-fn serve(mut client: TcpStream, shared: &Shared) -> Result<()> {
+/// Copy until EOF, an error, or the proxy stops. Reads time out briefly so a
+/// stop is noticed even where `shutdown` does not wake a blocked read, as on
+/// Windows; otherwise dropping the proxy could wait on a tunnel forever.
+fn relay(from: &mut TcpStream, to: &mut TcpStream, shared: &Shared) {
+    let _ = from.set_read_timeout(Some(Duration::from_millis(500)));
+    let mut buffer = [0u8; 16384];
+    loop {
+        match from.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => {
+                if to.write_all(&buffer[..count]).is_err() {
+                    break;
+                }
+            }
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                if shared.stop.load(Ordering::Acquire) {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+fn serve(mut client: TcpStream, shared: &Arc<Shared>) -> Result<()> {
     client.set_nonblocking(false)?;
     client.set_read_timeout(Some(Duration::from_secs(15)))?;
     client.set_write_timeout(Some(Duration::from_secs(15)))?;
@@ -298,7 +357,8 @@ fn serve(mut client: TcpStream, shared: &Shared) -> Result<()> {
         return Ok(());
     }
     let addresses: Vec<_> = (host.as_str(), port).to_socket_addrs()?.collect();
-    if !shared.allow_private && addresses.iter().any(|addr| !public_ip(addr.ip())) {
+    let trusted_literal = shared.trust_literals && host.parse::<IpAddr>().is_ok();
+    if !shared.allow_private && !trusted_literal && addresses.iter().any(|addr| !public_ip(addr.ip())) {
         shared.denied(&target, "private-address");
         client.write_all(
             b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -356,15 +416,15 @@ fn serve(mut client: TcpStream, shared: &Shared) -> Result<()> {
         }
         upstream.write_all(b"\r\n")?;
     }
-    client.set_read_timeout(None)?;
     client.set_write_timeout(None)?;
     let mut downstream = client.try_clone()?;
     let mut upload = upstream.try_clone()?;
+    let state = Arc::clone(shared);
     let forward = std::thread::spawn(move || {
-        let _ = std::io::copy(&mut client, &mut upload);
+        relay(&mut client, &mut upload, &state);
         let _ = upload.shutdown(Shutdown::Write);
     });
-    let _ = std::io::copy(&mut upstream, &mut downstream);
+    relay(&mut upstream, &mut downstream, shared);
     let _ = downstream.shutdown(Shutdown::Both);
     let _ = upstream.shutdown(Shutdown::Both);
     let _ = forward.join();
@@ -453,6 +513,27 @@ mod tests {
         assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
         let denied = self::proxy(Vec::new(), Vec::new(), true);
         assert!(response(&mut connect(&denied, &target, true)).contains("403"));
+    }
+
+    #[test]
+    fn static_allowlists_proxy_hostnames_and_trust_listed_literals() {
+        let origin = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = origin.local_addr().unwrap().port();
+        let literal = |entry: &str| target_ip(entry).ok().flatten().is_some();
+        let mut policy = Policy::default_agent();
+        policy.network.mode = NetworkMode::Allowlist;
+        policy.network.allow = vec![format!("127.0.0.1:{port}")];
+        assert!(NetworkProxy::prepare_static(&mut policy, &literal).unwrap().is_none(), "direct entries alone need no proxy");
+        policy.network.allow.push(format!("localhost:{port}"));
+        let proxy = NetworkProxy::prepare_static(&mut policy, &literal).unwrap().unwrap();
+        assert_eq!(policy.network.allow, vec![format!("127.0.0.1:{}", proxy.port)], "the OS backend sees only the proxy");
+        assert!(response(&mut connect(&proxy, &format!("localhost:{port}"), true)).contains("403"));
+        assert!(proxy.denials().iter().any(|d| d.reason == "private-address"));
+        assert!(response(&mut connect(&proxy, &format!("127.0.0.1:{port}"), true)).contains("200"));
+        assert!(origin.accept().is_ok());
+        assert!(response(&mut connect(&proxy, &format!("127.0.0.1:{}", port.wrapping_add(1).max(1)), true)).contains("403"));
+        policy.network.allow_approval = true;
+        assert!(NetworkProxy::prepare_static(&mut policy, &literal).unwrap().is_none(), "approval mode uses prepare");
     }
 
     #[test]
