@@ -1,5 +1,6 @@
 use crate::protocol::*;
 use crate::windows::engine::{now_ms,write_json,Engine,Manifest,Savepoint};
+use crate::windows::copy_private;
 use crate::windows::helper;
 use crate::{Error, Result};
 use base64::Engine as _;
@@ -57,9 +58,16 @@ impl SessionCoordinator {
     }
     pub fn start_with_durability(&self,policy:Option<&Path>,requested:Option<FilesystemMode>,_required:bool,durability:DurabilityMode,group:Option<u64>)->Result<SessionInfo> {
         let mode = requested.unwrap_or(FilesystemMode::CbcowThrough);
-        match mode {
-            FilesystemMode::CopyPrivate=>return Err(Error::Unsupported("Windows copy-private provider is reserved and not implemented".into())),
-            FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate=>{}
+        if mode == FilesystemMode::CopyPrivate {
+            // Same checks, in the same order, as the Unix coordinator.
+            if group.is_some() && durability!=DurabilityMode::Strict {
+                return Err(Error::InvalidDurability("group_commit_ms requires strict durability".into()));
+            }
+            if group==Some(0) {return Err(Error::InvalidDurability("group_commit_ms must be greater than zero".into()));}
+            if durability==DurabilityMode::Strict {
+                return Err(Error::InvalidDurability("strict durability requires a CB-CoW filesystem mode".into()));
+            }
+            return self.start_copy_private(policy);
         }
         if group.is_some() {return Err(Error::Unsupported("Windows group commit is not implemented".into()));}
         if durability==DurabilityMode::Strict {
@@ -70,18 +78,28 @@ impl SessionCoordinator {
         }
         crate::windows::sandbox::available()?;
         let _admission=helper::lock(&self.state.join("project.lock"),Duration::from_secs(30))?;
+        self.check_through_owner()?;
         let active=self.state.join("active.json");
-        if active.exists() {
-            let id:String=serde_json::from_slice(&fs::read(&active)?)?;
-            if self.manifest(&id)?.status==SessionStatus::Stopped {fs::remove_file(&active)?;}
-            else {return Err(Error::SessionBusy(format!("through session {id} owns this project; stop or recover it first")));}
-        }
         // Private sessions share admission; a through writer remains exclusive.
         if mode == FilesystemMode::CbcowThrough {
             for entry in fs::read_dir(&self.state)? {
                 let entry = entry?;
                 if !entry.path().join("session.json").is_file() { continue; }
-                let m: Manifest = serde_json::from_slice(&fs::read(entry.path().join("session.json"))?)?;
+                let mut m: Manifest = serde_json::from_slice(&fs::read(entry.path().join("session.json"))?)?;
+                // A copy-private start that died before its copy finished has
+                // no accepted.json and nobody holding its operation lock. The
+                // lock is taken first: a start finishing in between would
+                // otherwise be marked dead.
+                if m.status != SessionStatus::Stopped && m.fs_mode == FilesystemMode::CopyPrivate {
+                    if let Ok(_operation) = helper::lock(&entry.path().join("operation.lock"), Duration::ZERO) {
+                        if !entry.path().join("accepted.json").exists() {
+                            m.status = SessionStatus::Stopped;
+                            // The failed start may be removing its store right now.
+                            let _ = write_json(&entry.path().join("session.json"), &m);
+                            continue;
+                        }
+                    }
+                }
                 if m.status != SessionStatus::Stopped {
                     return Err(Error::SessionBusy(format!("session {} owns this project; stop it first", m.session_id)));
                 }
@@ -108,6 +126,66 @@ impl SessionCoordinator {
             crate::windows::engine::write_json_durable(&store.join("session.json"), &failed, failed.durable())?;
         }
         result
+    }
+
+    /// A running through session owns the project. Call under `project.lock`.
+    fn check_through_owner(&self)->Result<()> {
+        let active=self.state.join("active.json");
+        if active.exists() {
+            let id:String=serde_json::from_slice(&fs::read(&active)?)?;
+            if self.manifest(&id)?.status==SessionStatus::Stopped {fs::remove_file(&active)?;}
+            else {return Err(Error::SessionBusy(format!("through session {id} owns this project; stop or recover it first")));}
+        }
+        Ok(())
+    }
+
+    /// Copy-private copies the project into a private working tree and needs
+    /// no WinFsp mount or helper process. Like cbcow-private it shares
+    /// admission, so it waits for a through session but does not block siblings.
+    fn start_copy_private(&self,policy:Option<&Path>)->Result<SessionInfo> {
+        let policy=match policy {Some(path)=>crate::policy::Policy::load(path)?,None=>crate::policy::Policy::default_agent()};
+        let id=uuid::Uuid::new_v4().to_string();
+        let store=self.store(&id)?;
+        // The working copy lives under runtime, outside the state tree the sandbox denies.
+        let live=self.runtime.join("live").join(&id);
+        let scratch=self.runtime.join("scratch").join(&id);
+        let mut manifest=Manifest {
+            version:1,session_id:id.clone(),source:self.project.clone(),fs_mode:FilesystemMode::CopyPrivate,durability:DurabilityMode::Fast,
+            live:Some(live.clone()),view:live.clone(),scratch:scratch.clone(),token:String::new(),started_at_ms:now_ms(),status:SessionStatus::Running,
+            policy,next_id:1,accepted:"accepted".into(),checkpoints:Vec::new(),review:None,rollback:None,
+        };
+        let starting={
+            // Admission only: the session record is written under project.lock,
+            // so a through start sees it, and the copy below runs without
+            // holding the lock other starts and stops wait on.
+            let _admission=helper::lock(&self.state.join("project.lock"),Duration::from_secs(30))?;
+            self.check_through_owner()?;
+            fs::create_dir_all(&store)?;fs::create_dir_all(&scratch)?;
+            write_json(&store.join("session.json"),&manifest)?;
+            // Held until the copy is done, so nobody opens a half-built
+            // session, and a through start can tell a live start from a dead one.
+            helper::lock(&store.join("operation.lock"),Duration::ZERO)?
+        };
+        let copied=copy_private::initialize(&store,&manifest);
+        drop(starting);
+        let started=copied.and_then(|()| copy_private::Session::open(&store)?.info());
+        if started.is_err() {
+            // Nothing was published; drop the copies and the record. If a copy
+            // cannot be removed yet, the record stays (stopped) so a later
+            // removal finds the copy instead of orphaning it.
+            let copies=crate::windows::engine::remove(&live).is_ok() && crate::windows::engine::remove(&scratch).is_ok();
+            if !copies || crate::windows::engine::remove(&store).is_err() {
+                manifest.status=SessionStatus::Stopped;
+                let _=write_json(&store.join("session.json"),&manifest);
+            }
+        }
+        started
+    }
+
+    /// Copy-private sessions are served in this process; `None` for cbcow.
+    fn copy_session(&self,id:&str)->Result<Option<copy_private::Session>> {
+        if self.manifest(id)?.fs_mode!=FilesystemMode::CopyPrivate {return Ok(None);}
+        copy_private::Session::open(&self.store(id)?).map(Some)
     }
 
     fn ensure_helper(&self,id:&str)->Result<()> {
@@ -141,11 +219,13 @@ impl SessionCoordinator {
         serde_json::from_value(helper::request(&store,method)?).map_err(Into::into)
     }
     pub fn status(&self,id:&str)->Result<SessionInfo> {
+        if let Some(session)=self.copy_session(id)? {return session.info();}
         let m=self.manifest(id)?;
         if m.status==SessionStatus::Stopped {return helper::session_info(&Engine::open(&self.store(id)?)?,None);}
         self.call(id,Method::SessionStatus(SessionStatusParams {session_id:id.into()}))
     }
     pub fn stop(&self,id:&str)->Result<SessionInfo> {
+        if self.manifest(id)?.fs_mode==FilesystemMode::CopyPrivate {return copy_private::stop(&self.store(id)?);}
         let info=if self.manifest(id)?.status==SessionStatus::Stopped {self.status(id)?} else {self.call(id,Method::SessionStop(SessionStopParams {session_id:id.into()}))?};
         let _admission=helper::lock(&self.state.join("project.lock"),Duration::from_secs(30))?;
         let active=self.state.join("active.json");
@@ -158,34 +238,102 @@ impl SessionCoordinator {
     pub fn remove_stopped(&self,id:&str)->Result<()> {
         let m=self.manifest(id)?;
         if m.status!=SessionStatus::Stopped {return Err(Error::SessionBusy(id.into()));}
+        if m.fs_mode==FilesystemMode::CopyPrivate {
+            let store=self.store(id)?;
+            // Under the session's operation lock, so no concurrent open can
+            // recover a stale marker and rebuild the working copy meanwhile.
+            // The working copy and scratch live under runtime, outside the
+            // store. Remove them first, so a failure leaves a record to retry;
+            // then the markers, so nothing is left for a later open to redo.
+            let operation=helper::lock(&store.join("operation.lock"),Duration::from_secs(30))
+                .map_err(|_| Error::SessionBusy(format!("{id}: another operation on this session is running")))?;
+            copy_private::check_removable(&store,&m,&self.runtime)?;
+            if let Some(live)=&m.live {crate::windows::engine::remove(live)?;}
+            crate::windows::engine::remove(&m.scratch)?;
+            for name in ["pending.json","exec-backup"] {crate::windows::engine::remove(&store.join(name))?;}
+            drop(operation);
+        }
         crate::windows::engine::remove(&self.store(id)?)?;
         Ok(())
     }
-    pub fn exec(&self,p:ExecParams)->Result<ExecResult> {let id=p.session_id.clone();self.call(&id,Method::SessionExec(p))}
-    pub fn read_file(&self,id:&str,path:&Path)->Result<FsReadResult> {self.call(id,Method::FsRead(FsReadParams {session_id:id.into(),path:path.into()}))}
+    pub fn exec(&self,p:ExecParams)->Result<ExecResult> {
+        let id=p.session_id.clone();
+        if let Some(mut session)=self.copy_session(&id)? {return session.exec(p);}
+        self.call(&id,Method::SessionExec(p))
+    }
+    pub fn read_file(&self,id:&str,path:&Path)->Result<FsReadResult> {
+        if let Some(mut session)=self.copy_session(id)? {return session.read_file(path);}
+        self.call(id,Method::FsRead(FsReadParams {session_id:id.into(),path:path.into()}))
+    }
     pub fn read_file_bytes(&self,id:&str,path:&Path)->Result<Vec<u8>> {
         base64::engine::general_purpose::STANDARD.decode(self.read_file(id,path)?.content_base64).map_err(|e|Error::Backend(e.to_string()))
     }
     pub fn write_file(&self,id:&str,path:&Path,content:Vec<u8>)->Result<()> {self.write_file_bytes(id,path,&content)}
     pub fn write_file_bytes(&self,id:&str,path:&Path,content:&[u8])->Result<()> {
+        if let Some(mut session)=self.copy_session(id)? {return session.write_file(path,content);}
         let _:serde_json::Value=self.call(id,Method::FsWrite(FsWriteParams {session_id:id.into(),path:path.into(),content_base64:base64::engine::general_purpose::STANDARD.encode(content)}))?;Ok(())
     }
     pub fn record_file_changes(&self,id:&str,paths:&[PathBuf])->Result<()> {
         let m=self.manifest(id)?;
+        if m.fs_mode==FilesystemMode::CopyPrivate {
+            return Err(Error::Unsupported("direct mount tracking requires a CB-CoW filesystem mode".into()));
+        }
         for path in paths {if path.is_absolute() && !path.starts_with(&m.view) {return Err(Error::Backend("direct writes must use the WinFsp view".into()));}}
         self.status(id)?;Ok(())
     }
-    pub fn checkpoint(&self,p:CheckpointParams)->Result<CheckpointInfo> {let id=p.session_id.clone();self.call(&id,Method::CheckpointCreate(p))}
-    pub fn diff(&self,p:DiffParams)->Result<DiffResult> {let id=p.session_id.clone();self.call(&id,Method::DiffList(p))}
-    pub fn commit(&self,p:CommitParams)->Result<CommitResult> {let id=p.session_id.clone();self.call(&id,Method::ChangesCommit(p))}
-    pub fn abort(&self,p:AbortParams)->Result<AbortResult> {let id=p.session_id.clone();self.call(&id,Method::ChangesAbort(p))}
-    pub fn sync(&self,id:&str)->Result<SyncResult> {self.call(id,Method::SessionSync(SyncParams {session_id:id.into()}))}
-    pub fn begin_review(&self,p:ReviewBeginParams)->Result<ActiveReview> {let id=p.session_id.clone();self.call(&id,Method::ReviewBegin(p))}
-    pub fn review_status(&self,id:&str)->Result<Option<ActiveReview>> {self.call(id,Method::ReviewStatus(ReviewStatusParams {session_id:id.into()}))}
-    pub fn review_diff(&self,id:&str)->Result<DiffResult> {self.call(id,Method::ReviewDiff(ReviewStatusParams {session_id:id.into()}))}
-    pub fn review_commit(&self,id:&str)->Result<CommitResult> {self.call(id,Method::ReviewCommit(ReviewStatusParams {session_id:id.into()}))}
-    pub fn review_abort(&self,id:&str)->Result<AbortResult> {self.call(id,Method::ReviewAbort(ReviewStatusParams {session_id:id.into()}))}
-    pub fn review_skip(&self,id:&str)->Result<ActiveReview> {self.call(id,Method::ReviewSkip(ReviewStatusParams {session_id:id.into()}))}
+    pub fn checkpoint(&self,p:CheckpointParams)->Result<CheckpointInfo> {
+        let id=p.session_id.clone();
+        if let Some(mut session)=self.copy_session(&id)? {return session.checkpoint(p.label);}
+        self.call(&id,Method::CheckpointCreate(p))
+    }
+    pub fn diff(&self,p:DiffParams)->Result<DiffResult> {
+        let id=p.session_id.clone();
+        if let Some(mut session)=self.copy_session(&id)? {return session.diff(p.from.as_deref(),p.to.as_deref());}
+        self.call(&id,Method::DiffList(p))
+    }
+    pub fn commit(&self,p:CommitParams)->Result<CommitResult> {
+        let id=p.session_id.clone();
+        // `ours` endorses sibling cbcow-private publications; copy-private
+        // ignores it, as on Unix.
+        if let Some(mut session)=self.copy_session(&id)? {return session.commit(p.checkpoint);}
+        self.call(&id,Method::ChangesCommit(p))
+    }
+    pub fn abort(&self,p:AbortParams)->Result<AbortResult> {
+        let id=p.session_id.clone();
+        if let Some(mut session)=self.copy_session(&id)? {return session.abort(p.checkpoint);}
+        self.call(&id,Method::ChangesAbort(p))
+    }
+    pub fn sync(&self,id:&str)->Result<SyncResult> {
+        if self.manifest(id)?.fs_mode==FilesystemMode::CopyPrivate {
+            return Err(Error::Unsupported("session.sync requires a cbcow-private session".into()));
+        }
+        self.call(id,Method::SessionSync(SyncParams {session_id:id.into()}))
+    }
+    pub fn begin_review(&self,p:ReviewBeginParams)->Result<ActiveReview> {
+        let id=p.session_id.clone();
+        if let Some(mut session)=self.copy_session(&id)? {return session.begin_review(p.kind,p.label);}
+        self.call(&id,Method::ReviewBegin(p))
+    }
+    pub fn review_status(&self,id:&str)->Result<Option<ActiveReview>> {
+        if let Some(session)=self.copy_session(id)? {return session.review_status();}
+        self.call(id,Method::ReviewStatus(ReviewStatusParams {session_id:id.into()}))
+    }
+    pub fn review_diff(&self,id:&str)->Result<DiffResult> {
+        if let Some(mut session)=self.copy_session(id)? {return session.review_diff();}
+        self.call(id,Method::ReviewDiff(ReviewStatusParams {session_id:id.into()}))
+    }
+    pub fn review_commit(&self,id:&str)->Result<CommitResult> {
+        if let Some(mut session)=self.copy_session(id)? {return session.review_commit();}
+        self.call(id,Method::ReviewCommit(ReviewStatusParams {session_id:id.into()}))
+    }
+    pub fn review_abort(&self,id:&str)->Result<AbortResult> {
+        if let Some(mut session)=self.copy_session(id)? {return session.review_abort();}
+        self.call(id,Method::ReviewAbort(ReviewStatusParams {session_id:id.into()}))
+    }
+    pub fn review_skip(&self,id:&str)->Result<ActiveReview> {
+        if let Some(mut session)=self.copy_session(id)? {return session.review_skip();}
+        self.call(id,Method::ReviewSkip(ReviewStatusParams {session_id:id.into()}))
+    }
 }
 
 struct ChildHandle(windows_sys::Win32::Foundation::HANDLE);

@@ -193,7 +193,10 @@ pub(crate) fn remove(path: &Path) -> Result<()> {
                     return Err(std::io::Error::last_os_error().into());
                 }
             }
-            if m.is_dir() {
+            // Decide by the directory attribute, not `is_dir()`: a junction or a
+            // directory symlink reports `is_dir() == false` but must be removed
+            // with RemoveDirectory, without descending into its target.
+            if m.file_attributes() & 0x10 != 0 {
                 if m.file_attributes() & 0x400 == 0 {
                     for entry in fs::read_dir(path)? { remove(&entry?.path())?; }
                 }
@@ -668,7 +671,7 @@ impl Engine {
             next.checkpoints.retain(|p| p.cursor >= cursor);
             for p in &mut next.checkpoints { p.info.committed = p.info.id == target; }
             next.review = None;
-            let folded = super::private::publish(&self.state, &self.manifest, &next, &changes, &stage, ours)?;
+            let folded = super::private::publish(&self.state, &self.manifest, &next, &changes, &stage, ours, &|| Ok(()))?;
             self.manifest = next;
             self.records.retain(|r| r.id > cursor);
             self.prune_preimages()?;

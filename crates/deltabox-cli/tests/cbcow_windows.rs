@@ -117,8 +117,9 @@ fn powershell_through_lifecycle_and_isolation() {
     assert!(s.project.join("allowed.txt").exists());
     assert!(!s.root.path().join("outside.txt").exists());
     s.action("abort",&[]);
+    // Copy-private exists now, but a live through session still owns the project.
     let out=s.raw(&["session","start",s.project.to_str().unwrap(),"--fs-mode","copy-private"]);
-    assert!(!out.status.success());assert!(String::from_utf8_lossy(&out.stderr).contains("reserved"));
+    assert!(!out.status.success());assert!(String::from_utf8_lossy(&out.stderr).contains("owns this project"));
     let out=s.raw(&["session","start",s.project.to_str().unwrap(),"--durable"]);
     assert!(!out.status.success());assert!(String::from_utf8_lossy(&out.stderr).contains("strict durability"));
 }

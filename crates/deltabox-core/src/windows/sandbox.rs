@@ -154,5 +154,6 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
     let exit=process.wait();
     let (stdout,out_cut)=out.join().map_err(|_|Error::Backend("stdout reader failed".into()))?;
     let (stderr,err_cut)=err.join().map_err(|_|Error::Backend("stderr reader failed".into()))?;
-    Ok(ExecResult { exit_code: Some(exit?),stdout,stderr,duration_ms: started.elapsed().as_millis() as u64,truncated: out_cut||err_cut })
+    // Windows does not route traffic through the approval proxy yet, so no denials are recorded.
+    Ok(ExecResult { exit_code: Some(exit?),stdout,stderr,duration_ms: started.elapsed().as_millis() as u64,truncated: out_cut||err_cut,network_denials: Vec::new() })
 }

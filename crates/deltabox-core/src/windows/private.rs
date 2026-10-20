@@ -16,18 +16,18 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct Fingerprint {
-    directory: bool,
-    attributes: u32,
-    creation: u64,
-    write: u64,
-    size: u64,
-    digest: String,
+pub(super) struct Fingerprint {
+    pub(super) directory: bool,
+    pub(super) attributes: u32,
+    pub(super) creation: u64,
+    pub(super) write: u64,
+    pub(super) size: u64,
+    pub(super) digest: String,
 }
-type Index = BTreeMap<String, Fingerprint>;
+pub(super) type Index = BTreeMap<String, Fingerprint>;
 
 #[derive(Clone, Serialize, Deserialize)]
-struct Baseline { entries: Index, seen: usize }
+pub(super) struct Baseline { pub(super) entries: Index, pub(super) seen: usize }
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Publication { id: String, session: String, changes: BTreeMap<String, Option<Fingerprint>> }
@@ -51,7 +51,7 @@ struct Transaction {
     committed: bool,
 }
 
-fn key(path: &str) -> String { path.replace('/', "\\").to_lowercase() }
+pub(super) fn key(path: &str) -> String { path.replace('/', "\\").to_lowercase() }
 fn under(path: &str, parent: &str) -> bool { path == parent || path.starts_with(&format!("{parent}\\")) }
 pub(super) fn is_draft(path: &str) -> bool {
     path.split(['/', '\\']).any(|part| part.to_lowercase().ends_with(".deltabox-theirs"))
@@ -66,10 +66,15 @@ fn history(project_state: &Path) -> Result<Vec<Publication>> {
     if path.exists() { read_json(&path) } else { Ok(Vec::new()) }
 }
 
-fn fingerprint(path: &Path) -> Result<Fingerprint> {
+/// How many publications this project has, for a new session's baseline.
+pub(super) fn publication_count(project_state: &Path) -> Result<usize> {
+    Ok(history(project_state)?.len())
+}
+
+pub(super) fn fingerprint(path: &Path) -> Result<Fingerprint> {
     let m = fs::symlink_metadata(path)?;
     if m.file_attributes() & 0x400 != 0 {
-        return Err(Error::Unsupported("reparse points in Windows private trees".into()));
+        return Err(Error::Unsupported(format!("reparse points in Windows private trees: {}", path.display())));
     }
     let digest = if m.is_file() {
         let mut file = File::open(path)?;
@@ -118,13 +123,28 @@ pub(super) fn initialize(state: &Path, manifest: &mut Manifest) -> Result<()> {
     write_json_durable(&state.join("baseline.json"), &Baseline { entries, seen: history(parent)?.len() }, manifest.durable())
 }
 
+/// Whether the project's unfinished publication journal belongs to `state`.
+/// Its stage (with the host backups a rollback needs) lives in that store, so
+/// the store must not be removed while this is true.
+pub(super) fn journal_names(state: &Path) -> Result<bool> {
+    #[derive(Deserialize)]
+    struct Owner { state: PathBuf }
+    // A sibling may retire the journal at any moment; a missing one names nobody.
+    let bytes = match fs::read(state.parent().unwrap().join("publish.json")) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        other => other?,
+    };
+    let owner: Owner = serde_json::from_slice(&bytes)?;
+    Ok(owner.state.to_string_lossy().eq_ignore_ascii_case(&state.to_string_lossy()))
+}
+
 pub(super) fn recover(state: &Path) -> Result<()> {
     let parent = state.parent().unwrap();
     let _publish = lock(&parent.join("publish.lock"), Duration::from_secs(660))?;
     recover_locked(parent)
 }
 
-fn recover_locked(parent: &Path) -> Result<()> {
+pub(super) fn recover_locked(parent: &Path) -> Result<()> {
     let journal = parent.join("publish.json");
     if !journal.exists() { return Ok(()); }
     let tx: Transaction = read_json(&journal)?;
@@ -187,10 +207,13 @@ fn copy_publication(source: &Path, target: &Path, durable: bool) -> Result<()> {
     } else { copy_tree_durable(source, target, durable) }
 }
 
-pub(super) fn publish(state: &Path, manifest: &Manifest, next: &Manifest, changes: &[Change], stage: &Path, ours: bool) -> Result<u64> {
+/// `check` runs under `publish.lock`, after recovery and before anything is
+/// read or changed. Copy-private uses it for its whole-project drift check.
+pub(super) fn publish(state: &Path, manifest: &Manifest, next: &Manifest, changes: &[Change], stage: &Path, ours: bool, check: &dyn Fn() -> Result<()>) -> Result<u64> {
     let parent = state.parent().unwrap();
     let _publish = lock(&parent.join("publish.lock"), Duration::from_secs(660))?;
     recover_locked(parent)?;
+    check()?;
     let durable = manifest.durable();
     let mut baseline: Baseline = read_json(&state.join("baseline.json"))?;
     let publications = history(parent)?;

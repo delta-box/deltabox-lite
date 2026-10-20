@@ -1,9 +1,11 @@
-//! Windows WinFsp providers with host-visible or private backing trees.
+//! Windows WinFsp providers with host-visible or private backing trees,
+//! plus copy-private, which needs no mount.
 pub mod engine;
 pub mod helper;
 pub mod sandbox;
 mod mount;
 mod private;
+pub(crate) mod copy_private;
 pub(crate) mod durability;
 #[cfg(test)]
 mod engine_tests;
