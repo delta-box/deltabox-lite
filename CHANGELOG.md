@@ -9,6 +9,14 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+### Fixed
+
+- Start macOS native sessions an order of magnitude faster on large projects.
+  The accepted base and private `LIVE` tree are cloned with one APFS
+  `clonefile` call per top-level entry, then checked against a scan of the
+  project and repaired where the clone differs, instead of being cloned and
+  re-stamped one entry at a time (#34).
+
 ## [0.1.1] - 2026-10-14
 
 ### Fixed

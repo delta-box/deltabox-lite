@@ -9,6 +9,8 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 const ACL_TYPE_EXTENDED: libc::c_int = 0x0000_0100;
+const CLONE_NOFOLLOW: u32 = 0x0001;
+const CLONE_ACL: u32 = 0x0004;
 
 unsafe extern "C" {
     fn acl_get_link_np(path: *const libc::c_char, kind: libc::c_int) -> *mut c_void;
@@ -55,6 +57,79 @@ pub(crate) fn clone_path(
             "unsupported project entry: {}",
             source.display()
         )));
+    }
+    Ok(())
+}
+
+/// Clone `source` with a single clonefile(2) call, which copies a whole
+/// hierarchy when `source` is a directory. APFS then clones the tree inside
+/// the kernel, an order of magnitude faster than `clone_path`, but the copy
+/// is approximate: it resets directory times, drops the ACLs of descendants,
+/// clears set-id bits, gives every entry the destination's group and splits
+/// hard links. Callers must repair it entry by entry.
+pub(crate) fn clone_tree(source: &Path, destination: &Path) -> Result<()> {
+    let source = c_path(source)?;
+    let destination = c_path(destination)?;
+    let flags = CLONE_NOFOLLOW | CLONE_ACL;
+    if unsafe { libc::clonefile(source.as_ptr(), destination.as_ptr(), flags) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().into())
+    }
+}
+
+/// Set the access and modification times of `path` to `mtime_ns`.
+pub(crate) fn restore_times(path: &Path, mtime_ns: i64, symlink: bool) -> Result<()> {
+    set_times(path, mtime_ns, mtime_ns, symlink)
+}
+
+/// Make `link` another name of `existing`. A locked file refuses new names,
+/// so its flags, which every name shares, are lifted around the link.
+pub(crate) fn link_entry(existing: &Path, link: &Path) -> Result<()> {
+    let flags = fs::symlink_metadata(existing)?.st_flags();
+    if flags != 0 {
+        set_flags(existing, 0, false)?;
+    }
+    let linked = fs::hard_link(existing, link);
+    if flags != 0 {
+        set_flags(existing, flags, false)?;
+    }
+    Ok(linked?)
+}
+
+/// Clear the lock flags of `path` itself, so that it can be replaced.
+pub(crate) fn unlock_entry(path: &Path) -> Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.st_flags() != 0 {
+        set_flags(path, 0, metadata.file_type().is_symlink())?;
+    }
+    Ok(())
+}
+
+/// Let a repair create or remove `path` even when its parent directory was
+/// copied with a read-only mode or a lock flag. The caller restores the
+/// parent's own metadata afterwards.
+pub(crate) fn unlock_parent(path: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::Backend("repaired path has no parent".into()))?;
+    let metadata = match fs::symlink_metadata(parent) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(parent)?;
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.st_flags() != 0 {
+        set_flags(parent, 0, false)?;
+    }
+    if metadata.mode() & 0o300 != 0o300 {
+        fs::set_permissions(parent, fs::Permissions::from_mode(metadata.mode() | 0o300))?;
     }
     Ok(())
 }

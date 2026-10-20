@@ -2,15 +2,16 @@ use crate::changeset::{describe_change, Change, ChangeKind, DEFAULT_TEXT_SIZE_LI
 use crate::error::{ConflictReport, Error, PathConflict, Result};
 use crate::test_hooks::maybe_pause;
 use crate::macos_tree::{
-    clone_path, copy_metadata, read_acl, remove_path, replace_path, sync_dir, sync_tree,
-    tracked_xattr,
+    clone_path, clone_tree, copy_metadata, link_entry, read_acl, remove_path, replace_path,
+    restore_times, sync_dir, sync_tree, tracked_xattr, unlock_entry, unlock_parent,
 };
 use crate::snapshot::read_capped_file;
 use deltafs_fuse::macos::{
     EventBatch, ITEM_CLONED, ITEM_CREATED, ITEM_IS_HARDLINK, ITEM_REMOVED, ITEM_RENAMED,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::darwin::fs::MetadataExt as DarwinMetadataExt;
@@ -23,6 +24,7 @@ const FORMAT_VERSION: u32 = 2;
 const LEGACY_FORMAT_VERSION: u32 = 1;
 const MAX_INDEX_DELTAS: usize = 64;
 const MIN_INDEX_DELTA_COMPACTION_ENTRIES: usize = 1024;
+const METADATA_READERS: usize = 4;
 const MANIFEST_FILE: &str = "state.json";
 const TRANSACTION_FILE: &str = "transaction.json";
 const BASE_DIR: &str = "base";
@@ -149,20 +151,21 @@ impl State {
         fs::create_dir_all(root.join(CHECKPOINTS_DIR))?;
         fs::create_dir_all(root.join(INDEXES_DIR))?;
         fs::create_dir_all(root.join(TRANSACTIONS_DIR))?;
-        materialize(project, &root.join(BASE_DIR), durable)
+        let scanned = materialize(project, &root.join(BASE_DIR), durable)
             .map_err(|error| Error::Backend(format!("create accepted APFS base: {error}")))?;
         maybe_pause("macos_base_materialized");
-        let live = match mode {
-            Mode::Through => project.to_path_buf(),
+        let index = match mode {
+            // The through-mode live tree is the project itself, which
+            // materializing the base has just scanned.
+            Mode::Through => scanned,
             Mode::Private => {
                 materialize(project, &root.join(LIVE_DIR), durable).map_err(|error| {
                     Error::Backend(format!("create private APFS live tree: {error}"))
                 })?;
-                root.join(LIVE_DIR)
+                TreeIndex::scan(&root.join(LIVE_DIR))
+                    .map_err(|error| Error::Backend(format!("index initial live tree: {error}")))?
             }
         };
-        let index = TreeIndex::scan(&live)
-            .map_err(|error| Error::Backend(format!("index initial live tree: {error}")))?;
         let manifest = Manifest {
             version: FORMAT_VERSION,
             mode,
@@ -807,11 +810,13 @@ impl State {
 
 impl TreeIndex {
     fn scan(root: &Path) -> Result<Self> {
+        let paths = walk(root)?;
+        let entries = read_in_parallel(&paths, |path| Entry::read(path))?;
         let mut index = Self::default();
-        for path in walk(root)? {
+        for (path, entry) in paths.iter().zip(entries) {
             let relative =
                 relative_string(path.strip_prefix(root).expect("walk stays below root"))?;
-            index.entries.insert(relative, Entry::read(&path)?);
+            index.entries.insert(relative, entry);
         }
         Ok(index)
     }
@@ -932,16 +937,39 @@ impl Entry {
     }
 
     fn semantic_eq(&self, other: &Self) -> bool {
+        self.mtime_ns == other.mtime_ns && self.same_attributes(other)
+    }
+
+    /// `semantic_eq` without the modification time.
+    fn same_attributes(&self, other: &Self) -> bool {
         self.kind == other.kind
             && self.size == other.size
             && self.mode == other.mode
             && self.uid == other.uid
             && self.gid == other.gid
-            && self.mtime_ns == other.mtime_ns
             && self.flags == other.flags
             && self.acl == other.acl
             && self.target == other.target
             && self.xattrs == other.xattrs
+    }
+
+    /// Whether both entries hold the same data, so that only metadata can
+    /// differ. A clone shares the data blocks of its source, so a file whose
+    /// size and modification time still match was not rewritten since.
+    fn same_content(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && match self.kind {
+                EntryKind::File => self.size == other.size && self.mtime_ns == other.mtime_ns,
+                EntryKind::Symlink => self.target == other.target,
+                EntryKind::Directory => true,
+            }
+    }
+
+    /// Whether a file was left alone since `since_ns`. Size and modification
+    /// time can be restored by a writer; the change time cannot, so a file
+    /// changed after a clone started is one whose clone must not be trusted.
+    fn untouched_since(&self, since_ns: i64) -> bool {
+        self.kind != EntryKind::File || self.ctime_ns < since_ns
     }
 }
 
@@ -1200,25 +1228,293 @@ fn recover_transaction(project: &Path, root: &Path) -> Result<()> {
     remove_path(&transaction_root)
 }
 
-fn materialize(source: &Path, destination: &Path, durable: bool) -> Result<()> {
+/// Copy `source` into `destination` exactly, and return the scan of `source`
+/// the copy was checked against.
+fn materialize(source: &Path, destination: &Path, durable: bool) -> Result<TreeIndex> {
     remove_path(destination)?;
     fs::create_dir_all(destination)?;
-    let mut links = HashMap::new();
+    // Cloning entry by entry and replaying every attribute costs hundreds of
+    // microseconds per entry, which made the first command in a project with
+    // node_modules or target wait tens of seconds. One clonefile(2) per
+    // top-level entry copies whole subtrees in the kernel instead. That copy
+    // is only approximate (see `clone_tree`), so the scan taken after it is
+    // the reference every entry is checked and repaired against. A failed
+    // clone only leaves more entries to repair.
+    let cloned_since = now_ns();
     for entry in fs::read_dir(source)? {
         let entry = entry?;
         if entry.file_name() != ".deltabox" {
-            clone_path(
-                &entry.path(),
-                &destination.join(entry.file_name()),
-                &mut links,
-            )?;
+            let _ = clone_tree(&entry.path(), &destination.join(entry.file_name()));
         }
     }
-    copy_metadata(source, destination)?;
+    let index = mirror(source, destination, cloned_since)?;
     if durable {
         sync_tree(destination)?;
     }
+    Ok(index)
+}
+
+/// Repair `destination`, a copy of `source` whose clones were taken no
+/// earlier than `cloned_since`, until it matches a scan of `source` exactly,
+/// and return that scan.
+fn mirror(source: &Path, destination: &Path, cloned_since: i64) -> Result<TreeIndex> {
+    let index = TreeIndex::scan(source)?;
+    // Where the scan has a directory and the copy has something else, put a
+    // directory there first, parents before children: the source replaced a
+    // file or symlink with a directory after the clone, or the clone failed.
+    // Every read and repair below a directory then stays inside the copy
+    // instead of following a stale symlink out of it.
+    for (path, expected) in &index.entries {
+        if expected.kind != EntryKind::Directory {
+            continue;
+        }
+        let target = destination.join(path);
+        match fs::symlink_metadata(&target) {
+            Ok(metadata) if metadata.is_dir() => continue,
+            Ok(_) => {
+                unlock_parent(&target)?;
+                unlock_entry(&target)?;
+                remove_path(&target)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => unlock_parent(&target)?,
+            Err(error) => return Err(error.into()),
+        }
+        fs::create_dir(&target)?;
+    }
+    // Checking the clone only reads it, and every read starts with a cold
+    // lookup of an inode the clone just created, so it runs on a few threads.
+    // The rare repairs then run in order.
+    let paths = index.entries.keys().collect::<Vec<_>>();
+    let cloned = read_in_parallel(&paths, |path| {
+        let target = destination.join(path);
+        let current = read_existing(&target)?;
+        let extras = match &current {
+            Some(current) if current.kind == EntryKind::Directory => {
+                extra_entries(&target, path, &index)?
+            }
+            _ => Vec::new(),
+        };
+        Ok((current, extras))
+    })?;
+    let mut links = HashMap::new();
+    // A path sorts after its parent, so walking the scan backwards settles
+    // everything inside a directory before the directory itself, and the
+    // directory times restored there stay final.
+    for ((path, expected), (current, extras)) in index.entries.iter().zip(cloned).rev() {
+        let target = destination.join(path);
+        settle_extras(destination, path, extras, &index)?;
+        let current = if expected.kind == EntryKind::Directory {
+            // Settling the children changed the directory, or created it.
+            read_existing(&target)?
+        } else {
+            current
+        };
+        mirror_entry(
+            &source.join(path),
+            &target,
+            expected,
+            current,
+            cloned_since,
+            &mut links,
+        )?;
+    }
+    let extras = extra_entries(destination, "", &index)?;
+    settle_extras(destination, "", extras, &index)?;
+    copy_metadata(source, destination)?;
+    Ok(index)
+}
+
+/// Repair `target`, a clone of `source` currently described by `current`,
+/// until it matches the scanned entry.
+fn mirror_entry(
+    source: &Path,
+    target: &Path,
+    expected: &Entry,
+    current: Option<Entry>,
+    cloned_since: i64,
+    links: &mut HashMap<(u64, u64), PathBuf>,
+) -> Result<()> {
+    // The kernel clone splits hard links. The first name of an inode reached
+    // here keeps its clone, and later names are linked back to it, sharing
+    // the metadata it is repaired to.
+    let identity = (expected.kind == EntryKind::File && expected.links > 1)
+        .then_some((expected.device, expected.inode));
+    if let Some(primary) = identity.and_then(|identity| links.get(&identity)) {
+        if !same_inode(primary, target)? {
+            unlock_parent(target)?;
+            unlock_entry(target)?;
+            remove_path(target)?;
+            link_entry(primary, target)?;
+        }
+        return Ok(());
+    }
+    match current {
+        Some(current)
+            if expected.untouched_since(cloned_since) && current.semantic_eq(expected) => {}
+        Some(current)
+            if expected.untouched_since(cloned_since) && current.same_content(expected) =>
+        {
+            // Directory times are what the clone resets on every tree, so
+            // restore them alone when nothing else differs. Other attributes
+            // are copied from the source, which must still be what the scan
+            // saw: a replaced symlink would otherwise be written through.
+            if current.flags == 0 && current.same_attributes(expected) {
+                restore_times(
+                    target,
+                    expected.mtime_ns,
+                    current.kind == EntryKind::Symlink,
+                )?;
+            } else if entry_kind_at(source)? == Some(expected.kind) {
+                copy_metadata(source, target)?;
+            } else {
+                rebuild(source, target, expected)?;
+            }
+        }
+        _ => rebuild(source, target, expected)?,
+    }
+    if let Some(identity) = identity {
+        links.insert(identity, target.to_path_buf());
+    }
     Ok(())
+}
+
+/// Replace `target` with a fresh clone of `source`: the clone is missing, or
+/// the source changed after the clone. Children were settled first, so a
+/// directory only needs itself. A source that vanished after the scan leaves
+/// the copy alone; the next reconcile sees that deletion.
+fn rebuild(source: &Path, target: &Path, expected: &Entry) -> Result<()> {
+    if entry_kind_at(source)?.is_none() {
+        return Ok(());
+    }
+    unlock_parent(target)?;
+    unlock_entry(target)?;
+    remove_path(target)?;
+    if expected.kind == EntryKind::Directory {
+        fs::create_dir(target)?;
+        copy_metadata(source, target)?;
+    } else {
+        clone_path(source, target, &mut HashMap::new())?;
+    }
+    Ok(())
+}
+
+/// Remove the entries of a copied directory that the scan does not have:
+/// the source deleted them after the clone. One that the volume still finds
+/// under an expected sibling's name was renamed instead, by case or Unicode
+/// normalization only, which APFS ignores in lookups; it takes that spelling.
+fn settle_extras(
+    destination: &Path,
+    parent: &str,
+    extras: Vec<PathBuf>,
+    index: &TreeIndex,
+) -> Result<()> {
+    if extras.is_empty() {
+        return Ok(());
+    }
+    let directory = if parent.is_empty() {
+        destination.to_path_buf()
+    } else {
+        destination.join(parent)
+    };
+    unlock_parent(&extras[0])?;
+    let present = fs::read_dir(&directory)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<std::io::Result<HashSet<OsString>>>()?;
+    let mut renamed = Vec::new();
+    for sibling in index.children(parent) {
+        let name = Path::new(&sibling)
+            .file_name()
+            .expect("indexed path has a file name");
+        if present.contains(name) {
+            continue;
+        }
+        if let Ok(metadata) = fs::symlink_metadata(destination.join(&sibling)) {
+            renamed.push((sibling, (metadata.dev(), metadata.ino())));
+        }
+    }
+    for extra in extras {
+        let metadata = fs::symlink_metadata(&extra)?;
+        let identity = (metadata.dev(), metadata.ino());
+        if let Some(position) = renamed.iter().position(|(_, found)| *found == identity) {
+            let (sibling, _) = renamed.swap_remove(position);
+            fs::rename(&extra, destination.join(sibling))?;
+            continue;
+        }
+        unlock_entry(&extra)?;
+        remove_path(&extra)?;
+    }
+    Ok(())
+}
+
+fn entry_kind_at(path: &Path) -> Result<Option<EntryKind>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => entry_kind(&metadata).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn now_ns() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos() as i64)
+}
+
+/// Entries of a cloned directory that the scan does not have: the source
+/// deleted them between the clone and the scan.
+fn extra_entries(directory: &Path, relative: &str, index: &TreeIndex) -> Result<Vec<PathBuf>> {
+    let mut extras = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = Path::new(relative).join(entry.file_name());
+        if !path
+            .to_str()
+            .is_some_and(|path| index.entries.contains_key(path))
+        {
+            extras.push(entry.path());
+        }
+    }
+    Ok(extras)
+}
+
+fn read_existing(path: &Path) -> Result<Option<Entry>> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Entry::read(path).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Map `items` through `read` on a few threads, keeping their order. Meant
+/// for independent metadata reads: on a large or freshly cloned tree most of
+/// their time is lookups that proceed concurrently, and beyond four threads
+/// APFS stopped getting faster in measurements.
+fn read_in_parallel<T, R>(items: &[T], read: impl Fn(&T) -> Result<R> + Sync) -> Result<Vec<R>>
+where
+    T: Sync,
+    R: Send,
+{
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |count| count.get())
+        .min(METADATA_READERS);
+    let chunk = items.len().div_ceil(threads).max(1);
+    std::thread::scope(|scope| {
+        let readers = items
+            .chunks(chunk)
+            .map(|chunk| scope.spawn(|| chunk.iter().map(&read).collect::<Result<Vec<_>>>()))
+            .collect::<Vec<_>>();
+        let mut results = Vec::with_capacity(items.len());
+        for reader in readers {
+            results.extend(reader.join().expect("metadata reader panicked")?);
+        }
+        Ok(results)
+    })
+}
+
+fn same_inode(left: &Path, right: &Path) -> Result<bool> {
+    let left = fs::symlink_metadata(left)?;
+    Ok(fs::symlink_metadata(right)
+        .is_ok_and(|right| (right.dev(), right.ino()) == (left.dev(), left.ino())))
 }
 
 fn expand_subtrees(before: &TreeIndex, live: &Path, paths: &mut BTreeSet<String>) -> Result<()> {
@@ -1678,6 +1974,313 @@ mod tests {
         assert!(xattr::get(&directory, "com.deltabox.extra")
             .unwrap()
             .is_none());
+    }
+
+    /// Assert that `copy` holds exactly the tree of `source`: the same entries
+    /// with the same metadata and content, and the same hard links.
+    fn assert_mirrors(source: &Path, copy: &Path) {
+        let expected = TreeIndex::scan(source).unwrap();
+        let actual = TreeIndex::scan(copy).unwrap();
+        assert_eq!(
+            expected.entries.keys().collect::<Vec<_>>(),
+            actual.entries.keys().collect::<Vec<_>>()
+        );
+        let mut copies = HashMap::new();
+        let mut sources = HashMap::new();
+        for (path, entry) in &expected.entries {
+            let copied = &actual.entries[path];
+            assert!(entry.semantic_eq(copied), "{path}: {entry:?} != {copied:?}");
+            if entry.kind == EntryKind::File {
+                assert!(files_equal(&source.join(path), &copy.join(path)).unwrap());
+                let identity = (entry.device, entry.inode);
+                assert_eq!(
+                    *copies.entry(identity).or_insert(copied.inode),
+                    copied.inode
+                );
+                assert_eq!(*sources.entry(copied.inode).or_insert(identity), identity);
+            }
+        }
+    }
+
+    fn other_group(path: &Path) -> Option<u32> {
+        let current = fs::metadata(path).unwrap().gid();
+        let groups = Command::new("/usr/bin/id")
+            .arg("-G")
+            .output()
+            .unwrap()
+            .stdout;
+        String::from_utf8(groups)
+            .unwrap()
+            .split_whitespace()
+            .filter_map(|group| group.parse().ok())
+            .find(|group| *group != current)
+    }
+
+    #[test]
+    fn materialize_restores_what_directory_clones_drop() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let nested = root.join("tree/nested");
+        let links = root.join("tree/links");
+        let locked = root.join("tree/aa-read-only");
+        fs::create_dir_all(nested.join("empty")).unwrap();
+        fs::create_dir_all(&links).unwrap();
+        fs::create_dir_all(&locked).unwrap();
+        fs::write(nested.join("acl.txt"), "acl").unwrap();
+        fs::write(nested.join("setuid.sh"), "#!/bin/sh\n").unwrap();
+        fs::set_permissions(nested.join("setuid.sh"), fs::Permissions::from_mode(0o4755)).unwrap();
+        fs::write(nested.join("hidden.txt"), "hidden").unwrap();
+        xattr::set(nested.join("hidden.txt"), "com.deltabox.test", b"nested").unwrap();
+        xattr::set(&nested, "com.deltabox.test", b"nested-dir").unwrap();
+        std::os::unix::fs::symlink("acl.txt", nested.join("link")).unwrap();
+        if let Some(group) = other_group(root) {
+            fs::write(nested.join("group.txt"), "group").unwrap();
+            std::os::unix::fs::chown(nested.join("group.txt"), None, Some(group)).unwrap();
+        }
+        // The read-only directory sorts first, so relinking its name of the
+        // inode has to open the directory up and restore it afterwards.
+        fs::write(links.join("primary.txt"), "shared").unwrap();
+        fs::hard_link(links.join("primary.txt"), links.join("peer.txt")).unwrap();
+        fs::hard_link(links.join("primary.txt"), locked.join("peer.txt")).unwrap();
+        let user = String::from_utf8(
+            Command::new("/usr/bin/id")
+                .arg("-un")
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        command(
+            "/bin/chmod",
+            &["+a", &format!("{} allow read", user.trim())],
+            &nested.join("acl.txt"),
+        );
+        command(
+            "/bin/chmod",
+            &["+a", &format!("{} allow list", user.trim())],
+            &nested,
+        );
+        command("/usr/bin/chflags", &["hidden"], &nested.join("hidden.txt"));
+        command("/usr/bin/chflags", &["hidden"], &nested.join("empty"));
+        for directory in [nested.join("empty"), nested.clone(), links, locked.clone()] {
+            command("/usr/bin/touch", &["-t", "202001020304.05"], &directory);
+        }
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+
+        for mode in [Mode::Through, Mode::Private] {
+            let state_root = root.join(format!(".deltabox/test/{mode:?}"));
+            let state = State::create(root, &state_root, mode, false, 1, "device".into()).unwrap();
+            assert_mirrors(root, &state_root.join(BASE_DIR));
+            if mode == Mode::Private {
+                assert_mirrors(root, &state.live());
+            }
+            assert_eq!(
+                state.index.as_ref().unwrap().entries,
+                TreeIndex::scan(&state.live()).unwrap().entries
+            );
+        }
+        command("/bin/chmod", &["-R", "u+w"], root);
+    }
+
+    #[test]
+    fn parallel_reads_keep_their_order() {
+        let items = (0..1001).collect::<Vec<u64>>();
+        let doubled = read_in_parallel(&items, |item| Ok(item * 2)).unwrap();
+        assert_eq!(
+            doubled,
+            items.iter().map(|item| item * 2).collect::<Vec<_>>()
+        );
+        assert!(read_in_parallel(&items, |item| if *item == 700 {
+            Err(Error::Backend("unreadable".into()))
+        } else {
+            Ok(*item)
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn mirror_repairs_entries_changed_after_the_clone() {
+        let source = tempfile::tempdir().unwrap();
+        let copy = tempfile::tempdir().unwrap();
+        let tree = source.path();
+        fs::create_dir_all(tree.join("gone/inner")).unwrap();
+        fs::write(tree.join("gone/inner/file.txt"), "nested").unwrap();
+        fs::create_dir(tree.join("kept")).unwrap();
+        fs::write(tree.join("kept/rewritten.txt"), "original").unwrap();
+        fs::write(tree.join("kept/became-dir"), "file").unwrap();
+        fs::create_dir(tree.join("kept/became-file")).unwrap();
+        fs::write(tree.join("kept/became-file/inner.txt"), "inner").unwrap();
+        fs::write(tree.join("kept/primary.txt"), "linked").unwrap();
+        fs::hard_link(tree.join("kept/primary.txt"), tree.join("kept/peer.txt")).unwrap();
+        std::os::unix::fs::symlink("rewritten.txt", tree.join("kept/link")).unwrap();
+        let destination = copy.path().join("tree");
+        materialize(tree, &destination, false).unwrap();
+        assert_mirrors(tree, &destination);
+
+        // A clone that partly failed, or raced with writers to the source.
+        fs::remove_dir_all(destination.join("gone")).unwrap();
+        fs::write(
+            destination.join("kept/rewritten.txt"),
+            "rewritten after the clone",
+        )
+        .unwrap();
+        fs::remove_file(destination.join("kept/became-dir")).unwrap();
+        fs::create_dir_all(destination.join("kept/became-dir/child")).unwrap();
+        fs::remove_dir_all(destination.join("kept/became-file")).unwrap();
+        fs::write(destination.join("kept/became-file"), "was a directory").unwrap();
+        fs::remove_file(destination.join("kept/peer.txt")).unwrap();
+        fs::write(destination.join("kept/peer.txt"), "linked").unwrap();
+        fs::remove_file(destination.join("kept/link")).unwrap();
+        std::os::unix::fs::symlink("elsewhere", destination.join("kept/link")).unwrap();
+        fs::write(destination.join("extra.txt"), "deleted from the source").unwrap();
+        fs::create_dir_all(destination.join("kept/extra-dir/inner")).unwrap();
+        fs::set_permissions(destination.join("kept"), fs::Permissions::from_mode(0o500)).unwrap();
+
+        mirror(tree, &destination, now_ns()).unwrap();
+        assert_mirrors(tree, &destination);
+    }
+
+    #[test]
+    fn mirror_never_reaches_through_a_stale_symlink_in_the_copy() {
+        let source = tempfile::tempdir().unwrap();
+        let copy = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("child.txt"), "outside").unwrap();
+        fs::create_dir(outside.path().join("sub")).unwrap();
+        fs::write(outside.path().join("sub/keep.txt"), "outside").unwrap();
+        // At clone time `dir` was a symlink to a directory outside the project.
+        let tree = source.path();
+        std::os::unix::fs::symlink(outside.path(), tree.join("dir")).unwrap();
+        let destination = copy.path().join("tree");
+        materialize(tree, &destination, false).unwrap();
+        assert!(fs::symlink_metadata(destination.join("dir"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        // Before the scan, the project replaced it with a real directory.
+        fs::remove_file(tree.join("dir")).unwrap();
+        fs::create_dir_all(tree.join("dir/sub")).unwrap();
+        fs::write(tree.join("dir/child.txt"), "inside").unwrap();
+        mirror(tree, &destination, now_ns()).unwrap();
+        assert_mirrors(tree, &destination);
+        assert_eq!(
+            fs::read_to_string(outside.path().join("child.txt")).unwrap(),
+            "outside"
+        );
+        assert_eq!(
+            fs::read_to_string(outside.path().join("sub/keep.txt")).unwrap(),
+            "outside"
+        );
+    }
+
+    #[test]
+    fn mirror_renames_entries_the_volume_still_finds_under_their_old_name() {
+        let source = tempfile::tempdir().unwrap();
+        let copy = tempfile::tempdir().unwrap();
+        let tree = source.path();
+        fs::create_dir(tree.join("Docs")).unwrap();
+        fs::write(tree.join("Docs/Readme.md"), "readme").unwrap();
+        let destination = copy.path().join("tree");
+        materialize(tree, &destination, false).unwrap();
+
+        // Renamed by case only after the clone: APFS still finds the old
+        // names, so the copy must take the new spelling, not lose the entries.
+        fs::rename(tree.join("Docs/Readme.md"), tree.join("Docs/README.md")).unwrap();
+        fs::rename(tree.join("Docs"), tree.join("DOCS")).unwrap();
+        mirror(tree, &destination, now_ns()).unwrap();
+        assert_mirrors(tree, &destination);
+        let names = |directory: &Path| {
+            let mut names = fs::read_dir(directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        };
+        assert_eq!(names(&destination), ["DOCS"]);
+        assert_eq!(names(&destination.join("DOCS")), ["README.md"]);
+        assert_eq!(
+            fs::read_to_string(destination.join("DOCS/README.md")).unwrap(),
+            "readme"
+        );
+    }
+
+    #[test]
+    fn mirror_rebuilds_files_rewritten_without_changing_size_or_mtime() {
+        let source = tempfile::tempdir().unwrap();
+        let copy = tempfile::tempdir().unwrap();
+        let file = source.path().join("same.txt");
+        fs::write(&file, "aaaa").unwrap();
+        command("/usr/bin/touch", &["-t", "202001020304.05"], &file);
+        let destination = copy.path().join("tree");
+        materialize(source.path(), &destination, false).unwrap();
+
+        // A writer that restores the modification time, as `cp -p` or
+        // `rsync -t` do, still moves the change time.
+        let cloned_since = now_ns();
+        fs::write(&file, "bbbb").unwrap();
+        command("/usr/bin/touch", &["-t", "202001020304.05"], &file);
+        mirror(source.path(), &destination, cloned_since).unwrap();
+        assert_eq!(
+            fs::read_to_string(destination.join("same.txt")).unwrap(),
+            "bbbb"
+        );
+        assert_mirrors(source.path(), &destination);
+    }
+
+    #[test]
+    fn materialize_relinks_locked_hard_links() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(root.join("a.txt"), "locked").unwrap();
+        fs::hard_link(root.join("a.txt"), root.join("b.txt")).unwrap();
+        command("/usr/bin/chflags", &["uchg"], &root.join("a.txt"));
+        let destination = root.join(".deltabox/base");
+        let mirrored = materialize(root, &destination, false).map(|_| ());
+        let groups = mirrored.as_ref().ok().map(|_| {
+            fs::metadata(destination.join("a.txt")).unwrap().ino()
+                == fs::metadata(destination.join("b.txt")).unwrap().ino()
+        });
+        command("/usr/bin/chflags", &["-R", "nouchg"], root);
+        mirrored.unwrap();
+        assert_eq!(groups, Some(true));
+    }
+
+    #[test]
+    fn repairs_never_write_through_a_symlink_whose_source_changed() {
+        let source = tempfile::tempdir().unwrap();
+        let copy = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("victim.txt");
+        fs::write(&victim, "victim").unwrap();
+        fs::set_permissions(&victim, fs::Permissions::from_mode(0o644)).unwrap();
+        let link = source.path().join("link");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        let expected = Entry::read(&link).unwrap();
+        let target = copy.path().join("link");
+        std::os::unix::fs::symlink(&victim, &target).unwrap();
+        // The clone differs only in a flag, so it is due for a metadata repair.
+        command("/usr/bin/chflags", &["-h", "hidden"], &target);
+        let current = Entry::read(&target).unwrap();
+        assert!(!current.semantic_eq(&expected) && current.same_content(&expected));
+
+        // Between the scan and the repair, the source replaced the symlink.
+        fs::remove_file(&link).unwrap();
+        fs::write(&link, "regular").unwrap();
+        fs::set_permissions(&link, fs::Permissions::from_mode(0o600)).unwrap();
+        mirror_entry(
+            &link,
+            &target,
+            &expected,
+            Some(current),
+            now_ns(),
+            &mut HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "victim");
+        assert_eq!(fs::metadata(&victim).unwrap().mode() & 0o777, 0o644);
+        assert!(fs::symlink_metadata(&target).unwrap().is_file());
     }
 
     #[test]
