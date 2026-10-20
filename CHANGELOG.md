@@ -9,6 +9,8 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-20
+
 ### Added
 
 - Execution-scoped network approvals that restrict destination hosts and ports
