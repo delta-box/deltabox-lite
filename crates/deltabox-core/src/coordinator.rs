@@ -1,13 +1,19 @@
+#[cfg(not(windows))]
 use crate::durable::DurableSessionManager;
 use crate::error::{Error, Result};
+#[cfg(not(windows))]
+use crate::protocol::FilesystemInfo;
 use crate::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
-    CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecResult, FilesystemInfo,
-    FilesystemMode, FsReadResult, ReviewBeginParams, SessionInfo,
+    CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecResult, FilesystemMode,
+    FsReadResult, ReviewBeginParams, SessionInfo,
 };
+#[cfg(not(windows))]
 use crate::session::SessionMeta;
+#[cfg(not(windows))]
 use crate::state_layout::state_root;
 use std::collections::HashMap;
+#[cfg(not(windows))]
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
@@ -36,9 +42,13 @@ pub struct CoordinatorOptions {
 }
 
 pub struct SessionCoordinator {
+    #[cfg(not(windows))]
     project: PathBuf,
     routes: RwLock<HashMap<String, FilesystemMode>>,
+    #[cfg(not(windows))]
     copy_private: DurableSessionManager,
+    #[cfg(windows)]
+    windows_cbcow: crate::windows_cbcow::Manager,
     #[cfg(target_os = "linux")]
     cbcow: crate::cbcow::Manager,
     #[cfg(target_os = "macos")]
@@ -58,7 +68,11 @@ impl SessionCoordinator {
 
     pub fn new_with_options(project: &Path, options: CoordinatorOptions) -> Result<Self> {
         let project = project.canonicalize()?;
-        let helper_bin = options.helper_bin.unwrap_or(std::env::current_exe()?);
+        let helper_bin = options
+            .helper_bin
+            .clone()
+            .unwrap_or(std::env::current_exe()?);
+        #[cfg(not(windows))]
         let copy_private = DurableSessionManager::new_with_execution_mode(
             &project,
             Some(helper_bin.clone()),
@@ -81,10 +95,22 @@ impl SessionCoordinator {
             options.state_dir,
             options.embedded_fast,
         )?;
+        #[cfg(windows)]
+        let windows_cbcow = crate::windows_cbcow::Manager::new_with_options(
+            &project,
+            CoordinatorOptions {
+                helper_bin: Some(helper_bin),
+                ..options
+            },
+        )?;
         Ok(Self {
+            #[cfg(not(windows))]
             project,
             routes: RwLock::new(HashMap::new()),
+            #[cfg(not(windows))]
             copy_private,
+            #[cfg(windows)]
+            windows_cbcow,
             #[cfg(target_os = "linux")]
             cbcow,
             #[cfg(target_os = "macos")]
@@ -133,8 +159,17 @@ impl SessionCoordinator {
                         "strict durability requires a CB-CoW filesystem mode".into(),
                     ));
                 }
-                self.copy_private
-                    .start_with_filesystem(policy, FilesystemInfo::copy_private(requested, None))
+                #[cfg(not(windows))]
+                {
+                    self.copy_private.start_with_filesystem(
+                        policy,
+                        FilesystemInfo::copy_private(requested, None),
+                    )
+                }
+                #[cfg(windows)]
+                {
+                    self.windows_cbcow.start_copy_private(policy)
+                }
             }
             FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate => self.start_cbcow(
                 policy,
@@ -158,6 +193,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.status(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.status(session_id),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.status(session_id),
         }
     }
 
@@ -168,6 +205,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.stop(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.stop(session_id),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.stop(session_id),
         }?;
         self.routes
             .write()
@@ -183,6 +222,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.remove_stopped(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.remove_stopped(session_id),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.remove_stopped(session_id),
         }
     }
 
@@ -193,6 +234,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.exec(params),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.exec(params),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.exec(params),
         }
     }
 
@@ -203,6 +246,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.read_file(session_id, path),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.read_file(session_id, path),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.read_file(session_id, path),
         }
     }
 
@@ -214,6 +259,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.read_file_bytes(session_id, path),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.read_file_bytes(session_id, path),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.read_file_bytes(session_id, path),
         }
     }
 
@@ -229,6 +276,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.write_file_bytes(session_id, path, content),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.write_file_bytes(session_id, path, content),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.write_file_bytes(session_id, path, content),
         }
     }
 
@@ -242,6 +291,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.record_file_changes(session_id, paths),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.record_file_changes(session_id, paths),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.record_file_changes(session_id, paths),
         }
     }
 
@@ -252,6 +303,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.checkpoint(params),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.checkpoint(params),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.checkpoint(params),
         }
     }
 
@@ -262,6 +315,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.diff(params),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.diff(params),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.diff(params),
         }
     }
 
@@ -272,6 +327,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.commit(params),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.commit(params),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.commit(params),
         }
     }
 
@@ -282,6 +339,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.abort(params),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.abort(params),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.abort(params),
         }
     }
 
@@ -294,6 +353,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.sync(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.sync(session_id),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.sync(session_id),
         }
     }
 
@@ -304,6 +365,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.begin_review(params),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.begin_review(params),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.begin_review(params),
         }
     }
 
@@ -314,6 +377,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.review_status(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.review_status(session_id),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.review_status(session_id),
         }
     }
 
@@ -324,6 +389,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.review_diff(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.review_diff(session_id),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.review_diff(session_id),
         }
     }
 
@@ -334,6 +401,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.review_commit(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.review_commit(session_id),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.review_commit(session_id),
         }
     }
 
@@ -344,6 +413,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.review_abort(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.review_abort(session_id),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.review_abort(session_id),
         }
     }
 
@@ -354,6 +425,8 @@ impl SessionCoordinator {
             Route::Cbcow(manager) => manager.review_skip(session_id),
             #[cfg(target_os = "macos")]
             Route::MacosCbcow(manager) => manager.review_skip(session_id),
+            #[cfg(windows)]
+            Route::WindowsCbcow(manager) => manager.review_skip(session_id),
         }
     }
 
@@ -411,7 +484,7 @@ impl SessionCoordinator {
         }
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     fn start_cbcow(
         &self,
         policy: Option<&Path>,
@@ -427,6 +500,20 @@ impl SessionCoordinator {
         self.start_fallback(policy, requested, reason)
     }
 
+    #[cfg(windows)]
+    fn start_cbcow(
+        &self,
+        policy: Option<&Path>,
+        requested: FilesystemMode,
+        _required: bool,
+        durability: DurabilityMode,
+        group_commit_ms: Option<u64>,
+    ) -> Result<SessionInfo> {
+        self.windows_cbcow
+            .start(policy, requested, durability, group_commit_ms)
+    }
+
+    #[cfg(not(windows))]
     fn start_fallback(
         &self,
         policy: Option<&Path>,
@@ -449,15 +536,22 @@ impl SessionCoordinator {
         {
             return self.route_mode(mode);
         }
-        let path = state_root(&self.project)?.join(session_id).join("session.json");
-        let meta: SessionMeta = serde_json::from_slice(&fs::read(&path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                Error::SessionNotFound(session_id.into())
-            } else {
-                Error::Io(error)
-            }
-        })?)?;
-        let mode = meta.filesystem.resolved_fs_mode;
+        #[cfg(windows)]
+        let mode = self.windows_cbcow.session_mode(session_id)?;
+        #[cfg(not(windows))]
+        let mode = {
+            let path = state_root(&self.project)?
+                .join(session_id)
+                .join("session.json");
+            let meta: SessionMeta = serde_json::from_slice(&fs::read(&path).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    Error::SessionNotFound(session_id.into())
+                } else {
+                    Error::Io(error)
+                }
+            })?)?;
+            meta.filesystem.resolved_fs_mode
+        };
         self.routes
             .write()
             .expect("coordinator route cache poisoned")
@@ -467,7 +561,14 @@ impl SessionCoordinator {
 
     fn route_mode(&self, mode: FilesystemMode) -> Result<Route<'_>> {
         match mode {
+            #[cfg(not(windows))]
             FilesystemMode::CopyPrivate => Ok(Route::CopyPrivate(&self.copy_private)),
+            #[cfg(windows)]
+            FilesystemMode::CopyPrivate => Ok(Route::CopyPrivate(&self.windows_cbcow)),
+            #[cfg(windows)]
+            FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate => {
+                Ok(Route::WindowsCbcow(&self.windows_cbcow))
+            }
             #[cfg(target_os = "linux")]
             FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate => {
                 Ok(Route::Cbcow(&self.cbcow))
@@ -476,7 +577,7 @@ impl SessionCoordinator {
             FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate => {
                 Ok(Route::MacosCbcow(&self.macos_cbcow))
             }
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
             FilesystemMode::CbcowThrough | FilesystemMode::CbcowPrivate => Err(Error::Unsupported(
                 "this CB-CoW session requires Linux".into(),
             )),
@@ -485,7 +586,12 @@ impl SessionCoordinator {
 }
 
 enum Route<'a> {
+    #[cfg(not(windows))]
     CopyPrivate(&'a DurableSessionManager),
+    #[cfg(windows)]
+    CopyPrivate(&'a crate::windows_cbcow::Manager),
+    #[cfg(windows)]
+    WindowsCbcow(&'a crate::windows_cbcow::Manager),
     #[cfg(target_os = "linux")]
     Cbcow(&'a crate::cbcow::Manager),
     #[cfg(target_os = "macos")]
@@ -499,6 +605,59 @@ fn default_mode() -> FilesystemMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_routes_persisted_modes_from_custom_state_after_reopen() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let options = CoordinatorOptions {
+            state_dir: Some(root.path().join("state")),
+            runtime_dir: Some(root.path().join("runtime")),
+            ..Default::default()
+        };
+        let first = SessionCoordinator::new_with_options(&project, options.clone()).unwrap();
+        let started = first
+            .start(None, Some(FilesystemMode::CopyPrivate), true)
+            .unwrap();
+        first.stop(&started.session_id).unwrap();
+        drop(first);
+
+        let projects = options.state_dir.as_ref().unwrap().join("projects");
+        let project_state = fs::read_dir(projects)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let manifest_path = project_state.join(&started.session_id).join("session.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        // Routing must read native manifests without mounting or starting a helper.
+        for mode in [
+            FilesystemMode::CopyPrivate,
+            FilesystemMode::CbcowThrough,
+            FilesystemMode::CbcowPrivate,
+        ] {
+            manifest["fs_mode"] = serde_json::to_value(mode).unwrap();
+            fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+            let reopened = SessionCoordinator::new_with_options(&project, options.clone()).unwrap();
+            for _ in 0..2 {
+                let route = reopened.route(&started.session_id).unwrap();
+                if mode == FilesystemMode::CopyPrivate {
+                    assert!(matches!(route, Route::CopyPrivate(_)));
+                } else {
+                    assert!(matches!(route, Route::WindowsCbcow(_)));
+                }
+            }
+            assert!(matches!(
+                reopened.status("invalid-id"),
+                Err(Error::SessionNotFound(_))
+            ));
+        }
+    }
 
     #[test]
     fn copy_private_session_routes_after_coordinator_reopen() {
@@ -525,6 +684,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn fallback_session_routes_after_coordinator_reopen() {
         let project = tempfile::tempdir().unwrap();
         fs::write(project.path().join("tracked.txt"), "accepted").unwrap();
@@ -560,6 +720,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn legacy_session_without_filesystem_metadata_stays_copy_private() {
         let project = tempfile::tempdir().unwrap();
         fs::write(project.path().join("tracked.txt"), "accepted").unwrap();
@@ -604,7 +765,7 @@ mod tests {
         assert!(matches!(error, Error::InvalidDurability(_)));
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     #[test]
     fn required_cbcow_mode_does_not_fallback() {
         let project = tempfile::tempdir().unwrap();
@@ -615,7 +776,7 @@ mod tests {
         assert!(matches!(error, Error::Unsupported(_)));
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     #[test]
     fn strict_cbcow_mode_does_not_fallback() {
         let project = tempfile::tempdir().unwrap();
@@ -632,7 +793,7 @@ mod tests {
         assert!(matches!(error, Error::Unsupported(_)));
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     #[test]
     fn default_mode_records_cbcow_fallback() {
         let project = tempfile::tempdir().unwrap();

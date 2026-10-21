@@ -1,3 +1,4 @@
+//! Windows session backend: WinFsp lifecycle and native copy-private storage.
 use crate::protocol::*;
 use crate::windows::engine::{now_ms,write_json,Engine,Manifest,Savepoint};
 use crate::windows::copy_private;
@@ -10,20 +11,10 @@ use std::fs;
 use std::path::{Path,PathBuf};
 use std::time::{Duration,Instant};
 
-#[derive(Debug,Clone,Copy,Default,PartialEq,Eq)]
-pub enum CommandExecutionMode { #[default] Sandboxed, Trusted }
-#[derive(Debug,Clone,Default)]
-pub struct CoordinatorOptions {
-    pub helper_bin: Option<PathBuf>, pub command_execution: CommandExecutionMode,
-    pub state_dir: Option<PathBuf>,pub runtime_dir: Option<PathBuf>,pub embedded_fast: bool,
-}
+use crate::coordinator::{CommandExecutionMode, CoordinatorOptions};
+pub struct Manager { project: PathBuf,state: PathBuf,runtime: PathBuf,helper_bin: PathBuf,command_execution: CommandExecutionMode,created_state_dirs: Vec<PathBuf> }
 
-pub struct SessionCoordinator { project: PathBuf,state: PathBuf,runtime: PathBuf,helper_bin: PathBuf,command_execution: CommandExecutionMode,created_state_dirs: Vec<PathBuf> }
-
-impl SessionCoordinator {
-    pub fn new(project: &Path,worker_bin: Option<PathBuf>) -> Result<Self> {
-        Self::new_with_options(project,CoordinatorOptions {helper_bin:worker_bin,..Default::default()})
-    }
+impl Manager {
     pub fn new_with_options(project: &Path,options: CoordinatorOptions) -> Result<Self> {
         let project=project.canonicalize()?;
         if !project.is_dir() { return Err(Error::Backend("project must be a directory".into())); }
@@ -50,21 +41,14 @@ impl SessionCoordinator {
         if m.source!=self.project || m.session_id!=id {return Err(Error::Backend("Windows session identity mismatch".into()));}
         Ok(m)
     }
-    pub fn start(&self,policy:Option<&Path>,requested:Option<FilesystemMode>,required:bool)->Result<SessionInfo> {
-        self.start_with_durability(policy,requested,required,DurabilityMode::Fast,None)
+    /// Read the persisted mode without starting a helper or recovering the engine.
+    pub(crate) fn session_mode(&self, id: &str) -> Result<FilesystemMode> {
+        Ok(self.manifest(id)?.fs_mode)
     }
-    pub fn start_with_durability(&self,policy:Option<&Path>,requested:Option<FilesystemMode>,_required:bool,durability:DurabilityMode,group:Option<u64>)->Result<SessionInfo> {
-        let mode = requested.unwrap_or(FilesystemMode::CbcowThrough);
+
+    pub fn start(&self, policy: Option<&Path>, mode: FilesystemMode, durability: DurabilityMode, group: Option<u64>) -> Result<SessionInfo> {
         if mode == FilesystemMode::CopyPrivate {
-            // Same checks, in the same order, as the Unix coordinator.
-            if group.is_some() && durability!=DurabilityMode::Strict {
-                return Err(Error::InvalidDurability("group_commit_ms requires strict durability".into()));
-            }
-            if group==Some(0) {return Err(Error::InvalidDurability("group_commit_ms must be greater than zero".into()));}
-            if durability==DurabilityMode::Strict {
-                return Err(Error::InvalidDurability("strict durability requires a CB-CoW filesystem mode".into()));
-            }
-            return self.start_copy_private(policy);
+            return Err(Error::Unsupported("use start_copy_private for copy-private sessions".into()));
         }
         if group.is_some() {return Err(Error::Unsupported("Windows group commit is not implemented".into()));}
         if durability==DurabilityMode::Strict {
@@ -141,7 +125,7 @@ impl SessionCoordinator {
     /// Copy-private copies the project into a private working tree and needs
     /// no WinFsp mount or helper process. Like cbcow-private it shares
     /// admission, so it waits for a through session but does not block siblings.
-    fn start_copy_private(&self,policy:Option<&Path>)->Result<SessionInfo> {
+    pub(crate) fn start_copy_private(&self,policy:Option<&Path>)->Result<SessionInfo> {
         if self.command_execution == CommandExecutionMode::Trusted {
             return Err(Error::Unsupported("Windows trusted execution currently requires a CB-CoW filesystem mode".into()));
         }
