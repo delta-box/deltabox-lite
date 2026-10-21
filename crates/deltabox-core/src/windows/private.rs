@@ -88,7 +88,10 @@ pub(super) fn fingerprint(path: &Path) -> Result<Fingerprint> {
         format!("{:x}", hash.finalize())
     } else { String::new() };
     Ok(Fingerprint {
-        directory: m.is_dir(), attributes: m.file_attributes(), creation: m.creation_time(),
+        directory: m.is_dir(),
+        // Directory attributes and write times change when a child is created or modified.
+        attributes: if m.is_dir() { m.file_attributes() & !0x20 } else { m.file_attributes() },
+        creation: m.creation_time(),
         // Directory times change when a sibling creates an unrelated child.
         write: if m.is_dir() { 0 } else { m.last_write_time() },
         size: if m.is_dir() { 0 } else { m.len() }, digest,

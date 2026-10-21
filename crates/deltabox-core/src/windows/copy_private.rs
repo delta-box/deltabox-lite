@@ -242,7 +242,11 @@ fn scan_git(root: &Path, objects: bool) -> Result<Tree> {
         let reparse = m.file_attributes() & 0x400 != 0;
         let fingerprint = Fingerprint {
             directory: m.is_dir() && !reparse,
-            attributes: m.file_attributes() & RESTORABLE_ATTRIBUTES,
+            attributes: if m.is_dir() {
+                (m.file_attributes() & RESTORABLE_ATTRIBUTES) & !0x20
+            } else {
+                m.file_attributes() & RESTORABLE_ATTRIBUTES
+            },
             creation: 0,
             write: if m.is_dir() { 0 } else { m.last_write_time() },
             size: if m.is_dir() { 0 } else { m.len() },
@@ -259,6 +263,9 @@ fn masked(tree: &Tree) -> Tree {
         .map(|(key, entry)| {
             let mut entry = entry.clone();
             entry.fingerprint.attributes &= RESTORABLE_ATTRIBUTES;
+            if entry.fingerprint.directory {
+                entry.fingerprint.attributes &= !0x20;
+            }
             (key.clone(), entry)
         })
         .collect()
