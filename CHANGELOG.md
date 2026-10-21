@@ -12,6 +12,10 @@ Unreleased section below into the new version's section.
 ### Added
 
 - Windows x64 CLI and Node addon prebuilds, npm installation, and release CI.
+- Windows MXC `copy-private` sessions without WinFsp, with private changes,
+  commit/abort, and interrupted-operation recovery.
+- Windows MXC network deny/allowlist enforcement and execution-scoped proxy
+  approvals, including hostname and loopback destination handling.
 - WinFsp CB-CoW support for trusted embedded commands used by Pi's default
   native transport.
 
