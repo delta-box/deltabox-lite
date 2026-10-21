@@ -9,6 +9,8 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-21
+
 ### Changed
 
 - Publish the Windows x64 runtime as `deltabox-lite-windows-x64`, retaining
