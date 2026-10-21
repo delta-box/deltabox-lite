@@ -1,7 +1,10 @@
 #![cfg(windows)]
-//! Windows copy-private through the CLI. Building needs the WinFsp SDK
-//! headers; at run time everything except command execution works without
-//! WinFsp or MXC, so all but the last test run on any Windows host.
+//! Windows copy-private through the CLI: session lifecycle, checkpoints,
+//! commit/abort, deny policy, reparse points and crash recovery. Nothing here
+//! runs a sandboxed command, so every test works on any Windows host without
+//! WinFsp or MXC (building still needs the WinFsp SDK headers). Sandboxed
+//! command execution is in `windows_mxc.rs`, network policy in
+//! `network_approvals.rs`.
 
 use serde_json::Value;
 use std::{fs, path::{Path, PathBuf}, process::{Command, Output}};
@@ -73,19 +76,6 @@ impl Session {
     fn pending(&self) -> u64 { self.action(&["diff"], &["--json"])["pending_changes"].as_u64().unwrap() }
     fn host(&self, name: &str) -> Option<String> { fs::read_to_string(self.project.join(name)).ok() }
     fn live(&self) -> PathBuf { self.root.path().join("runtime").join("live").join(&self.id) }
-    /// Run `body` through `cmd.exe` in the sandbox. cmd is used rather than
-    /// PowerShell because PowerShell fails to initialize (0xC0000142) under
-    /// the sandbox in a non-interactive logon such as SSH, where these run.
-    fn cmd(&self, body: &str) -> Output {
-        let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe");
-        self.raw(&self.args(&["exec"], &["--", shell.to_str().unwrap(), "/c", body]))
-    }
-    /// Run `program` as the sandboxed command itself.
-    fn exec(&self, program: &str, args: &[&str]) -> Output {
-        let mut extra = vec!["--", program];
-        extra.extend_from_slice(args);
-        self.raw(&self.args(&["exec"], &extra))
-    }
 }
 impl Drop for Session {
     fn drop(&mut self) {
@@ -110,31 +100,6 @@ fn short_name(dir: &Path, name: &str) -> Option<String> {
     let out = Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]).output().unwrap();
     let short = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     (!short.is_empty() && !short.eq_ignore_ascii_case(name)).then_some(short)
-}
-
-/// Answer every connection with a small HTTP 200 until the test process ends.
-fn serve_ok(listener: std::net::TcpListener) {
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { break };
-            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
-            let (mut header, mut byte) = (Vec::new(), [0]);
-            while !header.ends_with(b"\r\n\r\n") {
-                if std::io::Read::read_exact(&mut stream, &mut byte).is_err() { break; }
-                header.push(byte[0]);
-            }
-            let _ = std::io::Write::write_all(&mut stream, b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
-        }
-    });
-}
-
-fn network_policy(mode: &str, allow: &[String]) -> String {
-    let mut policy = format!("[filesystem]\nread = [\".\"]\nwrite = [\".\"]\n\n[network]\nmode = \"{mode}\"\n");
-    if !allow.is_empty() {
-        let entries: Vec<String> = allow.iter().map(|entry| format!("\"{entry}\"")).collect();
-        policy.push_str(&format!("allow = [{}]\n", entries.join(", ")));
-    }
-    policy
 }
 
 /// Set a directory's creation time (seconds after the Unix epoch).
@@ -571,89 +536,4 @@ fn sync_draft_names_are_refused() {
     assert!(error.contains("reserved for cbcow-private sync drafts"), "{error}");
     fs::write(s.live().join("other.deltabox-theirs"), "x").unwrap();
     assert!(s.failure(&["commit"], &[]).contains("reserved for cbcow-private sync drafts"));
-}
-
-#[test]
-#[ignore = "requires native MXC PSEC networking; run explicitly on a supported Windows host"]
-fn network_modes_are_enforced_through_mxc_rules_and_the_proxy() {
-    let origin = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let port = origin.local_addr().unwrap().port();
-    serve_ok(origin);
-    let other = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let other_port = other.local_addr().unwrap().port();
-    serve_ok(other);
-    let curl = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32\\curl.exe");
-    let fetch = |s: &Session, url: &str, direct: bool| -> Value {
-        let mut args = vec!["--max-time", "3", "--silent", "--show-error", "--fail"];
-        if direct { args.extend(["--noproxy", "*"]); }
-        args.push(url);
-        let out = s.exec(curl.to_str().unwrap(), &args);
-        assert!(out.status.success(), "exec failed: {}", String::from_utf8_lossy(&out.stderr));
-        serde_json::from_slice(&out.stdout).unwrap()
-    };
-    let local = format!("http://127.0.0.1:{port}/");
-
-    let s = Session::start_with_policy(&[], Some(&network_policy("allow_audit", &[])));
-    let result = fetch(&s, &local, true);
-    assert_eq!(result["exit_code"], 0, "{result}");
-    assert_eq!(result["stdout"], "ok");
-    drop(s);
-
-    let s = Session::start_with_policy(&[], Some(&network_policy("deny_all", &[])));
-    let result = fetch(&s, &local, true);
-    assert_ne!(result["exit_code"], 0, "deny_all let a loopback connection through: {result}");
-    drop(s);
-
-    // A loopback entry goes through the proxy, which keeps it port-exact: the
-    // listed port answers, another is refused, and nothing passes the proxy.
-    let s = Session::start_with_policy(&[], Some(&network_policy("allowlist", &[format!("127.0.0.1:{port}")])));
-    assert_eq!(fetch(&s, &local, false)["stdout"], "ok");
-    let result = fetch(&s, &format!("http://127.0.0.1:{other_port}/"), false);
-    assert_ne!(result["exit_code"], 0, "an unlisted port was reachable: {result}");
-    assert_eq!(result["network_denials"][0]["reason"], "not-authorized", "{result}");
-    let result = fetch(&s, &local, true);
-    assert_ne!(result["exit_code"], 0, "a connection went past the proxy: {result}");
-    drop(s);
-
-    // A hostname entry is served by the proxy too; `localhost` stays behind
-    // the private guard while the listed literal is reached.
-    let s = Session::start_with_policy(&[], Some(&network_policy("allowlist", &[format!("localhost:{port}"), format!("127.0.0.1:{port}")])));
-    let result = fetch(&s, &local, false);
-    assert_eq!(result["exit_code"], 0, "{result}");
-    assert_eq!(result["stdout"], "ok");
-    let result = fetch(&s, &format!("http://localhost:{port}/"), false);
-    assert_ne!(result["exit_code"], 0, "{result}");
-    assert_eq!(result["network_denials"][0]["reason"], "private-address", "{result}");
-    let result = fetch(&s, &local, true);
-    assert_ne!(result["exit_code"], 0, "a direct connection bypassed the proxy: {result}");
-}
-
-#[test]
-#[ignore = "requires native MXC PSEC filesystem-deny support; run explicitly on a supported Windows host"]
-fn commands_run_in_the_private_copy_and_policy_violations_roll_back() {
-    let s = Session::start(&[("a.txt", "v1"), ("dir/existing.txt", "e"), (".env", "secret")]);
-    // `dir` existed before the command: this checks the PSEC grant reaches
-    // directories that were copied in before launch.
-    let out = s.cmd("echo by command> made.txt & echo nested> dir\\deeper.txt & type a.txt");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(result["exit_code"], 0, "{result}");
-    assert!(result["stdout"].as_str().unwrap().contains("v1"));
-    assert_eq!(s.host("made.txt"), None);
-    assert_eq!(fs::read_to_string(s.live().join("dir/deeper.txt")).unwrap().trim(), "nested");
-    assert_eq!(s.pending(), 2);
-
-    // A command that creates a denied file is undone as a whole.
-    let out = s.cmd("echo x> other.txt & echo leak> .env");
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("path denied by policy"));
-    assert!(!s.live().join("other.txt").exists());
-    assert!(!s.live().join(".env").exists());
-    assert_eq!(s.pending(), 2);
-
-    // A non-zero exit keeps its changes, as on Unix.
-    let out = s.cmd("echo k> kept.txt & exit /b 3");
-    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(result["exit_code"], 3);
-    assert_eq!(s.pending(), 3);
 }
