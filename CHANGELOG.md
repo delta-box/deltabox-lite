@@ -9,6 +9,8 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-21
+
 ### Added
 
 - Windows x64 CLI and Node addon prebuilds, npm installation, and release CI.
