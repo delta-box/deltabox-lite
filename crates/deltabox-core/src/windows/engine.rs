@@ -32,6 +32,8 @@ pub struct Manifest {
     #[serde(default = "through_mode")]
     pub fs_mode: FilesystemMode,
     #[serde(default)]
+    pub trusted: bool,
+    #[serde(default)]
     pub durability: DurabilityMode,
     #[serde(default)]
     pub live: Option<PathBuf>,

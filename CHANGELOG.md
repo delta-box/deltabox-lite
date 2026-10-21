@@ -9,6 +9,16 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+### Added
+
+- Windows x64 CLI and Node addon prebuilds, npm installation, and release CI.
+- WinFsp CB-CoW support for trusted embedded commands used by Pi's default
+  native transport.
+
+### Fixed
+
+- Retry Windows stopped-session cleanup while WinFsp releases its view.
+
 ## [0.1.2] - 2026-10-20
 
 ### Added

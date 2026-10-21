@@ -262,3 +262,16 @@ pub fn check_network_policy(policy: &Policy) -> Result<()> {
     }
     Ok(())
 }
+
+pub fn execute_trusted(manifest: &Manifest, params: ExecParams) -> Result<ExecResult> {
+    if params.execution_profile != ExecutionProfile::WorkspaceWrite || !params.network_allow.is_empty() {
+        return Err(Error::Unsupported("trusted Windows execution does not support command grants".into()));
+    }
+    let mapper=PathMapper::new(&manifest.source,&manifest.view);
+    let cwd=mapper.map_path(params.cwd.as_deref().unwrap_or(&manifest.source));
+    let argv=params.argv.iter().map(|arg|mapper.map_arg(arg)).collect();
+    let env=params.env.map(|entries|entries.into_iter().map(|(key,value)|{
+        mapper.map_env(&key,&value).map(|mapped|(key,mapped))
+    }).collect::<Result<Vec<_>>>()).transpose()?;
+    crate::trusted::exec(ExecRequest {argv,cwd:Some(cwd),env})
+}

@@ -1,7 +1,8 @@
 # deltabox-lite
 
-This package installs the native `deltabox` runtime for supported Linux and
-macOS systems. The matching optional platform package carries the binary and
+This package installs the native `deltabox` runtime for supported Linux, macOS,
+and Windows systems. Windows requires WinFsp. The matching optional platform
+package carries the binary and
 the Node-API addon; `bin/deltabox.js` is a thin launcher that executes that
 binary in place, so `npm install --global deltabox-lite` puts a `deltabox`
 command on the PATH. No prestarted service is installed.
@@ -23,8 +24,8 @@ and deny set, which is why `isolation: 'none'` has to be asked for by name:
 those commands share the Node process ambient environment instead. File reads
 and writes use `Buffer`, while session, checkpoint, diff, commit, abort, and
 review calls return protocol-shaped typed objects. Every session record names
-its `isolation` profile and the resolved `isolation_provider` (`sandlock` or
-`seatbelt`).
+its `isolation` profile and the resolved `isolation_provider` (`sandlock`,
+`seatbelt`, or Windows MXC).
 
 Linux CB-CoW modes require `/dev/fuse` and `fusermount3` or `fusermount` on the
 host. Deltabox otherwise reports the reason and falls back to `copy-private`

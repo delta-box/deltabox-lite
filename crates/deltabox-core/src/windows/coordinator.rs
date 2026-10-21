@@ -18,16 +18,13 @@ pub struct CoordinatorOptions {
     pub state_dir: Option<PathBuf>,pub runtime_dir: Option<PathBuf>,pub embedded_fast: bool,
 }
 
-pub struct SessionCoordinator { project: PathBuf,state: PathBuf,runtime: PathBuf,helper_bin: PathBuf,created_state_dirs: Vec<PathBuf> }
+pub struct SessionCoordinator { project: PathBuf,state: PathBuf,runtime: PathBuf,helper_bin: PathBuf,command_execution: CommandExecutionMode,created_state_dirs: Vec<PathBuf> }
 
 impl SessionCoordinator {
     pub fn new(project: &Path,worker_bin: Option<PathBuf>) -> Result<Self> {
         Self::new_with_options(project,CoordinatorOptions {helper_bin:worker_bin,..Default::default()})
     }
     pub fn new_with_options(project: &Path,options: CoordinatorOptions) -> Result<Self> {
-        if options.command_execution == CommandExecutionMode::Trusted {
-            return Err(Error::Unsupported("Windows trusted execution is reserved; filesystem isolation currently requires MXC".into()));
-        }
         let project=project.canonicalize()?;
         if !project.is_dir() { return Err(Error::Backend("project must be a directory".into())); }
         let local=std::env::var_os("LOCALAPPDATA").map(PathBuf::from).ok_or_else(||Error::Backend("LOCALAPPDATA unavailable".into()))?.join("deltabox-lite");
@@ -42,7 +39,7 @@ impl SessionCoordinator {
         }
         let key=format!("{:x}",Sha256::digest(project.to_string_lossy().to_lowercase().as_bytes()));
         let state=base.join("projects").join(&key[..32]);created_state_dirs.extend(crate::windows::durability::missing_directories(&state));fs::create_dir_all(&state)?;
-        Ok(Self { project,state,runtime,helper_bin:options.helper_bin.unwrap_or(std::env::current_exe()?),created_state_dirs })
+        Ok(Self { project,state,runtime,helper_bin:options.helper_bin.unwrap_or(std::env::current_exe()?),command_execution:options.command_execution,created_state_dirs })
     }
     fn store(&self,id:&str)->Result<PathBuf> {
         uuid::Uuid::parse_str(id).map_err(|_|Error::SessionNotFound(id.into()))?;
@@ -76,7 +73,9 @@ impl SessionCoordinator {
             crate::windows::durability::qualify(&self.state)?;
             crate::windows::durability::persist_directories(&self.created_state_dirs)?;
         }
-        crate::windows::sandbox::available()?;
+        if self.command_execution == CommandExecutionMode::Sandboxed {
+            crate::windows::sandbox::available()?;
+        }
         let _admission=helper::lock(&self.state.join("project.lock"),Duration::from_secs(30))?;
         self.check_through_owner()?;
         let active=self.state.join("active.json");
@@ -110,7 +109,7 @@ impl SessionCoordinator {
         let views=self.runtime.join("views");let scratch=self.runtime.join("scratch").join(&id);
         fs::create_dir_all(&views)?;fs::create_dir_all(&scratch)?;
         let manifest=Manifest {
-            version:1,session_id:id.clone(),source:self.project.clone(),fs_mode:mode,durability,live:None,view:views.join(&id),scratch,
+            version:1,session_id:id.clone(),source:self.project.clone(),fs_mode:mode,trusted:self.command_execution==CommandExecutionMode::Trusted,durability,live:None,view:views.join(&id),scratch,
             token:format!("{}{}",uuid::Uuid::new_v4(),uuid::Uuid::new_v4()),started_at_ms:now_ms(),status:SessionStatus::Running,
             policy:match policy {Some(path)=>crate::policy::Policy::load(path)?,None=>crate::policy::Policy::default_agent()},
             next_id:1,accepted:checkpoint.clone(),checkpoints:vec![Savepoint {info:CheckpointInfo {id:checkpoint,label:Some("initial".into()),created_at_ms:now_ms(),change_count:0,committed:true},cursor:0}],review:None,rollback:None,
@@ -143,6 +142,9 @@ impl SessionCoordinator {
     /// no WinFsp mount or helper process. Like cbcow-private it shares
     /// admission, so it waits for a through session but does not block siblings.
     fn start_copy_private(&self,policy:Option<&Path>)->Result<SessionInfo> {
+        if self.command_execution == CommandExecutionMode::Trusted {
+            return Err(Error::Unsupported("Windows trusted execution currently requires a CB-CoW filesystem mode".into()));
+        }
         let policy=match policy {Some(path)=>crate::policy::Policy::load(path)?,None=>crate::policy::Policy::default_agent()};
         crate::windows::sandbox::check_network_policy(&policy)?;
         let id=uuid::Uuid::new_v4().to_string();
@@ -151,7 +153,7 @@ impl SessionCoordinator {
         let live=self.runtime.join("live").join(&id);
         let scratch=self.runtime.join("scratch").join(&id);
         let mut manifest=Manifest {
-            version:1,session_id:id.clone(),source:self.project.clone(),fs_mode:FilesystemMode::CopyPrivate,durability:DurabilityMode::Fast,
+            version:1,session_id:id.clone(),source:self.project.clone(),fs_mode:FilesystemMode::CopyPrivate,trusted:false,durability:DurabilityMode::Fast,
             live:Some(live.clone()),view:live.clone(),scratch:scratch.clone(),token:String::new(),started_at_ms:now_ms(),status:SessionStatus::Running,
             policy,next_id:1,accepted:"accepted".into(),checkpoints:Vec::new(),review:None,rollback:None,
         };
@@ -254,8 +256,16 @@ impl SessionCoordinator {
             for name in ["pending.json","exec-backup"] {crate::windows::engine::remove(&store.join(name))?;}
             drop(operation);
         }
-        crate::windows::engine::remove(&self.store(id)?)?;
-        Ok(())
+        let store=self.store(id)?;
+        for _ in 0..19 {
+            match crate::windows::engine::remove(&store) {
+                Err(Error::Io(error)) if matches!(error.raw_os_error(),Some(32|145)) => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                result => return result,
+            }
+        }
+        crate::windows::engine::remove(&store)
     }
     pub fn exec(&self,p:ExecParams)->Result<ExecResult> {
         let id=p.session_id.clone();
