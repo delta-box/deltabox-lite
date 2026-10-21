@@ -28,6 +28,6 @@
     "deltabox-lite-darwin-x64": "0.1.3",
     "deltabox-lite-linux-arm64": "0.1.3",
     "deltabox-lite-linux-x64": "0.1.3",
-    "deltabox-lite-win32-x64": "0.1.3"
+    "deltabox-lite-windows-x64": "0.1.3"
   }
 }

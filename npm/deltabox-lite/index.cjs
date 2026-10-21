@@ -5,7 +5,7 @@ const packages = {
   "darwin-x64": "deltabox-lite-darwin-x64",
   "linux-arm64": "deltabox-lite-linux-arm64",
   "linux-x64": "deltabox-lite-linux-x64",
-  "win32-x64": "deltabox-lite-win32-x64",
+  "win32-x64": "deltabox-lite-windows-x64",
 };
 
 function platformPackageRoot() {

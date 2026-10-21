@@ -23,7 +23,7 @@ a clone with push access to `main` and the `gh` CLI signed in.
 1. **`NPM_TOKEN`** — an npm automation token, as a repository secret, allowed
    to publish `deltabox-lite`, `deltabox-lite-darwin-arm64`,
    `deltabox-lite-darwin-x64`, `deltabox-lite-linux-arm64`, and
-   `deltabox-lite-linux-x64`, and `deltabox-lite-win32-x64`. Those names must be claimable, or already
+   `deltabox-lite-linux-x64`, and `deltabox-lite-windows-x64`. Those names must be claimable, or already
    owned by the token's account.
 2. **The Homebrew tap** — create `delta-box/homebrew-tap` with a `Formula/`
    directory, then add repository secret `HOMEBREW_TAP_TOKEN`: a

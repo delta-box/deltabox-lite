@@ -20,7 +20,7 @@ const targets = {
   "x86_64-apple-darwin": ["deltabox-lite-darwin-x64", "darwin", "x64", "libdeltabox_node.dylib"],
   "aarch64-unknown-linux-gnu": ["deltabox-lite-linux-arm64", "linux", "arm64", "libdeltabox_node.so"],
   "x86_64-unknown-linux-gnu": ["deltabox-lite-linux-x64", "linux", "x64", "libdeltabox_node.so"],
-  "x86_64-pc-windows-msvc": ["deltabox-lite-win32-x64", "win32", "x64", "deltabox_node.dll"],
+  "x86_64-pc-windows-msvc": ["deltabox-lite-windows-x64", "win32", "x64", "deltabox_node.dll"],
 };
 
 const target = process.argv[2];

@@ -33,6 +33,8 @@ anxiety about binary or large files.
 
 ## 📰 News
 
+- **[2026/10/21]** Release `v0.1.4` uses `deltabox-lite-windows-x64` for the Windows npm package. It supersedes the incomplete `v0.1.3` publication; DSH `0.1.4` and Pi `0.1.3` now select runtime `0.1.4`.
+
 - **[2026/10/21]** Release `v0.1.3`: Windows x64 CLI/Node prebuilds and npm packages, WinFsp sessions, `copy-private` sessions without WinFsp, and MXC network policy enforcement. Companion DSH `0.1.4` and Pi `0.1.3` add Windows installation and PowerShell integration.
 
 - **[2026/10/19]** Added Windows WinFsp support with strict durability for private sessions, plus execution-scoped network approvals ([PR #33](https://github.com/delta-box/deltabox-lite/pull/33), [PR #35](https://github.com/delta-box/deltabox-lite/pull/35)).

@@ -9,6 +9,12 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+### Changed
+
+- Publish the Windows x64 runtime as `deltabox-lite-windows-x64`, retaining
+  npm's `win32` platform selector. Runtime 0.1.3 publication was incomplete
+  because npm rejected the previous new Windows package name.
+
 ## [0.1.3] - 2026-10-21
 
 ### Added

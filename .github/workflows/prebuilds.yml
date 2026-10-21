@@ -107,12 +107,12 @@ jobs:
           $wrapperTgz = (Get-ChildItem dist/smoke/deltabox-lite-*.tgz | Select-Object -First 1).FullName
           npm install --prefix $prefix --offline --ignore-scripts --omit=optional --no-audit --no-fund $wrapperTgz
           $wrapper = Join-Path $prefix node_modules/deltabox-lite
-          $platform = Join-Path $wrapper node_modules/deltabox-lite-win32-x64
+          $platform = Join-Path $wrapper node_modules/deltabox-lite-windows-x64
           New-Item -ItemType Directory -Force $platform | Out-Null
-          $platformTgz = (Get-ChildItem dist/deltabox-lite-win32-x64-*.tgz | Select-Object -First 1).FullName
+          $platformTgz = (Get-ChildItem dist/deltabox-lite-windows-x64-*.tgz | Select-Object -First 1).FullName
           tar -xzf $platformTgz --strip-components=1 -C $platform
           $env:WRAPPER = $wrapper
-          node -e 'const p=require("node:path"); const w=require(p.join(process.env.WRAPPER,"package.json")); const n=require(p.join(process.env.WRAPPER,"node_modules/deltabox-lite-win32-x64/package.json")); if(w.optionalDependencies[n.name]!==n.version) process.exit(1); const api=require(process.env.WRAPPER); if(!require("node:fs").existsSync(api.binaryPath())) process.exit(1); if(typeof api.loadNative().NativeDeltabox!=="function") process.exit(1)'
+          node -e 'const p=require("node:path"); const w=require(p.join(process.env.WRAPPER,"package.json")); const n=require(p.join(process.env.WRAPPER,"node_modules/deltabox-lite-windows-x64/package.json")); if(w.optionalDependencies[n.name]!==n.version) process.exit(1); const api=require(process.env.WRAPPER); if(!require("node:fs").existsSync(api.binaryPath())) process.exit(1); if(typeof api.loadNative().NativeDeltabox!=="function") process.exit(1)'
           node (Join-Path $wrapper bin/deltabox.js) --version
           $archive = (Get-ChildItem dist/deltabox-*.tar.gz | Select-Object -First 1).FullName
           $sidecar = Get-Content "$archive.sha256"
