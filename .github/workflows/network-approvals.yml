@@ -31,9 +31,11 @@ jobs:
         run: choco install winfsp --yes --no-progress
       - run: cargo test -p deltabox-core --lib
       - run: cargo test -p deltabox --test network_approvals
-      # The MXC sandbox and the Windows session modes run real commands in the
-      # sandbox, so they need the Windows job above.
-      - if: runner.os == 'Windows'
+      # Hosted Windows lacks usable MXC PSEC. Compile all suites and run the
+      # ordinary copy-private tests; PSEC-dependent cases report as ignored.
+      # Supported Windows hosts can opt in with --include-ignored.
+      - name: Windows session tests (PSEC cases ignored)
+        if: runner.os == 'Windows'
         run: >
           cargo test -p deltabox
           --test windows_mxc

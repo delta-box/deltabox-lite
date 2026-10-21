@@ -11,6 +11,9 @@
 //!   on Windows only, where loopback allowlist entries go through the proxy.
 //!
 //! Each platform hardcodes its own curl path and filesystem read roots.
+//! On Windows these tests are ignored by default because hosted CI lacks usable
+//! PSEC. On a supported host, run:
+//! `cargo test -p deltabox --test network_approvals -- --ignored --test-threads=1`.
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -183,6 +186,7 @@ fn serve_always() -> u16 {
 /// 4. approved but bypass the proxy -> FORBIDDEN (`--noproxy *` makes curl connect
 ///    directly; the OS sandbox must block it, only the proxy path is open)
 #[test]
+#[cfg_attr(windows, ignore = "requires native MXC PSEC; run explicitly on a supported Windows host")]
 fn approved_network_is_one_exec_only_and_direct_connections_stay_denied() {
     let origin = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     origin.set_nonblocking(true).unwrap();
@@ -240,6 +244,7 @@ fn approved_network_is_one_exec_only_and_direct_connections_stay_denied() {
 /// (`--noproxy *`) past the proxy is FORBIDDEN, and a `localhost:port` entry
 /// is refused by the private-address guard.
 #[test]
+#[cfg_attr(windows, ignore = "requires native MXC PSEC; run explicitly on a supported Windows host")]
 fn static_network_modes_are_enforced() {
     let (port, other_port) = (serve_always(), serve_always());
     let local = format!("http://127.0.0.1:{port}/");

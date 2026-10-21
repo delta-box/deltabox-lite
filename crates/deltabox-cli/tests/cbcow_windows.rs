@@ -4,8 +4,10 @@
 //! sync, stop) plus helper restarts and sibling sessions, in the same shape as
 //! `cbcow_linux.rs`: one `Session` helper, one behavior per test.
 //!
-//! These need an installed WinFsp (the CI Windows job installs it) and, for
-//! the PowerShell commands, native MXC PSEC. What the sandbox forbids is in
+//! These need installed WinFsp and native MXC PSEC even for session startup.
+//! They are ignored by default because hosted Windows CI lacks usable PSEC.
+//! On a supported host: `cargo test -p deltabox --test cbcow_windows -- --ignored --test-threads=1`.
+//! What the sandbox forbids is in
 //! `windows_mxc.rs`; network policy in `network_approvals.rs`; copy-private in
 //! `copy_private_windows.rs`.
 use base64::Engine as _;
@@ -160,6 +162,7 @@ fn kill_helper(status: &Value) {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "requires native MXC PSEC and WinFsp for CB-CoW; run explicitly on a supported Windows host"]
 fn changes_and_history_cross_cli_processes() {
     let (s, info) = Session::start("cbcow-through", false, &[("README.md", "base\n")]);
     assert_eq!(info["host_visibility"], "immediate");
@@ -182,6 +185,7 @@ fn changes_and_history_cross_cli_processes() {
 }
 
 #[test]
+#[ignore = "requires native MXC PSEC and WinFsp for CB-CoW; run explicitly on a supported Windows host"]
 fn powershell_file_operations_are_undone_by_abort() {
     let (s, _) = Session::start(
         "cbcow-through",
@@ -225,6 +229,7 @@ fn powershell_file_operations_are_undone_by_abort() {
 }
 
 #[test]
+#[ignore = "requires native MXC PSEC and WinFsp for CB-CoW; run explicitly on a supported Windows host"]
 fn abort_restores_a_checkpointed_file_after_truncate_and_append() {
     let (s, _) = Session::start("cbcow-through", false, &[("a.txt", "abcdefgh")]);
     s.write("a.txt", "checkpoint");
@@ -235,6 +240,7 @@ fn abort_restores_a_checkpointed_file_after_truncate_and_append() {
 }
 
 #[test]
+#[ignore = "requires native MXC PSEC and WinFsp for CB-CoW; run explicitly on a supported Windows host"]
 fn helper_restart_preserves_pending_undo() {
     let (s, _) = Session::start("cbcow-through", false, &[("a.txt", "old")]);
     s.write(s.project.join("a.txt").to_str().unwrap(), "pending"); // an absolute project path works too
@@ -248,6 +254,7 @@ fn helper_restart_preserves_pending_undo() {
 }
 
 #[test]
+#[ignore = "requires native MXC PSEC and WinFsp for CB-CoW; run explicitly on a supported Windows host"]
 fn one_through_session_holds_the_project() {
     let (s, _) = Session::start("cbcow-through", false, &[("a.txt", "old")]);
     let error = s.raw(&["session", "start", s.project.to_str().unwrap(), "--fs-mode", "copy-private"]);
@@ -263,6 +270,7 @@ fn one_through_session_holds_the_project() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "requires native MXC PSEC and WinFsp for CB-CoW; run explicitly on a supported Windows host"]
 fn private_session_reports_its_contract_and_keeps_writes_private() {
     let (s, info) = Session::start("cbcow-private", false, &[("a.txt", "old")]);
     assert_eq!(info["resolved_fs_mode"], "cbcow-private");
@@ -280,11 +288,13 @@ fn private_session_reports_its_contract_and_keeps_writes_private() {
 }
 
 #[test]
+#[ignore = "requires native MXC PSEC and WinFsp for CB-CoW; run explicitly on a supported Windows host"]
 fn private_sessions_publish_disjoint_work_and_sync_conflicts() {
     private_siblings(false);
 }
 
 #[test]
+#[ignore = "requires native MXC PSEC and WinFsp for CB-CoW; run explicitly on a supported Windows host"]
 fn strict_private_sessions_publish_disjoint_work_and_sync_conflicts() {
     private_siblings(true);
 }
@@ -332,6 +342,7 @@ fn private_siblings(durable: bool) {
 }
 
 #[test]
+#[ignore = "requires native MXC PSEC and WinFsp for CB-CoW; run explicitly on a supported Windows host"]
 fn private_helper_restart_keeps_work_and_commit_ours_still_rejects_external_edits() {
     let (s, _) = Session::start("cbcow-private", false, &[("a.txt", "old")]);
     s.write("a.txt", "accepted");

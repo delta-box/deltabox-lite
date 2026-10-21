@@ -10,6 +10,9 @@
 //! modes (the CI Windows job installs WinFsp). Network policy is in
 //! `network_approvals.rs`; lifecycle behavior (commit, abort, checkpoints,
 //! recovery) is in `copy_private_windows.rs` and `cbcow_windows.rs`.
+//!
+//! Ignored by default: hosted Windows CI lacks usable PSEC. On a supported host:
+//! `cargo test -p deltabox --test windows_mxc -- --ignored --test-threads=1`.
 use base64::Engine as _;
 use serde_json::Value;
 use std::{fs, path::{Path, PathBuf}, process::{Command, Output}};
@@ -139,6 +142,7 @@ fn expect_read_denied(paths: &[String]) -> String {
 /// CANNOT: leave a denied file behind; a command that creates one is undone
 /// as a whole. A non-zero exit keeps its changes.
 #[test]
+#[ignore = "requires native MXC PSEC and WinFsp for CB-CoW; run explicitly on a supported Windows host"]
 fn copy_private_commands_run_in_the_private_copy_and_policy_violations_roll_back() {
     let s = Session::start("copy-private", &[("a.txt", "v1"), ("dir/existing.txt", "e"), (".env", "secret")]);
 
@@ -169,6 +173,7 @@ fn copy_private_commands_run_in_the_private_copy_and_policy_violations_roll_back
 /// A command started by the sandboxed cmd works when written without a path
 /// and fails with "Access denied" when written with an absolute path.
 #[test]
+#[ignore = "requires native MXC PSEC and WinFsp for CB-CoW; run explicitly on a supported Windows host"]
 fn copy_private_cmd_starts_children_by_name_but_not_by_absolute_path() {
     let s = Session::start("copy-private", &[]);
     let run = |body: &str| -> Value { serde_json::from_slice(&s.cmd(body).stdout).unwrap() };
@@ -189,6 +194,7 @@ fn copy_private_cmd_starts_children_by_name_but_not_by_absolute_path() {
 /// CANNOT: read the original project path, the session state, or denied files
 /// (`.env`, `.ssh/id_rsa`); write outside the view and scratch space.
 #[test]
+#[ignore = "requires native MXC PSEC and WinFsp for CB-CoW; run explicitly on a supported Windows host"]
 fn cbcow_through_sandbox_denies_host_state_denied_files_and_outside_writes() {
     let s = Session::start("cbcow-through", &[("a.txt", "abcdefgh"), (".env", "secret"), (".ssh/id_rsa", "secret")]);
     let outside = s.root.path().join("outside.txt");
@@ -210,6 +216,7 @@ fn cbcow_through_sandbox_denies_host_state_denied_files_and_outside_writes() {
 /// CAN: write inside the view (stays private, host project untouched).
 /// CANNOT: read the host project file or the private backing tree directly.
 #[test]
+#[ignore = "requires native MXC PSEC and WinFsp for CB-CoW; run explicitly on a supported Windows host"]
 fn cbcow_private_sandbox_denies_host_and_backing_tree() {
     let s = Session::start("cbcow-private", &[("a.txt", "old")]);
     let script = format!(
