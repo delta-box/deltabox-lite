@@ -33,7 +33,7 @@ anxiety about binary or large files.
 
 ## 📰 News
 
-- **[2026/10/21]** Release `v0.1.4`: **Windows x64** Support is HERE. WinFsp, and MXC network policy enforcement. Companion DSH `0.1.4` and Pi `0.1.3` add Windows installation and PowerShell integration.
+- **[2026/10/21]** Release `v0.1.4`: **Windows x64** available now. With WinFsp, and MXC network policy enforcement. Companion DSH `0.1.4` and Pi `0.1.3` add Windows installation and PowerShell integration.
 
 - **[2026/10/19]** Added Windows WinFsp support with strict durability for private sessions, plus execution-scoped network approvals ([PR #33](https://github.com/delta-box/deltabox-lite/pull/33), [PR #35](https://github.com/delta-box/deltabox-lite/pull/35)).
 - **[2026/10/16]** Open-sourced DeltaBox Lite and published the introduction “DeltaBox Lite: A Lightweight File Sandbox for Terminal AI Agents.”
