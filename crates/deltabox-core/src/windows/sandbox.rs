@@ -1,6 +1,11 @@
-//! MXC is used only for filesystem grants. Network policy is deliberately reported as unenforced.
+//! MXC PSEC grants for the filesystem and the network. Network policy maps onto
+//! PSEC's directional egress/ingress rules, which take IP literals only;
+//! hostname allowlists and per-exec approvals go through the loopback proxy in
+//! `crate::network`, the one destination the rules then allow.
 use super::engine::Manifest;
+use crate::network::NetworkProxy;
 use crate::pathmap::PathMapper;
+use crate::policy::{NetworkMode, Policy};
 use crate::protocol::{ExecParams, ExecRequest, ExecResult, ExecutionProfile};
 use crate::{Error, Result};
 use appcontainer_common::base_container_runner::BaseContainerRunner;
@@ -9,7 +14,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use wxc_common::cmdline::{cmdline_from_argv_for_context, CommandLineContext};
 use wxc_common::logger::{Logger, Mode};
-use wxc_common::models::{BaseProcessUiConfig, ContainerPolicy, ExecutionRequest, FallbackPolicy, NetworkPolicy, UiPolicy};
+use wxc_common::models::{
+    BaseProcessUiConfig, ContainerPolicy, ExecutionRequest, FallbackPolicy, NetworkAction,
+    NetworkCidr, NetworkEgressPolicy, NetworkIngressPolicy, NetworkPeer, NetworkPolicy,
+    NetworkPort, NetworkProtocol, NetworkRule, ProxyAddress, ProxyConfig, UiPolicy,
+};
 use wxc_common::sandbox_process::{SandboxBackend, StdioMode};
 
 #[link(name = "advapi32")]
@@ -17,26 +26,42 @@ extern "system" {}
 
 pub fn available() -> Result<()> {
     if !BaseContainerRunner::is_process_security_environment_usable() {
-        return Err(Error::FilesystemUnavailable("Microsoft MXC PSEC is unavailable on this Windows host".into()));
+        return Err(Error::FilesystemUnavailable(
+            "Microsoft MXC PSEC is unavailable on this Windows host".into(),
+        ));
     }
-    let api=SecurityEnvironmentApi::load().map_err(|e| Error::FilesystemUnavailable(e.to_string()))?;
-    if !api.supports_deny_paths().map_err(|e| Error::FilesystemUnavailable(e.to_string()))? {
-        return Err(Error::FilesystemUnavailable("MXC requires the native PSE_SUPPORT_FS_DENY capability".into()));
+    let api =
+        SecurityEnvironmentApi::load().map_err(|e| Error::FilesystemUnavailable(e.to_string()))?;
+    if !api
+        .supports_deny_paths()
+        .map_err(|e| Error::FilesystemUnavailable(e.to_string()))?
+    {
+        return Err(Error::FilesystemUnavailable(
+            "MXC requires the native PSE_SUPPORT_FS_DENY capability".into(),
+        ));
     }
     Ok(())
 }
 
 fn unicode(path: &Path) -> Result<String> {
-    let value=path.to_str().ok_or_else(|| Error::Unsupported("MXC requires Unicode paths".into()))?;
-    Ok(if let Some(unc)=value.strip_prefix("\\\\?\\UNC\\") {format!("\\\\{unc}")} else {value.strip_prefix("\\\\?\\").unwrap_or(value).to_owned()})
+    let value = path
+        .to_str()
+        .ok_or_else(|| Error::Unsupported("MXC requires Unicode paths".into()))?;
+    Ok(if let Some(unc) = value.strip_prefix("\\\\?\\UNC\\") {
+        format!("\\\\{unc}")
+    } else {
+        value.strip_prefix("\\\\?\\").unwrap_or(value).to_owned()
+    })
 }
 
 fn resolve_program(program: &str, cwd: &Path) -> Result<PathBuf> {
-    let input=Path::new(program);
-    let mut candidates=Vec::new();
-    if input.is_absolute() { candidates.push(input.to_path_buf()); }
-    else if input.components().count()>1 { candidates.push(cwd.join(input)); }
-    else {
+    let input = Path::new(program);
+    let mut candidates = Vec::new();
+    if input.is_absolute() {
+        candidates.push(input.to_path_buf());
+    } else if input.components().count() > 1 {
+        candidates.push(cwd.join(input));
+    } else {
         // Do not implicitly search the host project's current directory.
         candidates.push(cwd.join(input));
         for directory in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
@@ -44,128 +69,444 @@ fn resolve_program(program: &str, cwd: &Path) -> Result<PathBuf> {
         }
     }
     for path in candidates {
-        if path.is_file() { return Ok(path); }
+        if path.is_file() {
+            return Ok(path);
+        }
         if path.extension().is_none() {
-            let exe=path.with_extension("exe");
-            if exe.is_file() { return Ok(exe); }
+            let exe = path.with_extension("exe");
+            if exe.is_file() {
+                return Ok(exe);
+            }
         }
     }
-    Err(Error::Backend(format!("Windows executable not found: {program}")))
+    Err(Error::Backend(format!(
+        "Windows executable not found: {program}"
+    )))
 }
 
 pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<ExecResult> {
     available()?;
-    if params.argv.is_empty() { return Err(Error::InvalidPolicy("empty argv".into())); }
-    if params.execution_profile != ExecutionProfile::WorkspaceWrite {
-        return Err(Error::Unsupported("Windows read-write execution profiles are reserved; use workspace-write".into()));
+    if params.argv.is_empty() {
+        return Err(Error::InvalidPolicy("empty argv".into()));
     }
-    let mapper=PathMapper::new(&manifest.source,&manifest.view);
-    let requested_cwd=params.cwd.as_deref().unwrap_or(&manifest.source);
-    let cwd=if requested_cwd.is_absolute() { mapper.map_path(requested_cwd) } else { manifest.view.join(requested_cwd) };
+    if params.execution_profile != ExecutionProfile::WorkspaceWrite {
+        return Err(Error::Unsupported(
+            "Windows read-write execution profiles are reserved; use workspace-write".into(),
+        ));
+    }
+    // Network: this command's grants, then the proxy where one is needed. The
+    // policy it leaves behind names only what PSEC rules can express.
+    let mut policy = manifest.policy.clone();
+    policy.apply_network_allow(&params.network_allow)?;
+    // PSEC rules express a non-loopback IP literal exactly; hostnames need
+    // the proxy, and so do loopback entries, since the loopback exemption is
+    // not per port. The proxy keeps them port-exact.
+    let direct = |entry: &str| {
+        crate::network::target_ip(entry)
+            .ok()
+            .flatten()
+            .is_some_and(|(ip, _)| !ip.is_loopback())
+    };
+    let proxy = match NetworkProxy::prepare(&mut policy)? {
+        Some(proxy) => Some(proxy),
+        None => NetworkProxy::prepare_static(&mut policy, &direct)?,
+    };
+    let proxy_env: Vec<(String, String)> = proxy
+        .as_ref()
+        .map(|proxy| {
+            let mut request = ExecRequest {
+                argv: Vec::new(),
+                cwd: None,
+                env: None,
+            };
+            proxy.environment(&mut request);
+            request.env.unwrap_or_default()
+        })
+        .unwrap_or_default();
+    let proxy_url = proxy_env
+        .iter()
+        .find(|(key, _)| key == "HTTP_PROXY")
+        .map(|(_, value)| value.clone());
+    let network = network_rules(&policy, proxy_url.as_deref())?;
+    let mapper = PathMapper::new(&manifest.source, &manifest.view);
+    let requested_cwd = params.cwd.as_deref().unwrap_or(&manifest.source);
+    let cwd = if requested_cwd.is_absolute() {
+        mapper.map_path(requested_cwd)
+    } else {
+        manifest.view.join(requested_cwd)
+    };
     // Directory-mounted WinFsp volumes do not always have a DOS volume name
     // for GetFinalPathNameByHandle. Keep the mount path for PSEC grants.
-    if cwd.components().any(|c| matches!(c,std::path::Component::ParentDir)) {
-        return Err(Error::Backend("command cwd contains parent traversal".into()));
+    if cwd
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(Error::Backend(
+            "command cwd contains parent traversal".into(),
+        ));
     }
-    let view=manifest.view.clone();
-    if !cwd.starts_with(&view) { return Err(Error::Backend("command cwd must be inside the WinFsp view".into())); }
-    let mut argv: Vec<_>=params.argv.iter().map(|a|mapper.map_arg(a)).map(|a| if Path::new(&a).is_absolute() {unicode(Path::new(&a))} else {Ok(a)}).collect::<Result<_>>()?;
-    let program=resolve_program(&argv[0],&cwd)?;
-    argv[0]=unicode(&program)?;
-    let mut env=BTreeMap::new();
-    for key in ["PATH","PATHEXT","SystemRoot","WINDIR","COMSPEC","SystemDrive","LOCALAPPDATA","APPDATA","NUMBER_OF_PROCESSORS","PROCESSOR_ARCHITECTURE","LANG","TERM"] {
-        if let Ok(value)=std::env::var(key) { env.insert(key.to_uppercase(),value); }
+    let view = manifest.view.clone();
+    if !cwd.starts_with(&view) {
+        return Err(Error::Backend(
+            "command cwd must be inside the WinFsp view".into(),
+        ));
     }
-    for (key,value) in params.env.unwrap_or_default() {
-        if key.contains(['=','\0']) || value.contains('\0') { return Err(Error::InvalidPolicy("invalid Windows environment entry".into())); }
-        env.insert(key.to_uppercase(),mapper.map_env(&key,&value)?);
+    let mut argv: Vec<_> = params
+        .argv
+        .iter()
+        .map(|a| mapper.map_arg(a))
+        .map(|a| {
+            if Path::new(&a).is_absolute() {
+                unicode(Path::new(&a))
+            } else {
+                Ok(a)
+            }
+        })
+        .collect::<Result<_>>()?;
+    let program = resolve_program(&argv[0], &cwd)?;
+    argv[0] = unicode(&program)?;
+    let mut env = BTreeMap::new();
+    for key in [
+        "PATH",
+        "PATHEXT",
+        "SystemRoot",
+        "WINDIR",
+        "COMSPEC",
+        "SystemDrive",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "LANG",
+        "TERM",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            env.insert(key.to_uppercase(), value);
+        }
     }
-    for key in ["SystemDrive","LOCALAPPDATA","SystemRoot"] {
-        let value=std::env::var(key).ok().filter(|s| !s.is_empty()).ok_or_else(|| Error::Backend(format!("MXC requires host {key}")))?;
-        env.insert(key.to_uppercase(),value);
+    for (key, value) in params.env.unwrap_or_default() {
+        if key.contains(['=', '\0']) || value.contains('\0') {
+            return Err(Error::InvalidPolicy(
+                "invalid Windows environment entry".into(),
+            ));
+        }
+        env.insert(key.to_uppercase(), mapper.map_env(&key, &value)?);
     }
-    let home=manifest.scratch.join("home");
-    let tmp=manifest.scratch.join("tmp");
-    std::fs::create_dir_all(&home)?;std::fs::create_dir_all(&tmp)?;
-    for key in ["HOME","USERPROFILE"] { env.insert(key.into(),unicode(&home)?); }
-    for key in ["TMP","TEMP"] { env.insert(key.into(),unicode(&tmp)?); }
-    let mut read=Vec::new();
-    for key in ["SystemRoot","ProgramFiles","ProgramFiles(x86)","ProgramData"] {
-        if let Some(path)=std::env::var_os(key).map(PathBuf::from).filter(|p|p.is_dir()) { read.push(unicode(&path)?); }
+    for key in ["SystemDrive", "LOCALAPPDATA", "SystemRoot"] {
+        let value = std::env::var(key)
+            .ok()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| Error::Backend(format!("MXC requires host {key}")))?;
+        env.insert(key.to_uppercase(), value);
     }
-    if let Some(parent)=program.parent().filter(|p|!p.starts_with(&view)) { read.push(unicode(parent)?); }
+    let home = manifest.scratch.join("home");
+    let tmp = manifest.scratch.join("tmp");
+    std::fs::create_dir_all(&home)?;
+    std::fs::create_dir_all(&tmp)?;
+    for key in ["HOME", "USERPROFILE"] {
+        env.insert(key.into(), unicode(&home)?);
+    }
+    for key in ["TMP", "TEMP"] {
+        env.insert(key.into(), unicode(&tmp)?);
+    }
+    // Proxy-aware clients find the proxy through the standard variables; the
+    // keys are upper-cased like every other entry, which Windows treats as
+    // case-insensitive anyway.
+    for (key, value) in proxy_env {
+        env.insert(key.to_uppercase(), value);
+    }
+    let mut read = Vec::new();
+    for key in [
+        "SystemRoot",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramData",
+    ] {
+        if let Some(path) = std::env::var_os(key)
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
+        {
+            read.push(unicode(&path)?);
+        }
+    }
+    if let Some(parent) = program.parent().filter(|p| !p.starts_with(&view)) {
+        read.push(unicode(parent)?);
+    }
     for path in &manifest.policy.filesystem.read {
-        if path == Path::new(".") || path.to_string_lossy().starts_with('/') { continue; }
-        let path=if path.is_absolute() { path.clone() } else { manifest.view.join(path) };
+        if path == Path::new(".") || path.to_string_lossy().starts_with('/') {
+            continue;
+        }
+        let path = if path.is_absolute() {
+            path.clone()
+        } else {
+            manifest.view.join(path)
+        };
         read.push(unicode(&mapper.map_path(&path))?);
     }
     // Extra write roots would escape the undo engine. Reserve them until their semantics are implemented.
-    if manifest.policy.filesystem.write.iter().any(|p|p != Path::new(".")) {
-        return Err(Error::Unsupported("Windows filesystem write grants currently support only the project view".into()));
+    if manifest
+        .policy
+        .filesystem
+        .write
+        .iter()
+        .any(|p| p != Path::new("."))
+    {
+        return Err(Error::Unsupported(
+            "Windows filesystem write grants currently support only the project view".into(),
+        ));
     }
-    let mut writable_roots=vec![unicode(&view)?,unicode(&manifest.scratch)?];
+    let mut writable_roots = vec![unicode(&view)?, unicode(&manifest.scratch)?];
     // PSEC's root grant on a WinFsp network volume does not propagate to
     // directories that already exist. New directories inherit it, so grant
     // each existing view directory before launch, without exposing backing paths.
-    let directories=walkdir::WalkDir::new(manifest.live()).min_depth(1).follow_links(false).into_iter().filter_entry(|entry| {
-        if entry.depth()==0 { return true; }
-        if !entry.file_type().is_dir() { return false; }
-        let Ok(relative)=entry.path().strip_prefix(manifest.live()) else { return false; };
-        let normalized=relative.to_string_lossy().replace('\\',"/").to_lowercase();
-        !normalized.split('/').any(|part|part==".deltabox")
-            && !manifest.policy.filesystem.deny.iter().any(|pattern|crate::policy::deny_matches(&pattern.replace('\\',"/").to_lowercase(),&normalized))
-    });
+    let directories = walkdir::WalkDir::new(manifest.live())
+        .min_depth(1)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            if entry.depth() == 0 {
+                return true;
+            }
+            if !entry.file_type().is_dir() {
+                return false;
+            }
+            let Ok(relative) = entry.path().strip_prefix(manifest.live()) else {
+                return false;
+            };
+            let normalized = relative.to_string_lossy().replace('\\', "/").to_lowercase();
+            !normalized.split('/').any(|part| part == ".deltabox")
+                && !manifest.policy.filesystem.deny.iter().any(|pattern| {
+                    crate::policy::deny_matches(
+                        &pattern.replace('\\', "/").to_lowercase(),
+                        &normalized,
+                    )
+                })
+        });
     for entry in directories {
-        let entry=entry.map_err(|e|Error::Backend(e.to_string()))?;
+        let entry = entry.map_err(|e| Error::Backend(e.to_string()))?;
         if entry.file_type().is_dir() {
-            let relative=entry.path().strip_prefix(manifest.live()).map_err(|e|Error::Backend(e.to_string()))?;
+            let relative = entry
+                .path()
+                .strip_prefix(manifest.live())
+                .map_err(|e| Error::Backend(e.to_string()))?;
             writable_roots.push(unicode(&view.join(relative))?);
         }
     }
-    let request=ExecutionRequest {
+    let request = ExecutionRequest {
         schema_version: "0.8.0-alpha".into(),
-        script_code: cmdline_from_argv_for_context(&argv,CommandLineContext::WindowsCreateProcess).map_err(|e|Error::Backend(e.to_string()))?,
+        script_code: cmdline_from_argv_for_context(&argv, CommandLineContext::WindowsCreateProcess)
+            .map_err(|e| Error::Backend(e.to_string()))?,
         working_directory: unicode(&cwd)?,
-        env: env.into_iter().map(|(k,v)|format!("{k}={v}")).collect(),
+        env: env.into_iter().map(|(k, v)| format!("{k}={v}")).collect(),
         script_timeout: 600_000,
         policy: ContainerPolicy {
             capabilities: vec!["registryRead".into()],
             readwrite_paths: writable_roots,
             readonly_paths: read,
-            denied_paths: vec![unicode(&manifest.source)?,unicode(state.parent().unwrap())?],
-            fallback: FallbackPolicy { allow_dacl_mutation: false },
-            default_network_policy: NetworkPolicy::Allow,
+            denied_paths: vec![
+                unicode(&manifest.source)?,
+                unicode(state.parent().unwrap())?,
+            ],
+            fallback: FallbackPolicy {
+                allow_dacl_mutation: false,
+            },
+            default_network_policy: network.legacy,
             allow_local_network: true,
-            ui: UiPolicy { disable: false, ..Default::default() },
-            base_process_ui: BaseProcessUiConfig { isolation: "desktop".into(), ..Default::default() },
+            network_egress: network.egress,
+            network_ingress: network.ingress,
+            network_proxy: network.proxy,
+            runtime_network_proxy_specified: network.runtime_proxy,
+            ui: UiPolicy {
+                disable: false,
+                ..Default::default()
+            },
+            base_process_ui: BaseProcessUiConfig {
+                isolation: "desktop".into(),
+                ..Default::default()
+            },
             ..Default::default()
         },
         ..Default::default()
     };
-    let started=std::time::Instant::now();
-    let mut logger=Logger::new(Mode::Buffer);
-    let mut process=BaseContainerRunner::new().spawn(&request,&mut logger,StdioMode::Pipes)
-        .map_err(|e| Error::Backend(format!("MXC launch failed: {}",e.error_message)))?;
+    let started = std::time::Instant::now();
+    let mut logger = Logger::new(Mode::Buffer);
+    let mut process = BaseContainerRunner::new()
+        .spawn(&request, &mut logger, StdioMode::Pipes)
+        .map_err(|e| Error::Backend(format!("MXC launch failed: {}", e.error_message)))?;
     drop(process.take_stdin());
-    let stdout=process.take_stdout().ok_or_else(||Error::Backend("missing MXC stdout".into()))?;
-    let stderr=process.take_stderr().ok_or_else(||Error::Backend("missing MXC stderr".into()))?;
-    let out=std::thread::spawn(move || crate::worker::read_capped(stdout));
-    let err=std::thread::spawn(move || crate::worker::read_capped(stderr));
-    let exit=process.wait();
-    let (stdout,out_cut)=out.join().map_err(|_|Error::Backend("stdout reader failed".into()))?;
-    let (stderr,err_cut)=err.join().map_err(|_|Error::Backend("stderr reader failed".into()))?;
-    Ok(ExecResult { exit_code: Some(exit?),stdout,stderr,duration_ms: started.elapsed().as_millis() as u64,truncated: out_cut||err_cut,network_denials:Vec::new() })
+    let stdout = process
+        .take_stdout()
+        .ok_or_else(|| Error::Backend("missing MXC stdout".into()))?;
+    let stderr = process
+        .take_stderr()
+        .ok_or_else(|| Error::Backend("missing MXC stderr".into()))?;
+    let out = std::thread::spawn(move || crate::worker::read_capped(stdout));
+    let err = std::thread::spawn(move || crate::worker::read_capped(stderr));
+    let exit = process.wait();
+    let (stdout, out_cut) = out
+        .join()
+        .map_err(|_| Error::Backend("stdout reader failed".into()))?;
+    let (stderr, err_cut) = err
+        .join()
+        .map_err(|_| Error::Backend("stderr reader failed".into()))?;
+    // The proxy outlives the command (it is dropped on return), so its denials are complete here.
+    let network_denials = proxy
+        .as_ref()
+        .map(|proxy| proxy.denials())
+        .unwrap_or_default();
+    Ok(ExecResult {
+        exit_code: Some(exit?),
+        stdout,
+        stderr,
+        duration_ms: started.elapsed().as_millis() as u64,
+        truncated: out_cut || err_cut,
+        network_denials,
+    })
+}
+
+/// What the sandbox may reach, as PSEC sees it.
+struct Network {
+    legacy: NetworkPolicy,
+    egress: Option<NetworkEgressPolicy>,
+    ingress: Option<NetworkIngressPolicy>,
+    proxy: ProxyConfig,
+    runtime_proxy: bool,
+}
+
+/// Map a policy onto PSEC rules. With a proxy, PSEC's runtime-proxy shape
+/// (deny-all egress, the proxy as the one loopback endpoint) carries the
+/// proxy URL, credentials included, into the command's proxy variables.
+/// Otherwise the allowlist holds IP literals only and becomes egress rules.
+fn network_rules(policy: &Policy, proxy_url: Option<&str>) -> Result<Network> {
+    let direct = Network {
+        legacy: NetworkPolicy::Block,
+        egress: None,
+        ingress: None,
+        proxy: ProxyConfig::default(),
+        runtime_proxy: false,
+    };
+    if let Some(url) = proxy_url {
+        let port = url
+            .rsplit(':')
+            .next()
+            .and_then(|port| port.parse::<u16>().ok())
+            .ok_or_else(|| Error::Backend("network proxy address has no port".into()))?;
+        return Ok(Network {
+            egress: Some(NetworkEgressPolicy::default()),
+            ingress: Some(NetworkIngressPolicy {
+                default: NetworkAction::Allow,
+                host_loopback: NetworkAction::Allow,
+            }),
+            proxy: ProxyConfig {
+                address: Some(ProxyAddress::from_url(url, "127.0.0.1".into(), port)),
+                builtin_test_server: false,
+            },
+            runtime_proxy: true,
+            ..direct
+        });
+    }
+    let network = &policy.network;
+    match network.mode {
+        // Unrestricted, loopback included (the legacy flag alone left loopback closed).
+        NetworkMode::AllowAudit => Ok(Network {
+            legacy: NetworkPolicy::Allow,
+            egress: Some(NetworkEgressPolicy {
+                default: NetworkAction::Allow,
+                allow: Vec::new(),
+                deny: Vec::new(),
+            }),
+            ingress: Some(NetworkIngressPolicy {
+                default: NetworkAction::Allow,
+                host_loopback: NetworkAction::Allow,
+            }),
+            ..direct
+        }),
+        // No egress, no ingress, no loopback: localhost is not implicitly privileged.
+        NetworkMode::DenyAll => Ok(Network {
+            egress: Some(NetworkEgressPolicy::default()),
+            ingress: Some(NetworkIngressPolicy {
+                default: NetworkAction::Deny,
+                host_loopback: NetworkAction::Deny,
+            }),
+            ..direct
+        }),
+        NetworkMode::Allowlist => {
+            let mut allow = Vec::new();
+            for entry in &network.allow {
+                let Some((ip, port)) =
+                    crate::network::target_ip(entry)?.filter(|(ip, _)| !ip.is_loopback())
+                else {
+                    return Err(Error::Backend(format!(
+                        "network entry needs the proxy, which was not started: {entry}"
+                    )));
+                };
+                // One exact address and port; TCP and UDP, like a Sandlock rule.
+                let port = |protocol| NetworkPort {
+                    protocol,
+                    port: Some(port),
+                    end_port: None,
+                };
+                allow.push(NetworkRule {
+                    to: vec![NetworkPeer {
+                        cidr: NetworkCidr {
+                            address: ip,
+                            prefix_length: if ip.is_ipv4() { 32 } else { 128 },
+                        },
+                        except: Vec::new(),
+                    }],
+                    ports: vec![port(NetworkProtocol::Tcp), port(NetworkProtocol::Udp)],
+                });
+            }
+            Ok(Network {
+                egress: Some(NetworkEgressPolicy {
+                    default: NetworkAction::Deny,
+                    allow,
+                    deny: Vec::new(),
+                }),
+                ingress: Some(NetworkIngressPolicy {
+                    default: NetworkAction::Deny,
+                    host_loopback: NetworkAction::Deny,
+                }),
+                ..direct
+            })
+        }
+    }
+}
+
+/// Reject at session start what every exec would reject: allowlist entries
+/// that are not exact `host:port` targets.
+pub fn check_network_policy(policy: &Policy) -> Result<()> {
+    if policy.network.mode == NetworkMode::Allowlist {
+        for entry in &policy.network.allow {
+            crate::network::target_ip(entry)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn execute_trusted(manifest: &Manifest, params: ExecParams) -> Result<ExecResult> {
-    if params.execution_profile != ExecutionProfile::WorkspaceWrite || !params.network_allow.is_empty() {
-        return Err(Error::Unsupported("trusted Windows execution does not support command grants".into()));
+    if params.execution_profile != ExecutionProfile::WorkspaceWrite
+        || !params.network_allow.is_empty()
+    {
+        return Err(Error::Unsupported(
+            "trusted Windows execution does not support command grants".into(),
+        ));
     }
-    let mapper=PathMapper::new(&manifest.source,&manifest.view);
-    let cwd=mapper.map_path(params.cwd.as_deref().unwrap_or(&manifest.source));
-    let argv=params.argv.iter().map(|arg|mapper.map_arg(arg)).collect();
-    let env=params.env.map(|entries|entries.into_iter().map(|(key,value)|{
-        mapper.map_env(&key,&value).map(|mapped|(key,mapped))
-    }).collect::<Result<Vec<_>>>()).transpose()?;
-    crate::trusted::exec(ExecRequest {argv,cwd:Some(cwd),env})
+    let mapper = PathMapper::new(&manifest.source, &manifest.view);
+    let cwd = mapper.map_path(params.cwd.as_deref().unwrap_or(&manifest.source));
+    let argv = params.argv.iter().map(|arg| mapper.map_arg(arg)).collect();
+    let env = params
+        .env
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(|(key, value)| mapper.map_env(&key, &value).map(|mapped| (key, mapped)))
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?;
+    crate::trusted::exec(ExecRequest {
+        argv,
+        cwd: Some(cwd),
+        env,
+    })
 }

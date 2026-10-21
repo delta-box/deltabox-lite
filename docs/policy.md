@@ -53,7 +53,11 @@ entries become Seatbelt rules; domain names and remote IPs use a
 session-local, randomly authenticated HTTP/HTTPS CONNECT proxy. The sandbox
 can reach that proxy but cannot open a direct unlisted connection. Proxy-aware
 tools such as curl, npm, pip and Cargo work with hostname entries; a program
-that ignores standard proxy variables remains network-denied.
+that ignores standard proxy variables remains network-denied. On Windows,
+`deny_all` and non-loopback IP literals become MXC process-security-environment
+egress rules; hostname and loopback entries use the same authenticated loopback
+proxy as macOS, which keeps loopback access exact to the listed port. A list
+served by the proxy reaches its IP-literal entries through the proxy as well.
 
 An empty list is a valid deny-all allowlist. The legacy form
 `mode = { allowlist = ["example.com:443"] }` remains accepted.

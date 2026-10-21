@@ -12,11 +12,9 @@ pub mod changeset;
 pub mod checkpoint;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod command_executor;
-#[cfg(not(windows))]
 pub mod coordinator;
 #[cfg(windows)]
-#[path = "windows/coordinator.rs"]
-pub mod coordinator;
+pub mod windows_cbcow;
 #[cfg(not(windows))]
 pub mod durable;
 pub mod error;
