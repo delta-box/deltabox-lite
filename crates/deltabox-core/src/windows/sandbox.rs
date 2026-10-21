@@ -1,7 +1,7 @@
 //! MXC is used only for filesystem grants. Network policy is deliberately reported as unenforced.
 use super::engine::Manifest;
 use crate::pathmap::PathMapper;
-use crate::protocol::{ExecParams, ExecResult, ExecutionProfile};
+use crate::protocol::{ExecParams, ExecRequest, ExecResult, ExecutionProfile};
 use crate::{Error, Result};
 use appcontainer_common::base_container_runner::BaseContainerRunner;
 use learning_mode_windows::SecurityEnvironmentApi;
@@ -154,5 +154,18 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
     let exit=process.wait();
     let (stdout,out_cut)=out.join().map_err(|_|Error::Backend("stdout reader failed".into()))?;
     let (stderr,err_cut)=err.join().map_err(|_|Error::Backend("stderr reader failed".into()))?;
-    Ok(ExecResult { exit_code: Some(exit?),stdout,stderr,duration_ms: started.elapsed().as_millis() as u64,truncated: out_cut||err_cut })
+    Ok(ExecResult { exit_code: Some(exit?),stdout,stderr,duration_ms: started.elapsed().as_millis() as u64,truncated: out_cut||err_cut,network_denials:Vec::new() })
+}
+
+pub fn execute_trusted(manifest: &Manifest, params: ExecParams) -> Result<ExecResult> {
+    if params.execution_profile != ExecutionProfile::WorkspaceWrite || !params.network_allow.is_empty() {
+        return Err(Error::Unsupported("trusted Windows execution does not support command grants".into()));
+    }
+    let mapper=PathMapper::new(&manifest.source,&manifest.view);
+    let cwd=mapper.map_path(params.cwd.as_deref().unwrap_or(&manifest.source));
+    let argv=params.argv.iter().map(|arg|mapper.map_arg(arg)).collect();
+    let env=params.env.map(|entries|entries.into_iter().map(|(key,value)|{
+        mapper.map_env(&key,&value).map(|mapped|(key,mapped))
+    }).collect::<Result<Vec<_>>>()).transpose()?;
+    crate::trusted::exec(ExecRequest {argv,cwd:Some(cwd),env})
 }

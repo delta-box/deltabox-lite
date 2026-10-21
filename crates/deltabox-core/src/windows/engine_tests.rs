@@ -10,7 +10,7 @@ impl Fixture {
         let root=tempfile::tempdir().unwrap();
         let source=root.path().join("source");fs::create_dir(&source).unwrap();
         let checkpoint="initial".to_owned();
-        let manifest=Manifest {version:1,session_id:uuid::Uuid::new_v4().to_string(),source:source.canonicalize().unwrap(),fs_mode:crate::protocol::FilesystemMode::CbcowThrough,durability:DurabilityMode::Fast,live:None,view:root.path().join("view"),scratch:root.path().join("scratch"),token:"test-token".into(),started_at_ms:now_ms(),status:SessionStatus::Running,policy:Policy::default_agent(),next_id:1,accepted:checkpoint.clone(),checkpoints:vec![Savepoint {info:CheckpointInfo {id:checkpoint,label:None,created_at_ms:now_ms(),change_count:0,committed:true},cursor:0}],review:None,rollback:None};
+        let manifest=Manifest {version:1,session_id:uuid::Uuid::new_v4().to_string(),source:source.canonicalize().unwrap(),fs_mode:crate::protocol::FilesystemMode::CbcowThrough,trusted:false,durability:DurabilityMode::Fast,live:None,view:root.path().join("view"),scratch:root.path().join("scratch"),token:"test-token".into(),started_at_ms:now_ms(),status:SessionStatus::Running,policy:Policy::default_agent(),next_id:1,accepted:checkpoint.clone(),checkpoints:vec![Savepoint {info:CheckpointInfo {id:checkpoint,label:None,created_at_ms:now_ms(),change_count:0,committed:true},cursor:0}],review:None,rollback:None};
         let engine=Engine::create(&root.path().join("state"),manifest).unwrap();
         Self {root,engine}
     }

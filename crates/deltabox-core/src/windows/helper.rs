@@ -55,7 +55,12 @@ pub fn session_info(engine: &Engine, pid: Option<u32>) -> Result<SessionInfo> {
     } else { FilesystemInfo::cbcow_through(engine.manifest.view.clone(),pid.unwrap_or(0),0) };
     filesystem.state_provider=Some("windows-winfsp".into());
     filesystem=filesystem.with_durability(engine.manifest.durability, None);
-    filesystem.isolation_provider=Some("mxc-psec-filesystem".into());
+    if engine.manifest.trusted {
+        filesystem.isolation="none".into();
+        filesystem.isolation_provider=None;
+    } else {
+        filesystem.isolation_provider=Some("mxc-psec-filesystem".into());
+    }
     if engine.manifest.fs_mode == FilesystemMode::CbcowThrough { filesystem.rollback_guarantee="winfsp-routed-writes-only".into(); }
     filesystem.helper_pid=pid;
     filesystem.degraded_protections=Some(vec!["network-policy".into(),"resource-limits".into()]);
@@ -81,7 +86,7 @@ pub fn run(state: &Path) -> Result<()> {
     {
         let e=engine.lock().unwrap();
         if e.manifest.status != SessionStatus::Running { return Err(Error::SessionStopped(e.manifest.session_id.clone())); }
-        super::sandbox::available()?;
+        if !e.manifest.trusted { super::sandbox::available()?; }
     }
     let mount=Mount::new(engine.clone())?;
     let listener=TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,0))?;
@@ -124,7 +129,11 @@ fn dispatch(engine: &Arc<Mutex<Engine>>,mount: &Mount,state: &Path,method: Metho
     match method {
         Method::SessionExec(params)=> {
             let manifest=engine.lock().unwrap().manifest.clone();
-            let result=super::sandbox::execute(&manifest,params,state);
+            let result=if manifest.trusted {
+                super::sandbox::execute_trusted(&manifest,params)
+            } else {
+                super::sandbox::execute(&manifest,params,state)
+            };
             mount.boundary()?;
             serde_json::to_value(result?).map_err(Into::into)
         }
