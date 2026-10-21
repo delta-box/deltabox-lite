@@ -78,7 +78,8 @@ const REPARSE_DIGEST: &str = "reparse-point";
 
 /// Exit at a named point in debug builds, so tests can interrupt a step.
 fn crash_point(point: &str) {
-    if cfg!(debug_assertions) && std::env::var("DELTABOX_TEST_CRASH_POINT").as_deref() == Ok(point) {
+    if cfg!(debug_assertions) && std::env::var("DELTABOX_TEST_CRASH_POINT").as_deref() == Ok(point)
+    {
         std::process::exit(86);
     }
 }
@@ -100,11 +101,15 @@ type Tree = BTreeMap<String, Entry>;
 /// Never compared, published or restored as ordinary files: DeltaBox
 /// metadata and the shadow `.git`.
 fn skipped(key: &str) -> bool {
-    key.split('\\').any(|part| part == ".deltabox" || part == ".git")
+    key.split('\\')
+        .any(|part| part == ".deltabox" || part == ".git")
 }
 
 fn draft_error(path: &str) -> Error {
-    Error::InvalidPolicy(format!("names ending in .deltabox-theirs are reserved for cbcow-private sync drafts: {}", slash(path)))
+    Error::InvalidPolicy(format!(
+        "names ending in .deltabox-theirs are reserved for cbcow-private sync drafts: {}",
+        slash(path)
+    ))
 }
 
 /// Deny patterns compare case-insensitively with `/` separators on Windows.
@@ -112,11 +117,19 @@ fn draft_error(path: &str) -> Error {
 /// subtrees, so every other check must see the same set.
 fn denied(policy: &Policy, key: &str) -> bool {
     let path = key.replace('\\', "/");
-    let patterns: Vec<String> = policy.filesystem.deny.iter().map(|pattern| pattern.replace('\\', "/").to_lowercase()).collect();
+    let patterns: Vec<String> = policy
+        .filesystem
+        .deny
+        .iter()
+        .map(|pattern| pattern.replace('\\', "/").to_lowercase())
+        .collect();
     let mut end = path.len();
     loop {
         let prefix = &path[..end];
-        if patterns.iter().any(|pattern| crate::policy::deny_matches(pattern, prefix)) {
+        if patterns
+            .iter()
+            .any(|pattern| crate::policy::deny_matches(pattern, prefix))
+        {
             return true;
         }
         match prefix.rfind('/') {
@@ -137,11 +150,12 @@ fn slash(path: &str) -> String {
 }
 
 fn relative_spelling(root: &Path, path: &Path) -> Result<String> {
-    let relative = path.strip_prefix(root).map_err(|_| Error::Backend("scan escaped its root".into()))?;
-    relative
-        .to_str()
-        .map(str::to_owned)
-        .ok_or_else(|| Error::Unsupported(format!("non-Unicode Windows path: {}", relative.display())))
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| Error::Backend("scan escaped its root".into()))?;
+    relative.to_str().map(str::to_owned).ok_or_else(|| {
+        Error::Unsupported(format!("non-Unicode Windows path: {}", relative.display()))
+    })
 }
 
 /// Like `private::fingerprint`, but a reparse point becomes a marker entry
@@ -170,12 +184,16 @@ fn entry_fingerprint(path: &Path) -> Result<Fingerprint> {
 fn scan_with(root: &Path, prune: &dyn Fn(&str) -> bool, exact: bool) -> Result<Tree> {
     plain_root(root)?;
     let mut out = Tree::new();
-    let walker = walkdir::WalkDir::new(root).min_depth(1).follow_links(false).into_iter().filter_entry(|entry| {
-        match relative_spelling(root, entry.path()) {
-            Ok(path) => !prune(&private::key(&path)),
-            Err(_) => true, // surfaced below as an error
-        }
-    });
+    let walker = walkdir::WalkDir::new(root)
+        .min_depth(1)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            match relative_spelling(root, entry.path()) {
+                Ok(path) => !prune(&private::key(&path)),
+                Err(_) => true, // surfaced below as an error
+            }
+        });
     for entry in walker {
         let entry = entry.map_err(|e| Error::Backend(e.to_string()))?;
         let path = relative_spelling(root, entry.path())?;
@@ -197,10 +215,17 @@ fn scan(root: &Path, prune: &dyn Fn(&str) -> bool) -> Result<Tree> {
 /// missing working copy must never scan as empty (that would look like the
 /// deletion of every file), and a junction must never be walked through.
 fn plain_root(root: &Path) -> Result<()> {
-    let m = fs::symlink_metadata(root)
-        .map_err(|e| Error::Backend(format!("copy-private tree is missing: {} ({e})", root.display())))?;
+    let m = fs::symlink_metadata(root).map_err(|e| {
+        Error::Backend(format!(
+            "copy-private tree is missing: {} ({e})",
+            root.display()
+        ))
+    })?;
     if !m.is_dir() || m.file_attributes() & 0x400 != 0 {
-        return Err(Error::Backend(format!("copy-private tree is not a plain directory: {}", root.display())));
+        return Err(Error::Backend(format!(
+            "copy-private tree is not a plain directory: {}",
+            root.display()
+        )));
     }
     Ok(())
 }
@@ -215,7 +240,10 @@ fn is_reparse(path: &Path) -> Result<bool> {
 }
 
 fn reparse_error(path: &str) -> Error {
-    Error::Unsupported(format!("reparse points (symlinks, junctions) are not supported in Windows copy-private: {}", slash(path)))
+    Error::Unsupported(format!(
+        "reparse points (symlinks, junctions) are not supported in Windows copy-private: {}",
+        slash(path)
+    ))
 }
 
 /// A metadata-only scan of the shadow `.git` under `root` (empty when there
@@ -231,10 +259,16 @@ fn scan_git(root: &Path, objects: bool) -> Result<Tree> {
     if m.file_attributes() & 0x400 != 0 {
         return Err(reparse_error(".git"));
     }
-    let walker = walkdir::WalkDir::new(&git).follow_links(false).follow_root_links(false).into_iter().filter_entry(|entry| {
-        // Object stores at any depth: `objects`, `modules\*\objects`, `lfs\objects`.
-        objects || !(entry.file_type().is_dir() && entry.file_name().eq_ignore_ascii_case("objects"))
-    });
+    let walker = walkdir::WalkDir::new(&git)
+        .follow_links(false)
+        .follow_root_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            // Object stores at any depth: `objects`, `modules\*\objects`, `lfs\objects`.
+            objects
+                || !(entry.file_type().is_dir()
+                    && entry.file_name().eq_ignore_ascii_case("objects"))
+        });
     for entry in walker {
         let entry = entry.map_err(|e| Error::Backend(e.to_string()))?;
         let m = fs::symlink_metadata(entry.path())?;
@@ -250,7 +284,11 @@ fn scan_git(root: &Path, objects: bool) -> Result<Tree> {
             creation: 0,
             write: if m.is_dir() { 0 } else { m.last_write_time() },
             size: if m.is_dir() { 0 } else { m.len() },
-            digest: if reparse { REPARSE_DIGEST.into() } else { String::new() },
+            digest: if reparse {
+                REPARSE_DIGEST.into()
+            } else {
+                String::new()
+            },
         };
         out.insert(private::key(&path), Entry { path, fingerprint });
     }
@@ -299,7 +337,12 @@ fn reject_reparse(path: &Path, metadata: &fs::Metadata) -> Result<()> {
 /// key relative to the copy root). Times and attributes are restored after
 /// the content, deepest first, exactly like `engine::copy_tree`, so the copy
 /// fingerprints equal the source.
-fn copy_filtered(source: &Path, target: &Path, relative: &Path, prune: &dyn Fn(&str) -> bool) -> Result<()> {
+fn copy_filtered(
+    source: &Path,
+    target: &Path,
+    relative: &Path,
+    prune: &dyn Fn(&str) -> bool,
+) -> Result<()> {
     let m = fs::symlink_metadata(source)?;
     reject_reparse(source, &m)?;
     if m.is_dir() {
@@ -307,13 +350,21 @@ fn copy_filtered(source: &Path, target: &Path, relative: &Path, prune: &dyn Fn(&
         for child in fs::read_dir(source)? {
             let child = child?;
             let child_relative = relative.join(child.file_name());
-            let spelling = child_relative
-                .to_str()
-                .ok_or_else(|| Error::Unsupported(format!("non-Unicode Windows path: {}", child_relative.display())))?;
+            let spelling = child_relative.to_str().ok_or_else(|| {
+                Error::Unsupported(format!(
+                    "non-Unicode Windows path: {}",
+                    child_relative.display()
+                ))
+            })?;
             if prune(&private::key(spelling)) {
                 continue;
             }
-            copy_filtered(&child.path(), &target.join(child.file_name()), &child_relative, prune)?;
+            copy_filtered(
+                &child.path(),
+                &target.join(child.file_name()),
+                &child_relative,
+                prune,
+            )?;
         }
     } else {
         if let Some(parent) = target.parent() {
@@ -333,7 +384,9 @@ fn match_case(target: &Path) -> Result<()> {
     for entry in fs::read_dir(parent)? {
         let entry = entry?;
         let actual = entry.file_name();
-        if actual != name && actual.to_string_lossy().to_lowercase() == name.to_string_lossy().to_lowercase() {
+        if actual != name
+            && actual.to_string_lossy().to_lowercase() == name.to_string_lossy().to_lowercase()
+        {
             fs::rename(entry.path(), target)?;
             break;
         }
@@ -347,7 +400,9 @@ fn place(source: &Path, target: &Path) -> Result<()> {
     reject_reparse(source, &m)?;
     if m.is_dir() {
         match fs::symlink_metadata(target) {
-            Ok(t) if t.file_attributes() & 0x10 != 0 && t.file_attributes() & 0x400 == 0 => match_case(target)?,
+            Ok(t) if t.file_attributes() & 0x10 != 0 && t.file_attributes() & 0x400 == 0 => {
+                match_case(target)?
+            }
             Ok(_) => {
                 remove(target)?;
                 fs::create_dir_all(target)?;
@@ -374,13 +429,17 @@ fn converge(
     source_of: &dyn Fn(&str, &Entry) -> Result<PathBuf>,
 ) -> Result<usize> {
     let keys: BTreeSet<&String> = current.keys().chain(desired.keys()).collect();
-    let differing: Vec<&String> = keys.into_iter().filter(|key| current.get(*key) != desired.get(*key)).collect();
+    let differing: Vec<&String> = keys
+        .into_iter()
+        .filter(|key| current.get(*key) != desired.get(*key))
+        .collect();
     // Removals first, children before parents. Removing a directory removes
     // its children too; removing a missing path is a no-op.
     for key in differing.iter().rev() {
         if let Some(entry) = current.get(*key) {
             let wanted = desired.get(*key);
-            let replaced_kind = wanted.is_some_and(|w| w.fingerprint.directory != entry.fingerprint.directory);
+            let replaced_kind =
+                wanted.is_some_and(|w| w.fingerprint.directory != entry.fingerprint.directory);
             if wanted.is_none() || replaced_kind || entry.fingerprint.digest == REPARSE_DIGEST {
                 remove(&root.join(&entry.path))?;
             }
@@ -411,7 +470,9 @@ fn mirror_git(from: &Path, to: &Path, objects: bool) -> Result<()> {
         .filter(|(_, entry)| entry.fingerprint.digest != REPARSE_DIGEST)
         .collect();
     let current = scan_git(to, objects)?;
-    converge(to, &current, &desired, &|_, entry| Ok(from.join(&entry.path)))?;
+    converge(to, &current, &desired, &|_, entry| {
+        Ok(from.join(&entry.path))
+    })?;
     Ok(())
 }
 
@@ -423,7 +484,10 @@ fn hidden_entries(source: &Path, relative: &str, policy: &Policy) -> Result<usiz
         return Ok(0);
     }
     let mut count = 0;
-    for entry in walkdir::WalkDir::new(&root).min_depth(1).follow_links(false) {
+    for entry in walkdir::WalkDir::new(&root)
+        .min_depth(1)
+        .follow_links(false)
+    {
         let entry = entry.map_err(|e| Error::Backend(e.to_string()))?;
         let key = private::key(&relative_spelling(source, entry.path())?);
         if skipped(&key) || denied(policy, &key) {
@@ -466,7 +530,10 @@ enum Pending {
     /// A command ran. `before` is the working tree before it; `backup` lists
     /// the paths whose pre-command content is in `exec-backup`, which also
     /// holds the shadow `.git` without `objects`.
-    Exec { before: Tree, backup: BTreeSet<String> },
+    Exec {
+        before: Tree,
+        backup: BTreeSet<String>,
+    },
     /// The working tree was being restored to a checkpoint, or to the
     /// accepted tree when `target` is None.
     Restore { target: Option<String> },
@@ -474,7 +541,13 @@ enum Pending {
     /// content is in `stage\tree`, copy-private's own copy, which outlives
     /// the publication's stage. `decision` is the `next_id` that session.json
     /// carries once `private::publish` has committed.
-    Commit { stage: PathBuf, staged: Tree, changes: BTreeSet<String>, decision: u64, phase: CommitPhase },
+    Commit {
+        stage: PathBuf,
+        staged: Tree,
+        changes: BTreeSet<String>,
+        decision: u64,
+        phase: CommitPhase,
+    },
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
@@ -513,7 +586,9 @@ impl Session {
         let mut manifest: Manifest = read_json(&store.join("session.json"))?;
         check_layout(&manifest)?;
         if is_reparse(manifest.live())? {
-            return Err(Error::Backend("corrupt copy-private session: working copy is a reparse point".into()));
+            return Err(Error::Backend(
+                "corrupt copy-private session: working copy is a reparse point".into(),
+            ));
         }
         // A running record without accepted.json belongs to a start that died
         // before its copy finished (a live start holds the operation lock we
@@ -523,7 +598,11 @@ impl Session {
             manifest.status = SessionStatus::Stopped;
             write_json(&store.join("session.json"), &manifest)?;
         }
-        Ok(Self { store: store.to_path_buf(), manifest, _operation: operation })
+        Ok(Self {
+            store: store.to_path_buf(),
+            manifest,
+            _operation: operation,
+        })
     }
 
     fn live(&self) -> &Path {
@@ -583,7 +662,9 @@ impl Session {
     fn version(&self, id: Option<&str>, default: Version) -> Result<Version> {
         match id {
             None => Ok(default),
-            Some(id) if self.manifest.checkpoints.iter().any(|c| c.info.id == id) => Ok(Version::Checkpoint(id.to_owned())),
+            Some(id) if self.manifest.checkpoints.iter().any(|c| c.info.id == id) => {
+                Ok(Version::Checkpoint(id.to_owned()))
+            }
             Some(id) => Err(Error::CheckpointNotFound(id.to_owned())),
         }
     }
@@ -609,7 +690,13 @@ impl Session {
     }
 
     /// Where the content of `entry` lives in `version`.
-    fn content_of(&self, version: &Version, record: Option<&CheckpointRecord>, key: &str, entry: &Entry) -> PathBuf {
+    fn content_of(
+        &self,
+        version: &Version,
+        record: Option<&CheckpointRecord>,
+        key: &str,
+        entry: &Entry,
+    ) -> PathBuf {
         match version {
             Version::Live => self.live().join(&entry.path),
             Version::Checkpoint(id) if record.is_some_and(|r| r.delta.contains(key)) => {
@@ -626,8 +713,14 @@ impl Session {
         (to, to_record, after): (&Version, Option<&CheckpointRecord>, &Tree),
         keys: &BTreeSet<String>,
     ) -> Vec<Change> {
-        let read = |version: &Version, record: Option<&CheckpointRecord>, key: &str, entry: Option<&Entry>| -> Option<Vec<u8>> {
-            let entry = entry.filter(|e| !e.fingerprint.directory && e.fingerprint.size <= DEFAULT_TEXT_SIZE_LIMIT)?;
+        let read = |version: &Version,
+                    record: Option<&CheckpointRecord>,
+                    key: &str,
+                    entry: Option<&Entry>|
+         -> Option<Vec<u8>> {
+            let entry = entry.filter(|e| {
+                !e.fingerprint.directory && e.fingerprint.size <= DEFAULT_TEXT_SIZE_LIMIT
+            })?;
             fs::read(self.content_of(version, record, key, entry)).ok()
         };
         keys.iter()
@@ -638,7 +731,11 @@ impl Session {
                     (_, None) => ChangeKind::Deleted,
                     _ => ChangeKind::Modified,
                 };
-                let path = slash(&b.or(a).map(|e| e.path.clone()).unwrap_or_else(|| key.clone()));
+                let path = slash(
+                    &b.or(a)
+                        .map(|e| e.path.clone())
+                        .unwrap_or_else(|| key.clone()),
+                );
                 describe_change(
                     &path,
                     kind,
@@ -653,7 +750,12 @@ impl Session {
     }
 
     fn pending_count(&self) -> Result<usize> {
-        Ok(changed_keys(&self.manifest.policy, &self.accepted_tree()?, &self.live_tree()?).len())
+        Ok(changed_keys(
+            &self.manifest.policy,
+            &self.accepted_tree()?,
+            &self.live_tree()?,
+        )
+        .len())
     }
 
     // -----------------------------------------------------------------------
@@ -667,7 +769,11 @@ impl Session {
         // decision into session.json. Settle and reload it before anything
         // here saves the manifest, or the decision would be written over.
         if marker.exists() {
-            if let Ok(Pending::Commit { phase: CommitPhase::Publishing, .. }) = read_json::<Pending>(&marker) {
+            if let Ok(Pending::Commit {
+                phase: CommitPhase::Publishing,
+                ..
+            }) = read_json::<Pending>(&marker)
+            {
                 private::recover(&self.store)?;
                 self.manifest = read_json(&self.store.join("session.json"))?;
             }
@@ -679,14 +785,20 @@ impl Session {
                 Pending::Exec { before, backup } => self.revert_exec(&before, &backup)?,
                 Pending::Restore { target } => {
                     // An abort always ends with the review scope cleared.
-                    let version = self.version(target.as_deref(), Version::Accepted).unwrap_or(Version::Accepted);
+                    let version = self
+                        .version(target.as_deref(), Version::Accepted)
+                        .unwrap_or(Version::Accepted);
                     self.restore_live(&version)?;
                     self.manifest.review = None;
                     self.save()?;
                 }
-                Pending::Commit { stage, staged, changes, decision, phase } => {
-                    self.finish_commit(&stage, &staged, &changes, decision, phase)?
-                }
+                Pending::Commit {
+                    stage,
+                    staged,
+                    changes,
+                    decision,
+                    phase,
+                } => self.finish_commit(&stage, &staged, &changes, decision, phase)?,
             }
             self.clear_mark()?;
         }
@@ -744,16 +856,33 @@ impl Session {
     fn reconcile_checkpoints(&mut self) -> Result<()> {
         let before = self.manifest.checkpoints.len();
         let root = self.store.join("checkpoints");
-        self.manifest.checkpoints.retain(|c| root.join(&c.info.id).join("index.json").is_file());
+        self.manifest
+            .checkpoints
+            .retain(|c| root.join(&c.info.id).join("index.json").is_file());
         if self.manifest.checkpoints.len() != before {
-            let ids: BTreeSet<&str> = self.manifest.checkpoints.iter().map(|c| c.info.id.as_str()).collect();
-            if self.manifest.review.as_ref().is_some_and(|r| !ids.contains(r.checkpoint_id.as_str())) {
+            let ids: BTreeSet<&str> = self
+                .manifest
+                .checkpoints
+                .iter()
+                .map(|c| c.info.id.as_str())
+                .collect();
+            if self
+                .manifest
+                .review
+                .as_ref()
+                .is_some_and(|r| !ids.contains(r.checkpoint_id.as_str()))
+            {
                 self.manifest.review = None;
             }
             self.save()?;
         }
         if root.exists() {
-            let known: BTreeSet<String> = self.manifest.checkpoints.iter().map(|c| c.info.id.clone()).collect();
+            let known: BTreeSet<String> = self
+                .manifest
+                .checkpoints
+                .iter()
+                .map(|c| c.info.id.clone())
+                .collect();
             for entry in fs::read_dir(&root)? {
                 let entry = entry?;
                 if !known.contains(entry.file_name().to_string_lossy().as_ref()) {
@@ -769,7 +898,11 @@ impl Session {
     // -----------------------------------------------------------------------
 
     pub(crate) fn info(&self) -> Result<SessionInfo> {
-        let pending_changes = if self.manifest.status == SessionStatus::Running { self.pending_count()? } else { 0 };
+        let pending_changes = if self.manifest.status == SessionStatus::Running {
+            self.pending_count()?
+        } else {
+            0
+        };
         let mut filesystem = FilesystemInfo::copy_private(FilesystemMode::CopyPrivate, None);
         filesystem.isolation_provider = Some("mxc-psec-filesystem".into());
         filesystem.degraded_protections = Some(vec!["resource-limits".into()]);
@@ -806,18 +939,30 @@ impl Session {
         let mut backup = BTreeSet::new();
         for (key, entry) in &before {
             if accepted.get(key) != Some(entry) {
-                place(&self.live().join(&entry.path), &backup_root.join(&entry.path))?;
+                place(
+                    &self.live().join(&entry.path),
+                    &backup_root.join(&entry.path),
+                )?;
                 backup.insert(key.clone());
             }
         }
         mirror_git(self.live(), &backup_root, false)?;
-        self.mark(&Pending::Exec { before: before.clone(), backup: backup.clone() })?;
+        self.mark(&Pending::Exec {
+            before: before.clone(),
+            backup: backup.clone(),
+        })?;
         crash_point("copy_private_exec_marked");
-        let outcome = super::sandbox::execute(&self.manifest, params, &self.store).and_then(|result| {
-            self.hidden_roots_plain()?;
-            validate(&self.manifest.policy, &accepted, &baseline, &scan(self.live(), &skipped)?)?;
-            Ok(result)
-        });
+        let outcome =
+            super::sandbox::execute(&self.manifest, params, &self.store).and_then(|result| {
+                self.hidden_roots_plain()?;
+                validate(
+                    &self.manifest.policy,
+                    &accepted,
+                    &baseline,
+                    &scan(self.live(), &skipped)?,
+                )?;
+                Ok(result)
+            });
         // The backup is swept later if something holds it open now.
         match outcome {
             Ok(result) => {
@@ -831,7 +976,9 @@ impl Session {
                 // If undoing fails, the marker stays and the next operation
                 // retries it; report both errors.
                 if let Err(undo) = self.revert_exec(&before, &backup) {
-                    return Err(Error::Backend(format!("{error}; undoing the command also failed: {undo}")));
+                    return Err(Error::Backend(format!(
+                        "{error}; undoing the command also failed: {undo}"
+                    )));
                 }
                 self.clear_mark()?;
                 let _ = remove(&backup_root);
@@ -846,7 +993,11 @@ impl Session {
         let backup_root = self.store.join("exec-backup");
         let accepted = self.accepted_dir();
         converge(self.live(), &current, before, &|key, entry| {
-            Ok(if backup.contains(key) { backup_root.join(&entry.path) } else { accepted.join(&entry.path) })
+            Ok(if backup.contains(key) {
+                backup_root.join(&entry.path)
+            } else {
+                accepted.join(&entry.path)
+            })
         })?;
         mirror_git(&backup_root, self.live(), false)
     }
@@ -871,7 +1022,9 @@ impl Session {
         for component in relative.components() {
             match component {
                 Component::Normal(part) => {
-                    let part = part.to_str().ok_or_else(|| Error::Unsupported("non-Unicode Windows path".into()))?;
+                    let part = part
+                        .to_str()
+                        .ok_or_else(|| Error::Unsupported("non-Unicode Windows path".into()))?;
                     check_component(part)?;
                     parts.push(part.to_owned());
                 }
@@ -897,18 +1050,26 @@ impl Session {
         let target = self.live().join(&relative);
         let m = match fs::symlink_metadata(&target) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(FsReadResult { content_base64: String::new(), size: 0 });
+                return Ok(FsReadResult {
+                    content_base64: String::new(),
+                    size: 0,
+                });
             }
             other => other?,
         };
         if m.file_attributes() & 0x400 != 0 || !m.is_file() {
-            return Err(Error::Backend("fs.read target is not a regular file".into()));
+            return Err(Error::Backend(
+                "fs.read target is not a regular file".into(),
+            ));
         }
         if m.len() > MAX_FS_READ_BYTES {
             return Err(Error::Backend("fs.read file exceeds 16 MiB limit".into()));
         }
         let bytes = fs::read(&target)?;
-        Ok(FsReadResult { size: bytes.len(), content_base64: base64::engine::general_purpose::STANDARD.encode(bytes) })
+        Ok(FsReadResult {
+            size: bytes.len(),
+            content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        })
     }
 
     pub(crate) fn write_file(&mut self, path: &Path, content: &[u8]) -> Result<()> {
@@ -930,7 +1091,8 @@ impl Session {
         self.check_ancestors(&relative)?;
         self.hidden_roots_plain()?;
         let target = self.live().join(&relative);
-        let is_directory = |m: &fs::Metadata| m.file_attributes() & 0x10 != 0 && m.file_attributes() & 0x400 == 0;
+        let is_directory =
+            |m: &fs::Metadata| m.file_attributes() & 0x10 != 0 && m.file_attributes() & 0x400 == 0;
         if relative.is_empty() || fs::symlink_metadata(&target).is_ok_and(|m| is_directory(&m)) {
             return Err(Error::Backend("fs.write target is a directory".into()));
         }
@@ -938,8 +1100,15 @@ impl Session {
         if !skipped(&key) {
             let others = pending_bytes(&self.accepted_tree()?, &self.live_tree()?, Some(&key));
             let total = others + content.len() as u64;
-            if total > policy.limits.max_storage_bytes.unwrap_or(DEFAULT_STORAGE_LIMIT) {
-                return Err(Error::Backend(format!("pending changes use {total} bytes, exceeding max_storage_bytes")));
+            if total
+                > policy
+                    .limits
+                    .max_storage_bytes
+                    .unwrap_or(DEFAULT_STORAGE_LIMIT)
+            {
+                return Err(Error::Backend(format!(
+                    "pending changes use {total} bytes, exceeding max_storage_bytes"
+                )));
             }
         }
         // Write beside the tree, then move into place. `.deltabox` is never
@@ -985,16 +1154,31 @@ impl Session {
         let mut delta = BTreeSet::new();
         for (key, entry) in &tree {
             if accepted.get(key) != Some(entry) {
-                place(&self.live().join(&entry.path), &building.join("tree").join(&entry.path))?;
+                place(
+                    &self.live().join(&entry.path),
+                    &building.join("tree").join(&entry.path),
+                )?;
                 delta.insert(key.clone());
             }
         }
         mirror_git(self.live(), &building, false)?;
         let change_count = changed_keys(&self.manifest.policy, &accepted, &tree).len();
-        write_json(&building.join("index.json"), &CheckpointRecord { tree, delta })?;
+        write_json(
+            &building.join("index.json"),
+            &CheckpointRecord { tree, delta },
+        )?;
         fs::rename(&building, self.checkpoint_dir(&id))?;
-        let info = CheckpointInfo { id, label, created_at_ms: now_ms(), change_count, committed: false };
-        self.manifest.checkpoints.push(Savepoint { info: info.clone(), cursor: 0 });
+        let info = CheckpointInfo {
+            id,
+            label,
+            created_at_ms: now_ms(),
+            change_count,
+            committed: false,
+        };
+        self.manifest.checkpoints.push(Savepoint {
+            info: info.clone(),
+            cursor: 0,
+        });
         // Persist the shorter list before deleting anything, so a crash leaves
         // only orphan directories, which recovery removes.
         let pruned = self.prune_checkpoints();
@@ -1008,10 +1192,19 @@ impl Session {
     /// Keep at most `CHECKPOINT_CAP`, dropping the oldest first but never the
     /// active review's checkpoint. Returns the ids dropped from the manifest.
     fn prune_checkpoints(&mut self) -> Vec<String> {
-        let protected = self.manifest.review.as_ref().map(|r| r.checkpoint_id.clone());
+        let protected = self
+            .manifest
+            .review
+            .as_ref()
+            .map(|r| r.checkpoint_id.clone());
         let mut pruned = Vec::new();
         while self.manifest.checkpoints.len() > CHECKPOINT_CAP {
-            let Some(index) = self.manifest.checkpoints.iter().position(|c| Some(&c.info.id) != protected.as_ref()) else {
+            let Some(index) = self
+                .manifest
+                .checkpoints
+                .iter()
+                .position(|c| Some(&c.info.id) != protected.as_ref())
+            else {
                 break;
             };
             pruned.push(self.manifest.checkpoints.remove(index).info.id);
@@ -1021,8 +1214,12 @@ impl Session {
 
     pub(crate) fn diff(&mut self, from: Option<&str>, to: Option<&str>) -> Result<DiffResult> {
         self.running()?;
-        let (from_version, to_version) = (self.version(from, Version::Accepted)?, self.version(to, Version::Live)?);
-        let (from_record, to_record) = (self.record_of(&from_version)?, self.record_of(&to_version)?);
+        let (from_version, to_version) = (
+            self.version(from, Version::Accepted)?,
+            self.version(to, Version::Live)?,
+        );
+        let (from_record, to_record) =
+            (self.record_of(&from_version)?, self.record_of(&to_version)?);
         let before = self.tree_of(&from_version, from_record.as_ref())?;
         let after = self.tree_of(&to_version, to_record.as_ref())?;
         let keys = changed_keys(&self.manifest.policy, &before, &after);
@@ -1031,7 +1228,12 @@ impl Session {
             (&to_version, to_record.as_ref(), &after),
             &keys,
         );
-        Ok(DiffResult { from: from.map(str::to_owned), to: to.map(str::to_owned), pending_changes: changes.len(), changes })
+        Ok(DiffResult {
+            from: from.map(str::to_owned),
+            to: to.map(str::to_owned),
+            pending_changes: changes.len(),
+            changes,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -1045,7 +1247,9 @@ impl Session {
         if let Some(id) = &checkpoint {
             self.version(Some(id), Version::Accepted)?;
             if self.manifest.checkpoints.last().map(|c| c.info.id.as_str()) != Some(id.as_str()) {
-                return Err(Error::Unsupported("commit currently supports the latest checkpoint only".into()));
+                return Err(Error::Unsupported(
+                    "commit currently supports the latest checkpoint only".into(),
+                ));
             }
         }
         let checkpoint_id = checkpoint.unwrap_or_else(|| "accepted".into());
@@ -1055,41 +1259,75 @@ impl Session {
         // One scan decides everything below; the stage is checked against it.
         let full = scan(self.live(), &skipped)?;
         validate(&policy, &accepted, &self.baseline()?.entries, &full)?;
-        let live: Tree = full.into_iter().filter(|(key, _)| !denied(&policy, key)).collect();
+        let live: Tree = full
+            .into_iter()
+            .filter(|(key, _)| !denied(&policy, key))
+            .collect();
         let changed = changed_keys(&policy, &accepted, &live);
         if changed.is_empty() {
             mirror_git(&self.manifest.source, &self.accepted_dir(), true)?;
             mirror_git(&self.manifest.source, self.live(), true)?;
             self.manifest.review = None;
             self.save()?;
-            return Ok(CommitResult { checkpoint_id, applied: 0, folded_publications: None });
+            return Ok(CommitResult {
+                checkpoint_id,
+                applied: 0,
+                folded_publications: None,
+            });
         }
-        let changes = self.describe((&Version::Accepted, None, &accepted), (&Version::Live, None, &live), &changed);
+        let changes = self.describe(
+            (&Version::Accepted, None, &accepted),
+            (&Version::Live, None, &live),
+            &changed,
+        );
 
         // Stage exactly the scanned versions, then make sure nothing changed
         // under us: an edit during the commit must never publish a mix.
         let stage = self.store.join(format!("commit-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(stage.join("tree"))?;
-        let staged: Tree = changed.iter().filter_map(|key| live.get(key).map(|e| (key.clone(), e.clone()))).collect();
+        let staged: Tree = changed
+            .iter()
+            .filter_map(|key| live.get(key).map(|e| (key.clone(), e.clone())))
+            .collect();
         for entry in staged.values() {
-            place(&self.live().join(&entry.path), &stage.join("tree").join(&entry.path))?;
+            place(
+                &self.live().join(&entry.path),
+                &stage.join("tree").join(&entry.path),
+            )?;
         }
         let check = scan(&stage.join("tree"), &|_| false)?;
-        if staged.iter().any(|(key, entry)| check.get(key) != Some(entry)) {
+        if staged
+            .iter()
+            .any(|(key, entry)| check.get(key) != Some(entry))
+        {
             remove(&stage)?;
-            return Err(Error::Backend("the working copy changed during commit; nothing was published, retry the commit".into()));
+            return Err(Error::Backend(
+                "the working copy changed during commit; nothing was published, retry the commit"
+                    .into(),
+            ));
         }
         // `private::publish` removes its stage when the publication settles,
         // so it gets its own copy; `stage` stays to update the accepted copy.
         let publication = self.store.join(format!("publish-{}", uuid::Uuid::new_v4()));
-        copy_filtered(&stage.join("tree"), &publication.join("tree"), Path::new(""), &|_| false)?;
+        copy_filtered(
+            &stage.join("tree"),
+            &publication.join("tree"),
+            Path::new(""),
+            &|_| false,
+        )?;
 
         // session.json carries `decision` exactly when the publication committed.
         let decision = self.manifest.next_id + 1;
         let mut next = self.manifest.clone();
         next.review = None;
         next.next_id = decision;
-        let mark = |phase| Pending::Commit { stage: stage.clone(), staged: staged.clone(), changes: changed.clone(), decision, phase };
+        let mark = |phase| Pending::Commit {
+            stage: stage.clone(),
+            staged: staged.clone(),
+            changes: changed.clone(),
+            decision,
+            phase,
+        };
         self.mark(&mark(CommitPhase::Publishing))?;
 
         // Runs under publish.lock, so no sibling publication slips in between
@@ -1099,9 +1337,10 @@ impl Session {
         let removed_directories: Vec<&Entry> = changed
             .iter()
             .filter_map(|key| {
-                accepted
-                    .get(key)
-                    .filter(|a| a.fingerprint.directory && !staged.get(key).is_some_and(|s| s.fingerprint.directory))
+                accepted.get(key).filter(|a| {
+                    a.fingerprint.directory
+                        && !staged.get(key).is_some_and(|s| s.fingerprint.directory)
+                })
             })
             .collect();
         let check = || -> Result<()> {
@@ -1113,7 +1352,13 @@ impl Session {
                 .filter(|key| !skipped(key) && !denied(&policy, key))
                 .filter(|key| baseline.entries.get(*key) != host.get(*key).map(|e| &e.fingerprint))
                 .map(|key| PathConflict {
-                    path: slash(&host.get(key).or_else(|| accepted.get(key)).map(|e| e.path.clone()).unwrap_or_else(|| key.clone())),
+                    path: slash(
+                        &host
+                            .get(key)
+                            .or_else(|| accepted.get(key))
+                            .map(|e| e.path.clone())
+                            .unwrap_or_else(|| key.clone()),
+                    ),
                     host_change: match (baseline.entries.get(key), host.get(key)) {
                         (None, _) => ChangeKind::Added,
                         (_, None) => ChangeKind::Deleted,
@@ -1122,7 +1367,10 @@ impl Session {
                 })
                 .collect();
             if !drift.is_empty() {
-                return Err(Error::ProjectConflict(ConflictReport::new("real project no longer matches the accepted baseline", drift)));
+                return Err(Error::ProjectConflict(ConflictReport::new(
+                    "real project no longer matches the accepted baseline",
+                    drift,
+                )));
             }
             // A path this session added must not exist on the host under
             // another name. NTFS resolves 8.3 short names (`.env` answers to
@@ -1156,13 +1404,28 @@ impl Session {
             }
             Ok(())
         };
-        let result = CommitResult { checkpoint_id, applied: changes.len(), folded_publications: None };
-        if let Err(error) = private::publish(&self.store, &self.manifest, &next, &changes, &publication, false, &check) {
+        let result = CommitResult {
+            checkpoint_id,
+            applied: changes.len(),
+            folded_publications: None,
+        };
+        if let Err(error) = private::publish(
+            &self.store,
+            &self.manifest,
+            &next,
+            &changes,
+            &publication,
+            false,
+            &check,
+        ) {
             // Settle the host now rather than at some later operation: finish
             // a publication that committed, or let `private.rs` undo one that
             // did not. If settling fails, the marker and both stages stay for
             // the next try.
-            if self.finish_commit(&stage, &staged, &changed, decision, CommitPhase::Publishing).is_err() {
+            if self
+                .finish_commit(&stage, &staged, &changed, decision, CommitPhase::Publishing)
+                .is_err()
+            {
                 return Err(error);
             }
             let _ = remove(&publication);
@@ -1183,7 +1446,9 @@ impl Session {
         // the next operation finish it.
         let _ = self
             .mark(&mark(CommitPhase::Published))
-            .and_then(|()| self.finish_commit(&stage, &staged, &changed, decision, CommitPhase::Published))
+            .and_then(|()| {
+                self.finish_commit(&stage, &staged, &changed, decision, CommitPhase::Published)
+            })
             .and_then(|()| self.clear_mark());
         Ok(result)
     }
@@ -1197,7 +1462,13 @@ impl Session {
         decision: u64,
         mut phase: CommitPhase,
     ) -> Result<()> {
-        let mark = |phase| Pending::Commit { stage: stage.to_path_buf(), staged: staged.clone(), changes: changed.clone(), decision, phase };
+        let mark = |phase| Pending::Commit {
+            stage: stage.to_path_buf(),
+            staged: staged.clone(),
+            changes: changed.clone(),
+            decision,
+            phase,
+        };
         if phase == CommitPhase::Publishing {
             // Let `private.rs` finish or undo its host transaction, then read
             // the decision it recorded.
@@ -1220,7 +1491,9 @@ impl Session {
                 let id = &savepoint.info.id;
                 // A missing record is dropped by reconciliation; never fail
                 // here, after the host already has the publication.
-                let Ok(mut record) = self.checkpoint_record(id) else { continue };
+                let Ok(mut record) = self.checkpoint_record(id) else {
+                    continue;
+                };
                 let mut dirty = false;
                 for key in changed {
                     if record.tree.contains_key(key) && !record.delta.contains(key) {
@@ -1234,7 +1507,10 @@ impl Session {
                                 lost.push(id.clone());
                                 break;
                             }
-                            place(&source, &self.checkpoint_dir(id).join("tree").join(&entry.path))?;
+                            place(
+                                &source,
+                                &self.checkpoint_dir(id).join("tree").join(&entry.path),
+                            )?;
                             record.delta.insert(key.clone());
                             dirty = true;
                         }
@@ -1245,8 +1521,15 @@ impl Session {
                 }
             }
             if !lost.is_empty() {
-                self.manifest.checkpoints.retain(|c| !lost.contains(&c.info.id));
-                if self.manifest.review.as_ref().is_some_and(|r| lost.contains(&r.checkpoint_id)) {
+                self.manifest
+                    .checkpoints
+                    .retain(|c| !lost.contains(&c.info.id));
+                if self
+                    .manifest
+                    .review
+                    .as_ref()
+                    .is_some_and(|r| lost.contains(&r.checkpoint_id))
+                {
                     self.manifest.review = None;
                 }
                 self.save()?;
@@ -1261,9 +1544,17 @@ impl Session {
         // in it is touched, so outside damage to an unrelated file cannot
         // block this step, and repeating it after a crash is harmless.
         let accepted = self.accepted_tree()?;
-        let current: Tree = changed.iter().filter_map(|key| accepted.get(key).map(|e| (key.clone(), e.clone()))).collect();
-        let published: Tree = changed.iter().filter_map(|key| staged.get(key).map(|e| (key.clone(), e.clone()))).collect();
-        converge(&self.accepted_dir(), &current, &published, &|_, entry| Ok(stage.join("tree").join(&entry.path)))?;
+        let current: Tree = changed
+            .iter()
+            .filter_map(|key| accepted.get(key).map(|e| (key.clone(), e.clone())))
+            .collect();
+        let published: Tree = changed
+            .iter()
+            .filter_map(|key| staged.get(key).map(|e| (key.clone(), e.clone())))
+            .collect();
+        converge(&self.accepted_dir(), &current, &published, &|_, entry| {
+            Ok(stage.join("tree").join(&entry.path))
+        })?;
         let mut desired = accepted;
         for key in changed {
             match staged.get(key) {
@@ -1295,13 +1586,18 @@ impl Session {
         // never leaves a marker that recovery cannot complete.
         let record = self.record_of(&target)?;
         self.tree_of(&target, record.as_ref())?;
-        self.mark(&Pending::Restore { target: checkpoint.clone() })?;
+        self.mark(&Pending::Restore {
+            target: checkpoint.clone(),
+        })?;
         crash_point("copy_private_restore_marked");
         let restored = self.restore_live(&target)?;
         self.manifest.review = None;
         self.save()?;
         self.clear_mark()?;
-        Ok(AbortResult { checkpoint_id: checkpoint.unwrap_or_else(|| "accepted".into()), restored })
+        Ok(AbortResult {
+            checkpoint_id: checkpoint.unwrap_or_else(|| "accepted".into()),
+            restored,
+        })
     }
 
     /// Make the working tree equal `target`. Denied paths are scanned too, so
@@ -1326,17 +1622,29 @@ impl Session {
     // -----------------------------------------------------------------------
 
     fn active_review(&self) -> Result<ActiveReview> {
-        self.manifest.review.clone().ok_or_else(|| Error::ReviewNotActive(self.manifest.session_id.clone()))
+        self.manifest
+            .review
+            .clone()
+            .ok_or_else(|| Error::ReviewNotActive(self.manifest.session_id.clone()))
     }
 
     /// Idempotent: an existing scope is returned unchanged.
-    pub(crate) fn begin_review(&mut self, kind: ReviewKind, label: Option<String>) -> Result<ActiveReview> {
+    pub(crate) fn begin_review(
+        &mut self,
+        kind: ReviewKind,
+        label: Option<String>,
+    ) -> Result<ActiveReview> {
         self.running()?;
         if let Some(review) = &self.manifest.review {
             return Ok(review.clone());
         }
         let checkpoint = self.checkpoint(label.clone())?;
-        let review = ActiveReview { checkpoint_id: checkpoint.id, kind, label, started_at_ms: now_ms() };
+        let review = ActiveReview {
+            checkpoint_id: checkpoint.id,
+            kind,
+            label,
+            started_at_ms: now_ms(),
+        };
         self.manifest.review = Some(review.clone());
         self.save()?;
         Ok(review)
@@ -1411,10 +1719,18 @@ pub(crate) fn check_removable(store: &Path, manifest: &Manifest, runtime: &Path)
         )));
     }
     let under = |path: &Path, root: &str| {
-        strip_prefix_ignoring_case(path, &runtime.join(root)).is_some_and(|rest| !rest.as_os_str().is_empty())
+        strip_prefix_ignoring_case(path, &runtime.join(root))
+            .is_some_and(|rest| !rest.as_os_str().is_empty())
     };
-    if !manifest.live.as_deref().is_some_and(|live| under(live, "live")) || !under(&manifest.scratch, "scratch") {
-        return Err(Error::Backend("corrupt copy-private session: working copy outside the runtime directory".into()));
+    if !manifest
+        .live
+        .as_deref()
+        .is_some_and(|live| under(live, "live"))
+        || !under(&manifest.scratch, "scratch")
+    {
+        return Err(Error::Backend(
+            "corrupt copy-private session: working copy outside the runtime directory".into(),
+        ));
     }
     Ok(())
 }
@@ -1429,24 +1745,37 @@ pub(crate) fn check_removable(store: &Path, manifest: &Manifest, runtime: &Path)
 /// host is still exactly what was copied and to record the baseline.
 pub(crate) fn initialize(store: &Path, manifest: &Manifest) -> Result<()> {
     check_layout(manifest)?;
-    let parent = store.parent().ok_or_else(|| Error::Backend("session store has no parent".into()))?;
+    let parent = store
+        .parent()
+        .ok_or_else(|| Error::Backend("session store has no parent".into()))?;
     let source = &manifest.source;
     let policy = &manifest.policy;
     let accepted_dir = store.join("accepted");
     let live_dir = manifest.live();
-    let changed = || Error::ProjectConflict(ConflictReport::new("project changed while copying the private working tree", Vec::new()));
+    let changed = || {
+        Error::ProjectConflict(ConflictReport::new(
+            "project changed while copying the private working tree",
+            Vec::new(),
+        ))
+    };
     let result = (|| {
         // Every host path, exactly as `private::publish` will scan it. A
         // reparse point anywhere would fail every later publication, so it
         // is refused now.
         let host = scan_with(source, &|_| false, true)?;
-        if let Some(entry) = host.values().find(|e| e.fingerprint.digest == REPARSE_DIGEST) {
+        if let Some(entry) = host
+            .values()
+            .find(|e| e.fingerprint.digest == REPARSE_DIGEST)
+        {
             return Err(Error::Unsupported(format!(
                 "reparse points (symlinks, junctions, and cloud placeholders such as OneDrive online-only files) are not supported in Windows copy-private: {}",
                 slash(&entry.path)
             )));
         }
-        let visible: Tree = masked(&host).into_iter().filter(|(key, _)| !tracked(policy)(key)).collect();
+        let visible: Tree = masked(&host)
+            .into_iter()
+            .filter(|(key, _)| !tracked(policy)(key))
+            .collect();
         // Denied files and DeltaBox metadata never leave the project.
         copy_filtered(source, &accepted_dir, Path::new(""), &|key| {
             key.split('\\').any(|part| part == ".deltabox") || denied(policy, key)
@@ -1465,8 +1794,17 @@ pub(crate) fn initialize(store: &Path, manifest: &Manifest) -> Result<()> {
         if host != scan_with(source, &|_| false, true)? {
             return Err(changed());
         }
-        let entries = host.into_iter().map(|(key, entry)| (key, entry.fingerprint)).collect();
-        write_json(&store.join("baseline.json"), &Baseline { entries, seen: private::publication_count(parent)? })?;
+        let entries = host
+            .into_iter()
+            .map(|(key, entry)| (key, entry.fingerprint))
+            .collect();
+        write_json(
+            &store.join("baseline.json"),
+            &Baseline {
+                entries,
+                seen: private::publication_count(parent)?,
+            },
+        )?;
         write_json(&store.join("accepted.json"), &accepted)
     })();
     if result.is_err() {
@@ -1483,9 +1821,16 @@ pub(crate) fn initialize(store: &Path, manifest: &Manifest) -> Result<()> {
 /// The working copy must exist apart from the host project; a manifest that
 /// lost it must never fall back to `Manifest::live()`'s host default.
 fn check_layout(manifest: &Manifest) -> Result<()> {
-    let live = manifest.live.as_ref().ok_or_else(|| Error::Backend("corrupt copy-private session: no working copy".into()))?;
-    if strip_prefix_ignoring_case(live, &manifest.source).is_some() || strip_prefix_ignoring_case(&manifest.source, live).is_some() {
-        return Err(Error::Backend("corrupt copy-private session: working copy overlaps the project".into()));
+    let live = manifest
+        .live
+        .as_ref()
+        .ok_or_else(|| Error::Backend("corrupt copy-private session: no working copy".into()))?;
+    if strip_prefix_ignoring_case(live, &manifest.source).is_some()
+        || strip_prefix_ignoring_case(&manifest.source, live).is_some()
+    {
+        return Err(Error::Backend(
+            "corrupt copy-private session: working copy overlaps the project".into(),
+        ));
     }
     Ok(())
 }
@@ -1493,7 +1838,11 @@ fn check_layout(manifest: &Manifest) -> Result<()> {
 /// Bytes of new content in pending files, optionally ignoring one path.
 fn pending_bytes(accepted: &Tree, live: &Tree, except: Option<&str>) -> u64 {
     live.iter()
-        .filter(|(key, entry)| Some(key.as_str()) != except && !entry.fingerprint.directory && accepted.get(*key) != Some(*entry))
+        .filter(|(key, entry)| {
+            Some(key.as_str()) != except
+                && !entry.fingerprint.directory
+                && accepted.get(*key) != Some(*entry)
+        })
         .map(|(_, entry)| entry.fingerprint.size)
         .sum()
 }
@@ -1506,7 +1855,12 @@ fn pending_bytes(accepted: &Tree, live: &Tree, except: Option<&str>) -> u64 {
 /// tolerated: git recreates tracked files that match a deny pattern (such as
 /// `.env.example`), and their content already sits in the shadow `.git`. It
 /// is never diffed, published or counted against the storage limit.
-fn validate(policy: &Policy, accepted: &Tree, baseline: &private::Index, live: &Tree) -> Result<()> {
+fn validate(
+    policy: &Policy,
+    accepted: &Tree,
+    baseline: &private::Index,
+    live: &Tree,
+) -> Result<()> {
     let mut used = 0u64;
     for (key, entry) in live {
         if accepted.get(key) == Some(entry) {
@@ -1517,10 +1871,15 @@ fn validate(policy: &Policy, accepted: &Tree, baseline: &private::Index, live: &
         }
         if denied(policy, key) {
             let same_as_host = baseline.get(key).is_some_and(|host| {
-                host.directory == entry.fingerprint.directory && host.size == entry.fingerprint.size && host.digest == entry.fingerprint.digest
+                host.directory == entry.fingerprint.directory
+                    && host.size == entry.fingerprint.size
+                    && host.digest == entry.fingerprint.digest
             });
             if !same_as_host {
-                return Err(Error::Backend(format!("path denied by policy: {}", slash(&entry.path))));
+                return Err(Error::Backend(format!(
+                    "path denied by policy: {}",
+                    slash(&entry.path)
+                )));
             }
             continue;
         }
@@ -1535,11 +1894,21 @@ fn validate(policy: &Policy, accepted: &Tree, baseline: &private::Index, live: &
         }
     }
     // The publication never publishes a draft, deletions included.
-    if let Some((_, entry)) = accepted.iter().find(|(key, _)| private::is_draft(key) && !live.contains_key(*key)) {
+    if let Some((_, entry)) = accepted
+        .iter()
+        .find(|(key, _)| private::is_draft(key) && !live.contains_key(*key))
+    {
         return Err(draft_error(&entry.path));
     }
-    if used > policy.limits.max_storage_bytes.unwrap_or(DEFAULT_STORAGE_LIMIT) {
-        return Err(Error::Backend(format!("pending changes use {used} bytes, exceeding max_storage_bytes")));
+    if used
+        > policy
+            .limits
+            .max_storage_bytes
+            .unwrap_or(DEFAULT_STORAGE_LIMIT)
+    {
+        return Err(Error::Backend(format!(
+            "pending changes use {used} bytes, exceeding max_storage_bytes"
+        )));
     }
     Ok(())
 }
@@ -1549,18 +1918,32 @@ fn validate(policy: &Policy, accepted: &Tree, baseline: &private::Index, live: &
 /// them through `\\?\` paths, so the scan is checked as well as fs.write.
 fn check_component(part: &str) -> Result<()> {
     if part.contains(':') || part.ends_with(['.', ' ']) || reserved_name(part) {
-        return Err(Error::InvalidPolicy(format!("invalid Windows path component: {part}")));
+        return Err(Error::InvalidPolicy(format!(
+            "invalid Windows path component: {part}"
+        )));
     }
     Ok(())
 }
 
 /// DOS device names that Win32 tools cannot open as ordinary files.
 fn reserved_name(part: &str) -> bool {
-    let stem = part.split('.').next().unwrap_or("").trim_end_matches([' ', '.']).to_ascii_uppercase();
+    let stem = part
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches([' ', '.'])
+        .to_ascii_uppercase();
     let numbered = |prefix: &str| {
-        stem.len() == 4 && stem.starts_with(prefix) && stem.as_bytes()[3].is_ascii_digit() && stem.as_bytes()[3] != b'0'
+        stem.len() == 4
+            && stem.starts_with(prefix)
+            && stem.as_bytes()[3].is_ascii_digit()
+            && stem.as_bytes()[3] != b'0'
     };
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || numbered("COM") || numbered("LPT")
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || numbered("COM")
+        || numbered("LPT")
 }
 
 /// `SetFileAttributesW`; zero means no attributes, which is NORMAL.
@@ -1580,7 +1963,9 @@ fn strip_prefix_ignoring_case(path: &Path, root: &Path) -> Option<PathBuf> {
         let text = if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
             format!(r"\\{unc}")
         } else {
-            text.strip_prefix(r"\\?\").map(str::to_owned).unwrap_or(text)
+            text.strip_prefix(r"\\?\")
+                .map(str::to_owned)
+                .unwrap_or(text)
         };
         text.trim_end_matches('\\').to_owned()
     }
