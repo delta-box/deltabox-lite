@@ -32,6 +32,7 @@ Think of it as Git for agent sessions: less ceremony, more control, and no
 anxiety about binary or large files.
 
 ## 📰 News
+- **[2026/10/25]** DSH v0.1.5: Support DSH v0.2.2
 
 - **[2026/10/21]** Release `v0.1.4`: **Windows x64** available now. With WinFsp, and MXC network policy enforcement. Companion DSH `0.1.4` and Pi `0.1.3` add Windows installation and PowerShell integration.
 
