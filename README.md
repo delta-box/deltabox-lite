@@ -68,6 +68,17 @@ anxiety about binary or large files.
 
 </details>
 
+## Roadmap
+
+- [x] MacOS, Linux, Windows Support
+- [x] Private Workspace
+- [x] Fast, Reliable Rollback
+- [x] Pi Plugin
+- [x] DSH Plugin
+- [x] HTTP/HTTPS Proxy 
+- [ ] PTY, stdin Support
+- [ ] Credential Masking
+
 ## Demo
 
 Run a command, inspect its change set, and choose whether to keep or discard it:
