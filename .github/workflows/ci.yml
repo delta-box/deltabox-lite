@@ -18,6 +18,11 @@ jobs:
           # Windows prebuilds are pinned to 1.89.0 (see prebuilds.yml).
           - os: windows-2025
             toolchain: 1.89.0
+          # Hosted windows-11-arm has Microsoft MXC PSEC (Windows 11 24H2 at
+          # build .9278 or later), so the PSEC-dependent tests run there.
+          - os: windows-11-arm
+            toolchain: 1.89.0
+            ignored_tests: --include-ignored
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -38,26 +43,30 @@ jobs:
         run: |
           sudo cp -a "$(rustc --print sysroot)/." /usr/local/
           echo /usr/local/bin >> "$GITHUB_PATH"
-      # WinFsp (driver and SDK headers) backs the Windows cbcow modes.
-      - if: runner.os == 'Windows'
-        run: choco install winfsp --yes --no-progress
+      # WinFsp (driver and SDK headers) backs the Windows cbcow modes. The
+      # MSI covers both x64 and ARM64.
+      - name: Install WinFsp
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi -OutFile winfsp.msi
+          Start-Process msiexec.exe -Wait -ArgumentList '/i', 'winfsp.msi', '/qn', 'ADDLOCAL=ALL'
       - name: Workspace tests
         if: runner.os != 'Windows'
         run: cargo test --workspace --no-fail-fast
       - if: runner.os == 'Windows'
         run: cargo test -p deltabox-core --lib
-      - if: runner.os == 'Windows'
-        run: cargo test -p deltabox --test network_approvals
-      # Hosted Windows lacks usable MXC PSEC. Compile all suites and run the
-      # ordinary copy-private tests; PSEC-dependent cases report as ignored.
-      # Supported Windows hosts can opt in with --include-ignored.
-      - name: Windows session tests (PSEC cases ignored)
+      # Hosted windows-2025 lacks usable MXC PSEC, so there the PSEC-dependent
+      # cases report as ignored; windows-11-arm runs them with
+      # --include-ignored.
+      - name: Windows session tests
         if: runner.os == 'Windows'
         run: >
           cargo test -p deltabox
           --test windows_mxc
           --test copy_private_windows
           --test cbcow_windows
-          -- --test-threads=1
+          --test network_approvals
+          -- --test-threads=1 ${{ matrix.ignored_tests }}
       - if: runner.os == 'Windows'
         run: cargo check -p deltabox-node
