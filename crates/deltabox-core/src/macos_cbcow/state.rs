@@ -810,10 +810,20 @@ impl State {
 
 impl TreeIndex {
     fn scan(root: &Path) -> Result<Self> {
-        let paths = walk(root)?;
-        let entries = read_in_parallel(&paths, |path| Entry::read(path))?;
+        Self::from_walk(root, &walk(root)?)
+    }
+
+    /// Read the entries that `walk` listed below `root`. One deleted since
+    /// the walk is left out, as a walk a moment later would have missed it;
+    /// a copy that still holds it loses it as an extra, and a later
+    /// reconcile sees the deletion.
+    fn from_walk(root: &Path, paths: &[PathBuf]) -> Result<Self> {
+        let entries = read_in_parallel(paths, |path| read_existing(path))?;
         let mut index = Self::default();
         for (path, entry) in paths.iter().zip(entries) {
+            let Some(entry) = entry else {
+                continue;
+            };
             let relative =
                 relative_string(path.strip_prefix(root).expect("walk stays below root"))?;
             index.entries.insert(relative, entry);
@@ -1402,6 +1412,8 @@ fn rebuild(source: &Path, target: &Path, expected: &Entry) -> Result<()> {
 /// the source deleted them after the clone. One that the volume still finds
 /// under an expected sibling's name was renamed instead, by case or Unicode
 /// normalization only, which APFS ignores in lookups; it takes that spelling.
+/// One whose own name is already gone was replaced when such a sibling was
+/// rebuilt or relinked before its directory; it is left alone.
 fn settle_extras(
     destination: &Path,
     parent: &str,
@@ -1433,6 +1445,11 @@ fn settle_extras(
         }
     }
     for extra in extras {
+        // Looking a stale name up would find the sibling repaired under its
+        // new spelling, and remove it as an extra.
+        if !extra.file_name().is_some_and(|name| present.contains(name)) {
+            continue;
+        }
         let metadata = fs::symlink_metadata(&extra)?;
         let identity = (metadata.dev(), metadata.ino());
         if let Some(position) = renamed.iter().position(|(_, found)| *found == identity) {
@@ -1477,11 +1494,13 @@ fn extra_entries(directory: &Path, relative: &str, index: &TreeIndex) -> Result<
     Ok(extras)
 }
 
+/// Read the entry at `path`, or nothing when there is none, including one
+/// deleted while it was being read.
 fn read_existing(path: &Path) -> Result<Option<Entry>> {
-    match fs::symlink_metadata(path) {
-        Ok(_) => Entry::read(path).map(Some),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
+    match Entry::read(path) {
+        Ok(entry) => Ok(Some(entry)),
+        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
 }
 
@@ -2002,6 +2021,15 @@ mod tests {
         }
     }
 
+    fn names(directory: &Path) -> Vec<String> {
+        let mut names = fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
     fn other_group(path: &Path) -> Option<u32> {
         let current = fs::metadata(path).unwrap().gid();
         let groups = Command::new("/usr/bin/id")
@@ -2099,6 +2127,31 @@ mod tests {
     }
 
     #[test]
+    fn scan_leaves_out_entries_deleted_between_the_walk_and_the_read() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::create_dir_all(root.join("dir/gone/inner")).unwrap();
+        fs::write(root.join("dir/gone/inner/file.txt"), "gone").unwrap();
+        fs::write(root.join("dir/kept.txt"), "kept").unwrap();
+        fs::write(root.join("dir/vanished.txt"), "vanished").unwrap();
+        let paths = walk(root).unwrap();
+        assert_eq!(paths.len(), 6);
+
+        // Deleted after the walk listed them, before the read reached them.
+        fs::remove_file(root.join("dir/vanished.txt")).unwrap();
+        fs::remove_dir_all(root.join("dir/gone")).unwrap();
+        let index = TreeIndex::from_walk(root, &paths).unwrap();
+        assert_eq!(
+            index.entries.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["dir", "dir/kept.txt"]
+        );
+        assert_eq!(
+            index.entries["dir/kept.txt"],
+            Entry::read(&root.join("dir/kept.txt")).unwrap()
+        );
+    }
+
+    #[test]
     fn mirror_repairs_entries_changed_after_the_clone() {
         let source = tempfile::tempdir().unwrap();
         let copy = tempfile::tempdir().unwrap();
@@ -2190,20 +2243,56 @@ mod tests {
         fs::rename(tree.join("Docs"), tree.join("DOCS")).unwrap();
         mirror(tree, &destination, now_ns()).unwrap();
         assert_mirrors(tree, &destination);
-        let names = |directory: &Path| {
-            let mut names = fs::read_dir(directory)
-                .unwrap()
-                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-                .collect::<Vec<_>>();
-            names.sort();
-            names
-        };
         assert_eq!(names(&destination), ["DOCS"]);
         assert_eq!(names(&destination.join("DOCS")), ["README.md"]);
         assert_eq!(
             fs::read_to_string(destination.join("DOCS/README.md")).unwrap(),
             "readme"
         );
+    }
+
+    #[test]
+    fn mirror_keeps_entries_renamed_by_case_after_the_clone_started() {
+        let source = tempfile::tempdir().unwrap();
+        let copy = tempfile::tempdir().unwrap();
+        let tree = source.path();
+        fs::create_dir(tree.join("Docs")).unwrap();
+        fs::write(tree.join("Docs/Readme.md"), "readme").unwrap();
+        fs::hard_link(tree.join("Docs/Readme.md"), tree.join("Docs/Copy.md")).unwrap();
+        fs::write(tree.join("Docs/Notes.md"), "notes").unwrap();
+        let destination = copy.path().join("tree");
+        materialize(tree, &destination, false).unwrap();
+
+        // The same renames, but after the clone started: the change times
+        // mark the files as changed, so they are rebuilt, or relinked, under
+        // the new spelling before their directory settles the old names,
+        // which the volume now finds on the rebuilt files.
+        let cloned_since = now_ns();
+        fs::rename(tree.join("Docs/Readme.md"), tree.join("Docs/README.md")).unwrap();
+        fs::rename(tree.join("Docs/Copy.md"), tree.join("Docs/COPY.md")).unwrap();
+        fs::write(tree.join("Docs/Notes.md"), "notes, revised").unwrap();
+        fs::rename(tree.join("Docs/Notes.md"), tree.join("Docs/NOTES.md")).unwrap();
+        fs::rename(tree.join("Docs"), tree.join("DOCS")).unwrap();
+        mirror(tree, &destination, cloned_since).unwrap();
+        assert_mirrors(tree, &destination);
+        assert_eq!(names(&destination), ["DOCS"]);
+        assert_eq!(
+            names(&destination.join("DOCS")),
+            ["COPY.md", "NOTES.md", "README.md"]
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("DOCS/README.md")).unwrap(),
+            "readme"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("DOCS/NOTES.md")).unwrap(),
+            "notes, revised"
+        );
+        assert!(same_inode(
+            &destination.join("DOCS/README.md"),
+            &destination.join("DOCS/COPY.md")
+        )
+        .unwrap());
     }
 
     #[test]
