@@ -1,9 +1,10 @@
 use crate::control::{Command, Request, Response, ResultValue};
 use crate::engine::{Durability, EngineOptions, StateEngine};
+use crate::gate::WriteGate;
 use crate::passthrough;
 use anyhow::{Context, Result};
 use std::fs;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -90,6 +91,10 @@ fn handle(
     let Some(request) = authenticated_request(&mut stream, token)? else {
         return Ok(true);
     };
+    if let Command::Freeze = request.command {
+        hold_freeze(stream, mounted.gate())?;
+        return Ok(true);
+    }
 
     let (result, running) = match request.command {
         Command::Ping => (Ok(ResultValue::Pong), true),
@@ -115,7 +120,14 @@ fn handle(
                 .map(ResultValue::Diff),
             true,
         ),
-        Command::Commit { target } => {
+        Command::Commit { target, freeze } => {
+            if freeze.is_some_and(|id| !mounted.gate().is_frozen(id)) {
+                write_response(
+                    &mut stream,
+                    Response::error("write freeze was released before commit"),
+                )?;
+                return Ok(true);
+            }
             let (result, garbage) = {
                 let mut engine = engine.lock().expect("engine lock");
                 match engine.commit(target) {
@@ -146,7 +158,13 @@ fn handle(
             }
             (Ok(ResultValue::Reclaiming), true)
         }
-        Command::Shutdown => (Ok(ResultValue::ShuttingDown), false),
+        Command::Shutdown => {
+            // Writers parked at the gate hold FUSE threads that unmount
+            // must join.
+            mounted.gate().thaw_all();
+            (Ok(ResultValue::ShuttingDown), false)
+        }
+        Command::Freeze => unreachable!("handled before dispatch"),
     };
     let response = match result {
         Ok(result) => Response::ok(result),
@@ -154,6 +172,27 @@ fn handle(
     };
     write_response(&mut stream, response)?;
     Ok(running)
+}
+
+/// Freeze writes and keep them frozen until the client closes the connection
+/// (or sends anything), so a crashed publisher cannot leave the view frozen.
+fn hold_freeze(mut stream: UnixStream, gate: Arc<WriteGate>) -> Result<()> {
+    let id = match gate.freeze(Duration::from_secs(30)) {
+        Ok(id) => id,
+        Err(error) => return write_response(&mut stream, Response::error(error.to_string())),
+    };
+    // A client gone before the reply must not keep the view frozen, nor stop
+    // the helper.
+    if write_response(&mut stream, Response::ok(ResultValue::Frozen(id))).is_err() {
+        gate.thaw(id);
+        return Ok(());
+    }
+    std::thread::spawn(move || {
+        let _ = stream.set_read_timeout(None);
+        let _ = stream.read(&mut [0; 1]);
+        gate.thaw(id);
+    });
+    Ok(())
 }
 
 fn authenticated_request(stream: &mut UnixStream, token: &str) -> Result<Option<Request>> {

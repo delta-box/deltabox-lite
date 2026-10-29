@@ -771,7 +771,13 @@ impl Manager {
         }
         let applied = self.pending(&record)?;
         let target = parse_checkpoint(params.checkpoint.as_deref())?;
-        let checkpoint = match self.request(&record, ControlCommand::Commit { target })? {
+        let checkpoint = match self.request(
+            &record,
+            ControlCommand::Commit {
+                target,
+                freeze: None,
+            },
+        )? {
             ResultValue::Committed(checkpoint) => checkpoint,
             _ => return Err(Error::Backend("unexpected commit response".into())),
         };
@@ -793,12 +799,25 @@ impl Manager {
                 _ => return Err(Error::Backend("unexpected abort response".into())),
             }
         }
+        // Processes left running in the session keep writing. Hold their
+        // writes from the change list through the engine commit, so what is
+        // published is exactly what the engine accepts.
+        let freeze = self.freeze_writes(record)?;
+        let freeze_id = freeze.as_ref().map(control::Freeze::id);
+        crate::test_hooks::maybe_pause("private_commit_frozen");
         let changes = self.engine_changes(record, None)?;
         if changes.is_empty() {
-            let checkpoint = match self.request(record, ControlCommand::Commit { target: None })? {
+            let checkpoint = match self.request(
+                record,
+                ControlCommand::Commit {
+                    target: None,
+                    freeze: freeze_id,
+                },
+            )? {
                 ResultValue::Committed(checkpoint) => checkpoint,
                 _ => return Err(Error::Backend("unexpected commit response".into())),
             };
+            drop(freeze);
             self.save_review(&params.session_id, None)?;
             self.append(&params.session_id, JournalKind::Commit, None)?;
             return Ok(CommitResult {
@@ -886,10 +905,17 @@ impl Manager {
         publication.save(&store)?;
         maybe_crash("private_publish_host_applied");
 
-        let checkpoint = match self.request(record, ControlCommand::Commit { target: None })? {
+        let checkpoint = match self.request(
+            record,
+            ControlCommand::Commit {
+                target: None,
+                freeze: freeze_id,
+            },
+        )? {
             ResultValue::Committed(checkpoint) => checkpoint,
             _ => return Err(Error::Backend("unexpected commit response".into())),
         };
+        drop(freeze);
         publication.phase = PublicationPhase::EngineCommitted;
         publication.save(&store)?;
         maybe_crash("private_publish_engine_committed");
@@ -1226,6 +1252,18 @@ impl Manager {
         }
     }
 
+    /// Hold every write to the session's view until the returned freeze is
+    /// dropped. `None` when the running helper predates freezing (it was
+    /// started by an older CLI); the commit then runs unfrozen, as before.
+    fn freeze_writes(&self, record: &MountRecord) -> Result<Option<control::Freeze>> {
+        let token = fs::read_to_string(&record.token_file)?;
+        match control::freeze(&record.socket, token.trim()) {
+            Ok(freeze) => Ok(Some(freeze)),
+            Err(error) if error.to_string().contains("unknown variant `freeze`") => Ok(None),
+            Err(error) => Err(Error::Backend(format!("filesystem freeze: {error}"))),
+        }
+    }
+
     fn engine_changes(
         &self,
         record: &MountRecord,
@@ -1280,7 +1318,13 @@ impl Manager {
             PublicationPhase::HostApplied => {
                 let status = self.engine_status(record)?;
                 if status.accepted_checkpoint == publication.engine_accepted_checkpoint {
-                    match self.request(record, ControlCommand::Commit { target: None })? {
+                    match self.request(
+                        record,
+                        ControlCommand::Commit {
+                            target: None,
+                            freeze: None,
+                        },
+                    )? {
                         ResultValue::Committed(_) => {}
                         _ => return Err(Error::Backend("unexpected commit response".into())),
                     }

@@ -147,7 +147,10 @@ impl From<ControlSubcommand> for ControlCommand {
             ControlSubcommand::Status => Self::Status,
             ControlSubcommand::Checkpoint { label } => Self::Checkpoint { label },
             ControlSubcommand::Diff { from } => Self::Diff { from },
-            ControlSubcommand::Commit { target } => Self::Commit { target },
+            ControlSubcommand::Commit { target } => Self::Commit {
+                target,
+                freeze: None,
+            },
             ControlSubcommand::Abort { target } => Self::Abort { target },
             ControlSubcommand::Reclaim => Self::Reclaim,
             ControlSubcommand::Shutdown => Self::Shutdown,
