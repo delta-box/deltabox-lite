@@ -3,6 +3,7 @@ use crate::command_executor::{self, Endpoint as CommandEndpoint};
 use crate::coordinator::CommandExecutionMode;
 use crate::error::{Error, Result};
 use crate::journal::{Journal, JournalEntry, JournalKind};
+use crate::locks::Lock;
 use crate::pathmap::PathMapper;
 use crate::policy::Policy;
 use crate::protocol::{
@@ -12,7 +13,6 @@ use crate::protocol::{
     SessionStatus,
 };
 use crate::session::{now_ms, SessionMeta, SessionRegistry};
-use crate::locks::Lock;
 use crate::state_layout;
 use base64::Engine;
 use deltafs_fuse::macos::{
@@ -134,6 +134,9 @@ impl Manager {
             Some(path) => Policy::load(path)?,
             None => Policy::default_agent(),
         };
+        if policy.network.allow_approval && self.execution_mode == CommandExecutionMode::Trusted {
+            return Err(Error::Unsupported("network approvals require deltabox isolation".into()));
+        }
         policy.validate()?;
 
         let session_id = Uuid::new_v4().to_string();
@@ -205,9 +208,8 @@ impl Manager {
             // sibling publication can land between the scans or before the
             // event boundary pins the baseline, exactly as under the old
             // exclusive hold.
-            let publish = Lock::acquire_shared(&crate::state_layout::publish_lock_path(
-                &self.project,
-            )?)?;
+            let publish =
+                Lock::acquire_shared(&crate::state_layout::publish_lock_path(&self.project)?)?;
             crate::test_hooks::maybe_pause("start_scan_shared");
             let mut state = State::create(
                 &self.project,
@@ -287,11 +289,7 @@ impl Manager {
                 let _ = self.save_meta(&meta);
             }
             if let Ok(leases) = crate::state_layout::leases_dir(&self.project) {
-                crate::project_lease::release(
-                    &leases,
-                    &self.root.join(PROJECT_LEASE),
-                    &session_id,
-                );
+                crate::project_lease::release(&leases, &self.root.join(PROJECT_LEASE), &session_id);
             }
             let _ = fs::remove_dir_all(&state_root);
         }
@@ -485,7 +483,13 @@ impl Manager {
             env,
             label,
             execution_profile,
+            network_allow,
         } = params;
+        if !network_allow.is_empty() && self.execution_mode == CommandExecutionMode::Trusted {
+            return Err(Error::Unsupported(
+                "network grants require deltabox isolation".into(),
+            ));
+        }
         if let Some(fast) = self.fast_session(&session_id) {
             return self.exec_fast(fast, session_id, argv, cwd, env, label);
         }
@@ -536,6 +540,7 @@ impl Manager {
             CommandExecutionMode::Sandboxed => {
                 let mut policy = self.policy(&meta)?;
                 policy.apply_execution_profile(execution_profile);
+                policy.apply_network_allow(&network_allow)?;
                 // Through mode tracks writes in the real project; only private
                 // workspaces must keep commands away from the backing tree.
                 if state.status().mode == Mode::Private {

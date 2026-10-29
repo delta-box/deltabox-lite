@@ -1,0 +1,45 @@
+name: Network approval regression
+on:
+  pull_request:
+  push:
+    branches: [main, codex/network-approvals]
+permissions:
+  contents: read
+jobs:
+  network:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            toolchain: stable
+          - os: ubuntu-24.04
+            toolchain: stable
+          # Windows prebuilds are pinned to 1.89.0 (see prebuilds.yml).
+          - os: windows-2025
+            toolchain: 1.89.0
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+      # WinFsp (driver and SDK headers) backs the Windows cbcow modes.
+      - if: runner.os == 'Windows'
+        run: choco install winfsp --yes --no-progress
+      - run: cargo test -p deltabox-core --lib
+      - run: cargo test -p deltabox --test network_approvals
+      # Hosted Windows lacks usable MXC PSEC. Compile all suites and run the
+      # ordinary copy-private tests; PSEC-dependent cases report as ignored.
+      # Supported Windows hosts can opt in with --include-ignored.
+      - name: Windows session tests (PSEC cases ignored)
+        if: runner.os == 'Windows'
+        run: >
+          cargo test -p deltabox
+          --test windows_mxc
+          --test copy_private_windows
+          --test cbcow_windows
+          -- --test-threads=1
+      - run: cargo check -p deltabox-node

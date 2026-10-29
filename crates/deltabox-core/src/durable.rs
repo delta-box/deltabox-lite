@@ -143,7 +143,10 @@ impl DurableSessionManager {
             })
             .transpose()?;
         if let Some(path) = &policy_path {
-            Policy::load(path)?;
+            let policy = Policy::load(path)?;
+            if policy.network.allow_approval && self.execution_mode == CommandExecutionMode::Trusted {
+                return Err(Error::Unsupported("network approvals require deltabox isolation".into()));
+            }
         }
         let initial_scan = scan_tree(&self.project)?;
         copy_project_tree(&self.project, &store.join(ACCEPTED_DIR))?;
@@ -222,6 +225,13 @@ impl DurableSessionManager {
         let working = self.working_dir(&params.session_id);
         let mut policy = self.policy(&params.session_id)?;
         policy.apply_execution_profile(params.execution_profile);
+        if self.execution_mode == CommandExecutionMode::Trusted && !params.network_allow.is_empty()
+        {
+            return Err(Error::Unsupported(
+                "network grants require deltabox isolation".into(),
+            ));
+        }
+        policy.apply_network_allow(&params.network_allow)?;
         params
             .execution_profile
             .ensure_backing_project_is_deniable(&working, &self.project)?;
@@ -236,11 +246,11 @@ impl DurableSessionManager {
             env: params.env,
         };
         let result = match self.execution_mode {
-            CommandExecutionMode::Sandboxed => self.run_and_materialize(
-                &params.session_id,
-                policy,
-                |backend, sid| backend.exec(sid, request),
-            )?,
+            CommandExecutionMode::Sandboxed => {
+                self.run_and_materialize(&params.session_id, policy, |backend, sid| {
+                    backend.exec(sid, request)
+                })?
+            }
             CommandExecutionMode::Trusted => {
                 self.run_trusted_and_materialize(&params.session_id, request)?
             }
@@ -418,9 +428,8 @@ impl DurableSessionManager {
     fn commit_locked(&self, params: CommitParams) -> Result<CommitResult> {
         // Copy-private publishes into the host tree too: serialize against
         // CB-CoW publications and recoveries on the same project.
-        let _publish = crate::locks::Lock::acquire(&crate::state_layout::publish_lock_path(
-            &self.project,
-        )?)?;
+        let _publish =
+            crate::locks::Lock::acquire(&crate::state_layout::publish_lock_path(&self.project)?)?;
         let store = self.store_dir(&params.session_id);
         let accepted = store.join(ACCEPTED_DIR);
         let working = store.join(WORKING_DIR);
@@ -1005,9 +1014,9 @@ impl DurableSessionManager {
         let marker_path = store.join(TRANSACTION_FILE);
         if marker_path.exists() {
             // Rolling a torn transaction back mutates the host tree.
-            let _publish = crate::locks::Lock::acquire(
-                &crate::state_layout::publish_lock_path(&self.project)?,
-            )?;
+            let _publish = crate::locks::Lock::acquire(&crate::state_layout::publish_lock_path(
+                &self.project,
+            )?)?;
             let marker: TransactionMarker = serde_json::from_slice(&std::fs::read(&marker_path)?)?;
             let txn = store.join(TRANSACTIONS_DIR).join(&marker.id);
             match marker.kind {

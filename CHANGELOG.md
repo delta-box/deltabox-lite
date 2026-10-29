@@ -17,6 +17,44 @@ Unreleased section below into the new version's section.
   project and repaired where the clone differs, instead of being cloned and
   re-stamped one entry at a time (#34).
 
+## [0.1.4] - 2026-10-21
+
+### Changed
+
+- Publish the Windows x64 runtime as `deltabox-lite-windows-x64`, retaining
+  npm's `win32` platform selector. Runtime 0.1.3 publication was incomplete
+  because npm rejected the previous new Windows package name.
+
+## [0.1.3] - 2026-10-21
+
+### Added
+
+- Windows x64 CLI and Node addon prebuilds, npm installation, and release CI.
+- Windows MXC `copy-private` sessions without WinFsp, with private changes,
+  commit/abort, and interrupted-operation recovery.
+- Windows MXC network deny/allowlist enforcement and execution-scoped proxy
+  approvals, including hostname and loopback destination handling.
+- WinFsp CB-CoW support for trusted embedded commands used by Pi's default
+  native transport.
+
+### Fixed
+
+- Retry Windows stopped-session cleanup while WinFsp releases its view.
+
+## [0.1.2] - 2026-10-20
+
+### Added
+
+- Execution-scoped network approvals that restrict destination hosts and ports
+  and expire when the command finishes.
+- Environment checks and updated installation guidance for the CLI and plugins.
+
+### Fixed
+
+- Detect same-size file changes with unchanged timestamps during Linux
+  incremental snapshot copies.
+- Reject rooted and drive-prefixed paths in worker file writes.
+
 ## [0.1.1] - 2026-10-14
 
 ### Fixed

@@ -1,6 +1,6 @@
 {
   "name": "deltabox-lite",
-  "version": "0.1.1",
+  "version": "0.1.4",
   "license": "Apache-2.0",
   "description": "Native sandbox runtime with diff, commit, and abort for AI coding agents",
   "repository": "https://github.com/delta-box/deltabox-lite",
@@ -11,7 +11,8 @@
   },
   "os": [
     "darwin",
-    "linux"
+    "linux",
+    "win32"
   ],
   "engines": {
     "node": ">=18"
@@ -23,9 +24,10 @@
     "README.md"
   ],
   "optionalDependencies": {
-    "deltabox-lite-darwin-arm64": "0.1.1",
-    "deltabox-lite-darwin-x64": "0.1.1",
-    "deltabox-lite-linux-arm64": "0.1.1",
-    "deltabox-lite-linux-x64": "0.1.1"
+    "deltabox-lite-darwin-arm64": "0.1.4",
+    "deltabox-lite-darwin-x64": "0.1.4",
+    "deltabox-lite-linux-arm64": "0.1.4",
+    "deltabox-lite-linux-x64": "0.1.4",
+    "deltabox-lite-windows-x64": "0.1.4"
   }
 }

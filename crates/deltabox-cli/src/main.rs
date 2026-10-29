@@ -24,6 +24,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Print supported execution-scoped network protocol version.
+    NetworkCapabilities,
     /// Create and manage sandbox sessions.
     Session {
         #[command(subcommand)]
@@ -56,6 +58,9 @@ enum Command {
     /// Run the in-sandbox worker loop (spawned by the Linux backend).
     #[command(hide = true)]
     Worker(WorkerArgs),
+    #[cfg(windows)]
+    #[command(name = "__windows-fs-helper", hide = true)]
+    WindowsFsHelper(WindowsFsHelperArgs),
     /// Run a session-scoped filesystem helper.
     #[cfg(target_os = "linux")]
     #[command(hide = true)]
@@ -289,6 +294,13 @@ struct WorkerArgs {
     runtime: PathBuf,
 }
 
+#[cfg(windows)]
+#[derive(clap::Args)]
+struct WindowsFsHelperArgs {
+    #[arg(long)]
+    state_dir: PathBuf,
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(clap::Args)]
 struct CommandHelperArgs {
@@ -424,6 +436,7 @@ fn main() -> anyhow::Result<()> {
                 env,
                 label: args.label,
                 execution_profile: args.execution_profile.unwrap_or_default(),
+                network_allow: Vec::new(),
             })?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
@@ -609,6 +622,13 @@ fn main() -> anyhow::Result<()> {
         Command::Worker(args) => {
             deltabox_core::worker::run_worker(&args.root, &args.runtime)?;
         }
+        #[cfg(windows)]
+        Command::WindowsFsHelper(args) => {
+            if let Err(error)=deltabox_core::windows::helper::run(&args.state_dir) {
+                let _=std::fs::write(args.state_dir.join("helper.log"),error.to_string());
+                return Err(error.into());
+            }
+        }
         #[cfg(target_os = "linux")]
         Command::FsHelper(args) => {
             deltafs_fuse::helper::run(deltafs_fuse::helper::Config {
@@ -649,6 +669,7 @@ fn main() -> anyhow::Result<()> {
                 worker_bin: std::env::current_exe()?,
             })?;
         }
+        Command::NetworkCapabilities => { println!("{{\"version\":1}}"); }
         Command::Serve => {
             let project = std::env::current_dir()?;
             let mut server = Server::new(&project, Box::new(default_backend()))?;
@@ -753,6 +774,7 @@ fn run_transaction(args: RunArgs) -> anyhow::Result<i32> {
             env,
             label: args.label,
             execution_profile: Default::default(),
+            network_allow: Vec::new(),
         })?;
         std::io::stdout()
             .lock()

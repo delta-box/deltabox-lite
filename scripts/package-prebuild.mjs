@@ -20,6 +20,7 @@ const targets = {
   "x86_64-apple-darwin": ["deltabox-lite-darwin-x64", "darwin", "x64", "libdeltabox_node.dylib"],
   "aarch64-unknown-linux-gnu": ["deltabox-lite-linux-arm64", "linux", "arm64", "libdeltabox_node.so"],
   "x86_64-unknown-linux-gnu": ["deltabox-lite-linux-x64", "linux", "x64", "libdeltabox_node.so"],
+  "x86_64-pc-windows-msvc": ["deltabox-lite-windows-x64", "win32", "x64", "deltabox_node.dll"],
 };
 
 const target = process.argv[2];
@@ -46,11 +47,12 @@ const build = spawnSync(
 if (build.status !== 0) process.exit(build.status ?? 1);
 
 const [name, os, cpu, nativeLibrary] = platform;
+const executable = os === "win32" ? "deltabox.exe" : "deltabox";
 const stage = mkdtempSync(join(tmpdir(), `${name}-`));
 try {
   mkdirSync(join(stage, "bin"));
-  const binary = join(stage, "bin", "deltabox");
-  copyFileSync(join(root, "target", target, "release", "deltabox"), binary);
+  const binary = join(stage, "bin", executable);
+  copyFileSync(join(root, "target", target, "release", executable), binary);
   chmodSync(binary, 0o755);
   mkdirSync(join(stage, "native"));
   copyFileSync(
@@ -83,6 +85,7 @@ try {
     cwd: root,
     env: { ...process.env, npm_config_cache: join(stage, ".npm-cache") },
     stdio: "inherit",
+    shell: os === "win32",
   });
   if (packed.status !== 0) process.exit(packed.status ?? 1);
 
@@ -93,15 +96,15 @@ try {
   // download without a separate manifest.
   const tarballStage = join(stage, "tarball");
   mkdirSync(tarballStage);
-  copyFileSync(binary, join(tarballStage, "deltabox"));
-  chmodSync(join(tarballStage, "deltabox"), 0o755);
+  copyFileSync(binary, join(tarballStage, executable));
+  chmodSync(join(tarballStage, executable), 0o755);
   copyFileSync(join(root, "LICENSE"), join(tarballStage, "LICENSE"));
   copyFileSync(join(root, "README.md"), join(tarballStage, "README.md"));
   const tarballName = `deltabox-${version}-${target}.tar.gz`;
   const tarball = join(output, tarballName);
   const tarred = spawnSync(
     "tar",
-    ["-czf", tarball, "-C", tarballStage, "deltabox", "LICENSE", "README.md"],
+    ["-czf", tarball, "-C", tarballStage, executable, "LICENSE", "README.md"],
     { cwd: root, stdio: "inherit" },
   );
   if (tarred.status !== 0) process.exit(tarred.status ?? 1);

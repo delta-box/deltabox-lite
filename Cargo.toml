@@ -8,11 +8,11 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.4"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/delta-box/deltabox-lite"
-rust-version = "1.87"
+rust-version = "1.89"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
