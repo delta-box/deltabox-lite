@@ -1,12 +1,12 @@
-name: Network approval regression
+name: CI
 on:
   pull_request:
   push:
-    branches: [main, codex/network-approvals]
+    branches: [main]
 permissions:
   contents: read
 jobs:
-  network:
+  test:
     strategy:
       fail-fast: false
       matrix:
@@ -24,13 +24,30 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
+      # fuse3 provides fusermount3 for DeltaFS mounts; acl provides setfacl
+      # for the cbcow-private metadata publication test.
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config fuse3 acl
+      # The Linux sandbox's default read policy covers /usr and /usr/local but
+      # not $HOME, so rustup's ~/.cargo/bin proxies cannot run inside it, and
+      # sandboxed commands do not receive RUSTUP_HOME. Install the toolchain
+      # as a standalone copy under /usr/local and put it first on PATH, so the
+      # in-sandbox tool compatibility test finds a usable cargo.
+      - name: Install standalone toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo cp -a "$(rustc --print sysroot)/." /usr/local/
+          echo /usr/local/bin >> "$GITHUB_PATH"
       # WinFsp (driver and SDK headers) backs the Windows cbcow modes.
       - if: runner.os == 'Windows'
         run: choco install winfsp --yes --no-progress
-      - run: cargo test -p deltabox-core --lib
-      - run: cargo test -p deltabox --test network_approvals
+      - name: Workspace tests
+        if: runner.os != 'Windows'
+        run: cargo test --workspace --no-fail-fast
+      - if: runner.os == 'Windows'
+        run: cargo test -p deltabox-core --lib
+      - if: runner.os == 'Windows'
+        run: cargo test -p deltabox --test network_approvals
       # Hosted Windows lacks usable MXC PSEC. Compile all suites and run the
       # ordinary copy-private tests; PSEC-dependent cases report as ignored.
       # Supported Windows hosts can opt in with --include-ignored.
@@ -42,4 +59,5 @@ jobs:
           --test copy_private_windows
           --test cbcow_windows
           -- --test-threads=1
-      - run: cargo check -p deltabox-node
+      - if: runner.os == 'Windows'
+        run: cargo check -p deltabox-node
