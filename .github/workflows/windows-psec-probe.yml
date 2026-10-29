@@ -1,0 +1,172 @@
+name: Windows PSEC probe
+
+# Manual feasibility check: can CI reach a Windows host with Microsoft MXC
+# PSEC (process isolation plus PSE_SUPPORT_FS_DENY), which the Windows
+# session tests need and hosted windows-2025 lacks? MXC process isolation
+# needs Windows 11 24H2/25H2 build .9278 or later (KB5120998).
+#
+#   arm  hosted windows-11-arm runner: build natively, probe, and run the
+#        PSEC-dependent tests if the probe passes.
+#   vm   Windows 11 under KVM on a Linux runner (dockur/windows): install,
+#        apply cumulative updates up to build .9278, then probe with an x64
+#        deltabox.exe built on windows-2025. Slow (an hour or more).
+
+# Also runs on pull requests that change the probe itself, because a
+# workflow_dispatch workflow cannot be started until it is on the default
+# branch.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/windows-psec-probe.yml
+      - .github/windows-psec-probe/**
+  workflow_dispatch:
+    inputs:
+      vm_version:
+        description: dockur/windows VERSION for the VM probe
+        type: choice
+        options: [11l, 11e, 11]
+        default: 11l
+      run_vm:
+        description: Run the VM probe
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  WINFSP_MSI_URL: https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi
+
+jobs:
+  arm:
+    runs-on: windows-11-arm
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Windows build
+        run: |
+          $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+          $line = "$($cv.ProductName) ($($cv.EditionID)) $($cv.DisplayVersion), build $($cv.CurrentBuild).$($cv.UBR)"
+          $line
+          "### windows-11-arm`n$line" >> $env:GITHUB_STEP_SUMMARY
+      - name: Install WinFsp
+        run: |
+          Invoke-WebRequest $env:WINFSP_MSI_URL -OutFile winfsp.msi
+          Start-Process msiexec.exe -Wait -ArgumentList '/i', 'winfsp.msi', '/qn', 'ADDLOCAL=ALL'
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.89.0
+      - run: cargo build -p deltabox
+      - name: PSEC probe
+        run: |
+          $project = Join-Path $env:RUNNER_TEMP probe-project
+          New-Item -ItemType Directory -Force $project | Out-Null
+          Set-Content "$project\a.txt" 'psec-probe-ok'
+          $output = & target\debug\deltabox.exe run --project $project --fs-mode copy-private --abort -- cmd /c type a.txt 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          $output
+          "exit=$code`n``````n$output`n``````" >> $env:GITHUB_STEP_SUMMARY
+          exit $code
+      - name: PSEC-dependent tests
+        run: >
+          cargo test -p deltabox
+          --test windows_mxc
+          --test cbcow_windows
+          --test copy_private_windows
+          --test network_approvals
+          -- --include-ignored --test-threads=1
+
+  vm-binary:
+    if: github.event_name == 'pull_request' || inputs.run_vm
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89.0
+      - run: choco install winfsp --yes --no-progress
+      # A fresh VM may lack the VC++ redistributable.
+      - run: cargo build --release -p deltabox
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deltabox-x64
+          path: target/release/deltabox.exe
+
+  vm:
+    if: github.event_name == 'pull_request' || inputs.run_vm
+    needs: vm-binary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    env:
+      WIN: /mnt/win
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+      # The ISO, the VM disk and its cumulative updates go on the runner's
+      # larger temporary disk.
+      - name: Prepare VM folders
+        run: |
+          sudo mkdir -p "$WIN"/{oem,shared,storage}
+          sudo chown -R "$USER" "$WIN"
+          cp .github/windows-psec-probe/* "$WIN/oem/"
+          curl -fsSL "$WINFSP_MSI_URL" -o "$WIN/oem/winfsp.msi"
+          df -h / /mnt
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltabox-x64
+          path: ${{ env.WIN }}/oem
+      - name: Start Windows VM
+        run: >
+          docker run -d --name windows
+          -e VERSION=${{ inputs.vm_version || '11l' }}
+          -e RAM_SIZE=10G -e CPU_CORES=4
+          --device=/dev/kvm --device=/dev/net/tun --cap-add NET_ADMIN
+          -v "$WIN/oem:/oem" -v "$WIN/shared:/shared" -v "$WIN/storage:/storage"
+          --stop-timeout 120 docker.io/dockurr/windows:6.06
+      - name: Wait for the probe
+        timeout-minutes: 300
+        run: |
+          shown=0
+          until sudo test -f "$WIN/shared/done.txt"; do
+            if [ "$(docker inspect -f '{{.State.Running}}' windows)" != true ]; then
+              docker logs --tail 100 windows
+              echo "::error::Windows container exited before the probe finished"
+              exit 1
+            fi
+            if sudo test -f "$WIN/shared/probe.log"; then
+              lines=$(sudo cat "$WIN/shared/probe.log" | wc -l)
+              if [ "$lines" -gt "$shown" ]; then
+                sudo tail -n +"$((shown + 1))" "$WIN/shared/probe.log"
+                shown=$lines
+              fi
+            else
+              docker logs --since 60s windows 2>&1 | tail -3
+            fi
+            sleep 60
+          done
+      - name: Probe result
+        run: |
+          sudo cat "$WIN/shared/result.txt"
+          { echo "### VM (${{ inputs.vm_version || '11l' }})"; echo '```'; sudo cat "$WIN/shared/result.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          sudo cat "$WIN/shared/result.txt" | tr -d '\r' | grep -qx 'exit=0'
+      - name: VM logs
+        if: always()
+        run: |
+          docker logs --tail 200 windows || true
+          df -h /mnt
+          sudo chmod -R a+rX "$WIN/shared"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vm-probe-${{ inputs.vm_version || '11l' }}
+          path: ${{ env.WIN }}/shared
+          if-no-files-found: ignore
