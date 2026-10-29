@@ -76,7 +76,10 @@ if ($needsUpdate -and $rounds -lt 4) {
 $project = 'C:\probe-project'
 New-Item -ItemType Directory -Force $project | Out-Null
 Set-Content "$project\a.txt" 'psec-probe-ok'
-$output = & C:\OEM\deltabox.exe run --project $project --fs-mode copy-private --abort -- cmd /c type a.txt 2>&1 | Out-String
+# Windows PowerShell 5.1 wraps a native command's stderr lines in ErrorRecords
+# under 2>&1 and prints them as NativeCommandError; keep them as plain text.
+$output = & C:\OEM\deltabox.exe run --project $project --fs-mode copy-private --abort -- cmd /c type a.txt 2>&1 |
+    ForEach-Object { "$_" } | Out-String
 $code = $LASTEXITCODE
 Log "probe exit code $code"
 Log $output
