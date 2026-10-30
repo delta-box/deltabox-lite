@@ -1,11 +1,11 @@
 use crate::changeset::{describe_change, Change, ChangeKind, DEFAULT_TEXT_SIZE_LIMIT};
 use crate::error::{ConflictReport, Error, PathConflict, Result};
-use crate::test_hooks::maybe_pause;
 use crate::macos_tree::{
-    clone_path, clone_tree, copy_metadata, link_entry, read_acl, remove_path, replace_path,
-    restore_times, sync_dir, sync_tree, tracked_xattr, unlock_entry, unlock_parent,
+    clone_path, clone_tree, copy_metadata, link_entry, read_acl, remove_cloned_path, remove_path,
+    replace_path, restore_times, sync_dir, sync_tree, tracked_xattr, unlock_parent,
 };
 use crate::snapshot::read_capped_file;
+use crate::test_hooks::maybe_pause;
 use deltafs_fuse::macos::{
     EventBatch, ITEM_CLONED, ITEM_CREATED, ITEM_IS_HARDLINK, ITEM_REMOVED, ITEM_RENAMED,
 };
@@ -1283,8 +1283,7 @@ fn mirror(source: &Path, destination: &Path, cloned_since: i64) -> Result<TreeIn
             Ok(metadata) if metadata.is_dir() => continue,
             Ok(_) => {
                 unlock_parent(&target)?;
-                unlock_entry(&target)?;
-                remove_path(&target)?;
+                remove_cloned_path(&target)?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => unlock_parent(&target)?,
             Err(error) => return Err(error.into()),
@@ -1352,8 +1351,7 @@ fn mirror_entry(
     if let Some(primary) = identity.and_then(|identity| links.get(&identity)) {
         if !same_inode(primary, target)? {
             unlock_parent(target)?;
-            unlock_entry(target)?;
-            remove_path(target)?;
+            remove_cloned_path(target)?;
             link_entry(primary, target)?;
         }
         return Ok(());
@@ -1397,8 +1395,7 @@ fn rebuild(source: &Path, target: &Path, expected: &Entry) -> Result<()> {
         return Ok(());
     }
     unlock_parent(target)?;
-    unlock_entry(target)?;
-    remove_path(target)?;
+    remove_cloned_path(target)?;
     if expected.kind == EntryKind::Directory {
         fs::create_dir(target)?;
         copy_metadata(source, target)?;
@@ -1457,8 +1454,7 @@ fn settle_extras(
             fs::rename(&extra, destination.join(sibling))?;
             continue;
         }
-        unlock_entry(&extra)?;
-        remove_path(&extra)?;
+        remove_cloned_path(&extra)?;
     }
     Ok(())
 }
@@ -2108,6 +2104,83 @@ mod tests {
             );
         }
         command("/bin/chmod", &["-R", "u+w"], root);
+    }
+
+    #[test]
+    fn materialize_repairs_hard_links_inside_acl_restricted_directories() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let directory = root.join("restricted");
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("one"), "shared").unwrap();
+        fs::hard_link(directory.join("one"), directory.join("two")).unwrap();
+        let user = String::from_utf8(
+            Command::new("/usr/bin/id")
+                .arg("-un")
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        command(
+            "/bin/chmod",
+            &["+a", &format!("{} deny add_file", user.trim())],
+            &directory,
+        );
+        let original = Entry::read(&directory).unwrap();
+        for mode in [Mode::Through, Mode::Private] {
+            let state_root = root.join(format!(".deltabox/test/{mode:?}"));
+            let state = State::create(root, &state_root, mode, false, 1, "device".into()).unwrap();
+            assert_mirrors(root, &state_root.join(BASE_DIR));
+            if mode == Mode::Private {
+                assert_mirrors(root, &state.live());
+            }
+            assert_eq!(Entry::read(&directory).unwrap(), original);
+        }
+        command("/bin/chmod", &["-RN"], root);
+    }
+
+    #[test]
+    fn mirror_removes_locked_subtrees_without_following_symlinks() {
+        let source = tempfile::tempdir().unwrap();
+        let copy = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("victim");
+        fs::write(&victim, "outside").unwrap();
+        command("/usr/bin/chflags", &["hidden"], &victim);
+        let original = Entry::read(&victim).unwrap();
+        for name in ["gone", "replaced"] {
+            let directory = source.path().join(name);
+            fs::create_dir_all(directory.join("inner")).unwrap();
+            fs::write(directory.join("inner/file"), "locked").unwrap();
+            command("/usr/bin/chflags", &["uchg"], &directory.join("inner/file"));
+            std::os::unix::fs::symlink(outside.path(), directory.join("outside")).unwrap();
+        }
+        let destination = copy.path().join("tree");
+        materialize(source.path(), &destination, false).unwrap();
+        for name in ["gone", "replaced"] {
+            let directory = source.path().join(name);
+            command(
+                "/usr/bin/chflags",
+                &["nouchg"],
+                &directory.join("inner/file"),
+            );
+            fs::remove_dir_all(directory).unwrap();
+            fs::set_permissions(
+                destination.join(name).join("inner"),
+                fs::Permissions::from_mode(0o500),
+            )
+            .unwrap();
+        }
+        fs::write(source.path().join("replaced"), "now a file").unwrap();
+        let result = mirror(source.path(), &destination, now_ns());
+        // Clean up even when the regression makes the repair fail.
+        command("/usr/bin/chflags", &["-R", "nouchg"], &destination);
+        command("/bin/chmod", &["-R", "u+w"], &destination);
+        result.unwrap();
+        assert_mirrors(source.path(), &destination);
+        assert_eq!(fs::read(&victim).unwrap(), b"outside");
+        assert_eq!(Entry::read(&victim).unwrap(), original);
     }
 
     #[test]
