@@ -14,10 +14,12 @@ use crate::private_publish::{
 use crate::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
     CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecRequest, ExecResult,
-    FilesystemInfo, FsReadResult, ReviewBeginParams, SessionInfo, SessionSpec, SessionStatus,
+    FilesystemInfo, FsReadResult, LiveProcessPolicy, ReviewBeginParams, SessionInfo, SessionSpec,
+    SessionStatus,
 };
 use crate::session::{now_ms, SessionMeta, SessionRegistry};
 use crate::state_layout::{publish_lock_path, runtime_base, state_base, state_root, SessionLayout};
+use crate::worker::LiveProcess;
 use base64::Engine;
 use deltafs_fuse::control::{self, Command as ControlCommand, ResultValue};
 use serde::{Deserialize, Serialize};
@@ -763,8 +765,33 @@ impl Manager {
         self.commit_locked(params)
     }
 
+    /// Apply `policy` to processes an earlier exec left running in the
+    /// sandbox, before a commit or abort closes the review. Trusted execution
+    /// runs outside the sandbox and is not tracked.
+    fn enforce_live_processes(&self, session_id: &str, policy: LiveProcessPolicy) -> Result<()> {
+        if self.execution_mode != CommandExecutionMode::Sandboxed
+            || policy == LiveProcessPolicy::Detach
+        {
+            return Ok(());
+        }
+        let endpoint = command_endpoint(&self.load_record(session_id)?)?;
+        let mut live = command_executor::processes(&endpoint, session_id, false)?;
+        if live.is_empty() {
+            return Ok(());
+        }
+        if policy == LiveProcessPolicy::Kill {
+            live = command_executor::processes(&endpoint, session_id, true)?;
+        }
+        if live.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::LiveProcesses(LiveProcess::describe(&live)))
+        }
+    }
+
     fn commit_locked(&self, params: CommitParams) -> Result<CommitResult> {
         self.running_meta(&params.session_id)?;
+        self.enforce_live_processes(&params.session_id, params.live_processes)?;
         let record = self.ensure_helper(&params.session_id)?;
         if record.mode == crate::protocol::FilesystemMode::CbcowPrivate {
             return self.commit_private(params, &record);
@@ -1018,6 +1045,7 @@ impl Manager {
 
     fn abort_locked(&self, params: AbortParams) -> Result<AbortResult> {
         self.running_meta(&params.session_id)?;
+        self.enforce_live_processes(&params.session_id, params.live_processes)?;
         let record = self.ensure_helper(&params.session_id)?;
         let restored = self.pending(&record)?;
         let target = parse_checkpoint(params.checkpoint.as_deref())?;
@@ -1075,6 +1103,7 @@ impl Manager {
         self.running_meta(session_id)?;
         self.require_review(session_id)?;
         self.commit_locked(CommitParams {
+            live_processes: Default::default(),
             session_id: session_id.into(),
             checkpoint: None,
             ours: false,
@@ -1086,6 +1115,7 @@ impl Manager {
         self.running_meta(session_id)?;
         let active = self.require_review(session_id)?;
         let result = self.abort_locked(AbortParams {
+            live_processes: Default::default(),
             session_id: session_id.into(),
             checkpoint: Some(active.checkpoint_id),
         })?;

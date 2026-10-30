@@ -432,6 +432,7 @@ impl NativeDeltabox {
         run_blocking(move || {
             coordinator
                 .commit(CommitParams {
+                    live_processes: Default::default(),
                     session_id,
                     checkpoint,
                     ours: false,
@@ -452,6 +453,7 @@ impl NativeDeltabox {
         run_blocking(move || {
             coordinator
                 .abort(AbortParams {
+                    live_processes: Default::default(),
                     session_id,
                     checkpoint,
                 })

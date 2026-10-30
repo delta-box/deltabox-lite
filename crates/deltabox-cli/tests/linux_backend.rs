@@ -6,7 +6,7 @@ use deltabox_core::backend::linux_sandlock::SandlockBackend;
 use deltabox_core::backend::macos_seatbelt::SeatbeltBackend;
 use deltabox_core::backend::SandboxBackend;
 use deltabox_core::protocol::{
-    AbortParams, CheckpointParams, CommitParams, DiffParams, ExecParams,
+    AbortParams, CheckpointParams, CommitParams, DiffParams, ExecParams, LiveProcessPolicy,
 };
 use deltabox_core::session::SessionManager;
 use std::path::PathBuf;
@@ -82,6 +82,7 @@ fn exec_captures_output_and_keeps_host_clean() {
         .unwrap();
     manager
         .abort(AbortParams {
+            live_processes: Default::default(),
             session_id: sid,
             checkpoint: None,
         })
@@ -114,6 +115,7 @@ fn checkpoint_abort_roundtrip() {
 
     manager
         .abort(AbortParams {
+            live_processes: Default::default(),
             session_id: sid.clone(),
             checkpoint: Some(ckpt.id),
         })
@@ -137,6 +139,7 @@ fn commit_applies_to_host() {
         .unwrap();
     let result = manager
         .commit(CommitParams {
+            live_processes: Default::default(),
             session_id: sid.clone(),
             checkpoint: None,
             ours: false,
@@ -163,6 +166,7 @@ fn deletion_state_survives_checkpoint_and_abort() {
     exec_sh(&mut manager, &sid, "printf x > new.txt");
     manager
         .abort(AbortParams {
+            live_processes: Default::default(),
             session_id: sid.clone(),
             checkpoint: None,
         })
@@ -238,6 +242,7 @@ fn checkpoint_before_deletion_abort_restores() {
 
     manager
         .abort(AbortParams {
+            live_processes: Default::default(),
             session_id: sid.clone(),
             checkpoint: None,
         })
@@ -265,6 +270,7 @@ fn delete_then_checkpoint_then_commit_applies_deletion() {
         .unwrap();
     manager
         .commit(CommitParams {
+            live_processes: Default::default(),
             session_id: sid.clone(),
             checkpoint: None,
             ours: false,
@@ -305,6 +311,7 @@ fn binary_edit_roundtrip() {
 
     manager
         .abort(AbortParams {
+            live_processes: Default::default(),
             session_id: sid.clone(),
             checkpoint: None,
         })
@@ -376,6 +383,7 @@ fn fs_read_write_roundtrip() {
         .unwrap();
     manager
         .commit(CommitParams {
+            live_processes: Default::default(),
             session_id: sid.clone(),
             checkpoint: None,
             ours: false,
@@ -454,4 +462,109 @@ fn rooted_write_grant_cannot_escape_resolved_denies() {
     assert!(secret.stdout.is_empty());
 
     backend.stop_session("rooted").unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn backgrounded_process_is_reported_and_stopped() {
+    let (_dir, mut manager, session_id) = start_project();
+    let (code, _, _) = exec_sh(
+        &mut manager,
+        &session_id,
+        "sleep 300 >/dev/null 2>&1 </dev/null & setsid sleep 301 >/dev/null 2>&1 </dev/null &",
+    );
+    assert_eq!(code, 0);
+
+    let live = manager.live_processes(&session_id).unwrap();
+    // `setsid` may not have exec'd into `sleep` yet.
+    assert_eq!(live.len(), 2, "{live:?}");
+
+    let survivors = manager.stop_live_processes(&session_id).unwrap();
+    assert!(survivors.is_empty(), "{survivors:?}");
+    assert!(manager.live_processes(&session_id).unwrap().is_empty());
+}
+
+#[cfg(target_os = "linux")]
+fn background_sleep(manager: &mut SessionManager, session_id: &str) {
+    let (code, _, _) = exec_sh(
+        manager,
+        session_id,
+        "echo kept > out.txt; sleep 300 >/dev/null 2>&1 </dev/null &",
+    );
+    assert_eq!(code, 0);
+    manager
+        .checkpoint(CheckpointParams {
+            session_id: session_id.to_string(),
+            label: None,
+        })
+        .unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn commit_and_abort_refuse_while_a_process_is_running() {
+    let (dir, mut manager, session_id) = start_project();
+    background_sleep(&mut manager, &session_id);
+
+    let commit = manager.commit(CommitParams {
+        session_id: session_id.clone(),
+        checkpoint: None,
+        ours: false,
+        live_processes: Default::default(),
+    });
+    let message = commit.unwrap_err().to_string();
+    assert!(message.contains("processes still running"), "{message}");
+    assert!(message.contains("sleep"), "{message}");
+    assert!(!dir.path().join("out.txt").exists());
+
+    let abort = manager.abort(AbortParams {
+        session_id: session_id.clone(),
+        checkpoint: None,
+        live_processes: Default::default(),
+    });
+    assert!(abort.is_err());
+    // The refusal did not stop anything.
+    assert_eq!(manager.live_processes(&session_id).unwrap().len(), 1);
+    manager.stop_live_processes(&session_id).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn kill_policy_stops_processes_then_commits() {
+    let (dir, mut manager, session_id) = start_project();
+    background_sleep(&mut manager, &session_id);
+
+    manager
+        .commit(CommitParams {
+            session_id: session_id.clone(),
+            checkpoint: None,
+            ours: false,
+            live_processes: LiveProcessPolicy::Kill,
+        })
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("out.txt")).unwrap(),
+        "kept\n"
+    );
+    assert!(manager.live_processes(&session_id).unwrap().is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn detach_is_unsupported_where_commit_restarts_the_sandbox() {
+    let (dir, mut manager, session_id) = start_project();
+    background_sleep(&mut manager, &session_id);
+
+    let error = manager
+        .commit(CommitParams {
+            session_id: session_id.clone(),
+            checkpoint: None,
+            ours: false,
+            live_processes: LiveProcessPolicy::Detach,
+        })
+        .unwrap_err();
+    assert!(matches!(error, deltabox_core::error::Error::Unsupported(_)));
+    assert!(!dir.path().join("out.txt").exists());
+    assert_eq!(manager.live_processes(&session_id).unwrap().len(), 1);
+    manager.stop_live_processes(&session_id).unwrap();
 }

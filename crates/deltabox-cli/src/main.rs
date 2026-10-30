@@ -4,7 +4,7 @@ use deltabox_core::backend::DefaultBackend;
 use deltabox_core::coordinator::SessionCoordinator;
 use deltabox_core::protocol::{
     AbortParams, CheckpointParams, CommitParams, DiffParams, DurabilityMode, ExecParams,
-    ExecutionProfile, FilesystemMode, Request, ReviewBeginParams, ReviewKind,
+    ExecutionProfile, FilesystemMode, LiveProcessPolicy, Request, ReviewBeginParams, ReviewKind,
 };
 use deltabox_core::server::Server;
 use std::io::{BufRead, IsTerminal, Write};
@@ -203,6 +203,10 @@ struct RunArgs {
     /// Abort the command's filesystem changes without prompting.
     #[arg(long, conflicts_with = "commit")]
     abort: bool,
+    /// What to do with processes the command left running when it finishes:
+    /// kill (default for a one-shot run), refuse, or detach.
+    #[arg(long, value_parser = parse_live_processes, default_value = "kill")]
+    live_processes: LiveProcessPolicy,
     #[arg(long)]
     label: Option<String>,
     #[arg(long)]
@@ -275,6 +279,10 @@ struct CommitArgs {
     /// fresh baseline if siblings keep landing first.
     #[arg(long, requires = "sync")]
     ours: bool,
+    /// What to do with processes a command left running: refuse (default),
+    /// kill, or detach.
+    #[arg(long, value_parser = parse_live_processes, default_value = "refuse")]
+    live_processes: LiveProcessPolicy,
 }
 
 #[derive(clap::Args)]
@@ -284,6 +292,10 @@ struct AbortArgs {
     project: PathBuf,
     #[arg(long)]
     checkpoint: Option<String>,
+    /// What to do with processes a command left running: refuse (default),
+    /// kill, or detach.
+    #[arg(long, value_parser = parse_live_processes, default_value = "refuse")]
+    live_processes: LiveProcessPolicy,
 }
 
 #[derive(clap::Args)]
@@ -496,6 +508,7 @@ fn main() -> anyhow::Result<()> {
             let mut sync_retries: u64 = 0;
             loop {
                 let result = manager.commit(CommitParams {
+                    live_processes: args.live_processes,
                     session_id: args.session.clone(),
                     checkpoint: args.checkpoint.clone(),
                     ours: args.ours,
@@ -560,6 +573,7 @@ fn main() -> anyhow::Result<()> {
         Command::Abort(args) => {
             let manager = SessionCoordinator::new(&args.project, None)?;
             let result = manager.abort(AbortParams {
+                live_processes: args.live_processes,
                 session_id: args.session,
                 checkpoint: args.checkpoint,
             })?;
@@ -796,6 +810,7 @@ fn run_transaction(args: RunArgs) -> anyhow::Result<i32> {
         match action {
             RunAction::Commit => {
                 let committed = manager.commit(CommitParams {
+                    live_processes: args.live_processes,
                     session_id: session_id.clone(),
                     checkpoint: None,
                     ours: false,
@@ -804,6 +819,7 @@ fn run_transaction(args: RunArgs) -> anyhow::Result<i32> {
             }
             RunAction::Abort => {
                 let aborted = manager.abort(AbortParams {
+                    live_processes: args.live_processes,
                     session_id: session_id.clone(),
                     checkpoint: None,
                 })?;
@@ -845,6 +861,15 @@ fn print_start_notice(info: &deltabox_core::protocol::SessionInfo) {
         );
     } else if let Some(reason) = &info.filesystem.fallback_reason {
         eprintln!("deltabox: requested filesystem is unavailable; using copy-private: {reason}");
+    }
+}
+
+fn parse_live_processes(value: &str) -> Result<LiveProcessPolicy, String> {
+    match value {
+        "refuse" => Ok(LiveProcessPolicy::Refuse),
+        "kill" => Ok(LiveProcessPolicy::Kill),
+        "detach" => Ok(LiveProcessPolicy::Detach),
+        _ => Err("expected refuse, kill, or detach".into()),
     }
 }
 

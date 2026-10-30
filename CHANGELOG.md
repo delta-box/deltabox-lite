@@ -9,6 +9,15 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+### Added
+
+- Linux: `commit` and `abort` now detect processes a command left running in
+  the sandbox (for example `sleep 300 &`) and refuse by default, listing them.
+  `--live-processes kill` stops them first; `--live-processes detach` leaves
+  them running where the filesystem mode allows it. `run` defaults to `kill`.
+  `review.commit` and `review.abort` always use the default (refuse) for now.
+  Groundwork for PTY, stdin, and background-job support (#42).
+
 ## [0.1.4] - 2026-10-21
 
 ### Changed

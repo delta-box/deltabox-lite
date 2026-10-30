@@ -183,6 +183,36 @@ fn changes_and_history_cross_cli_processes() {
 }
 
 #[test]
+fn commit_and_abort_refuse_while_a_background_process_runs() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("README.md"), "base\n").unwrap();
+    let session = Session::start(project.path());
+    let exec = session.exec_shell("echo kept > out.txt; sleep 300 >/dev/null 2>&1 </dev/null &");
+    assert_ok(&exec);
+
+    for action in ["commit", "abort"] {
+        let output = session.command([action, &session.id]);
+        assert!(!output.status.success(), "{action} must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("processes still running"), "{stderr}");
+        assert!(stderr.contains("sleep"), "{stderr}");
+    }
+
+    let output = session.command(["commit", &session.id, "--live-processes", "kill"]);
+    assert_ok(&output);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("out.txt")).unwrap(),
+        "kept\n"
+    );
+    // Nothing is left to refuse on.
+    let output = session.command(["commit", &session.id]);
+    assert_ok(&output);
+}
+
+#[test]
 fn strict_mode_survives_helper_restart_before_and_after_commit() {
     if !available() {
         return;

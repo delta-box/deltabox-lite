@@ -97,6 +97,37 @@ commit, abort, stop, or exec operations wait for that orphaned command boundary
 instead of racing it. The helper acknowledges lock ownership before starting a
 command, so a request whose client disappears before handoff is not executed.
 
+## Processes left running
+
+Rolling the tree back under a live writer is incoherent, and committing while
+one is mid-write can capture a torn file. When a command backgrounds a process
+and returns (`sleep 300 &`, a watcher, a dev server), `commit` and `abort`
+check for it first and apply `--live-processes` (`live_processes` in the
+protocol):
+
+| Policy | Behavior |
+| --- | --- |
+| `refuse` (default) | Fail and list the processes by name and pid. Nothing is stopped. |
+| `kill` | SIGTERM, then SIGKILL, every such process, then continue. |
+| `detach` | Continue and leave them running. Their later writes land in the next review scope. |
+
+`deltabox run` defaults to `kill`, since a one-shot transaction has nobody to
+choose. `review.commit` and `review.abort` take no policy yet and always
+refuse.
+
+Detection is Linux-only for now. The sandbox worker becomes a child subreaper,
+so a process that double-forks or calls `setsid` is still found by walking the
+worker's descendants. Mode notes:
+
+- `cbcow-through` and `cbcow-private`: the warm sandbox outlives commit and
+  abort, so all three policies apply.
+- `copy-private` on the persistent session manager restarts the sandbox on
+  commit and abort, which would kill the process; `detach` is rejected there.
+- Durable `copy-private` runs each exec in a throwaway sandbox that is torn
+  down when the command returns, so nothing survives to be checked.
+- macOS and Windows do not detect leftover processes yet; the policy is
+  accepted and ignored.
+
 ## Concurrency and conflicts
 
 Only one mutating operation may own a session at a time. A per-session process

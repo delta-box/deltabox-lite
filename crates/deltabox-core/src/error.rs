@@ -24,6 +24,8 @@ pub enum Error {
     CheckpointNotFound(String),
     #[error("no active review scope for session: {0}")]
     ReviewNotActive(String),
+    #[error("processes still running in session: {0}")]
+    LiveProcesses(String),
     #[error("backend error: {0}")]
     Backend(String),
     #[error("filesystem unavailable: {0}")]

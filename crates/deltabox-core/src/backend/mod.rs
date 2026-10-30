@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::protocol::{AbortResult, CommitResult, ExecRequest, ExecResult, SessionSpec};
-use crate::worker::ScanEntry;
+use crate::worker::{LiveProcess, ScanEntry};
 use std::path::{Path, PathBuf};
 
 /// Platform sandbox backend. The core delegates everything OS-specific here.
@@ -20,6 +20,15 @@ pub trait SandboxBackend: Send + Sync {
     /// Scan the sandboxed project view. Additions/modifications live in the
     /// COW upper layer; deletions are visible only through this scan.
     fn scan(&mut self, session_id: &str) -> Result<Vec<ScanEntry>>;
+    /// Processes a finished `exec` left running in the session sandbox.
+    /// Backends that cannot observe them report none.
+    fn live_processes(&mut self, _session_id: &str) -> Result<Vec<LiveProcess>> {
+        Ok(Vec::new())
+    }
+    /// Terminate those processes; returns any that survived.
+    fn stop_live_processes(&mut self, _session_id: &str) -> Result<Vec<LiveProcess>> {
+        Ok(Vec::new())
+    }
     /// Path of the current COW upper directory.
     fn current_upper(&mut self, session_id: &str) -> Result<PathBuf>;
     /// Freeze the current COW state into `dest_dir/upper`, skipping files

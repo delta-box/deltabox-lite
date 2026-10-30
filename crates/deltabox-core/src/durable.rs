@@ -618,6 +618,7 @@ impl DurableSessionManager {
         let _lock = self.lock_running(session_id)?;
         self.require_active_review(session_id)?;
         let result = self.commit_locked(CommitParams {
+            live_processes: Default::default(),
             session_id: session_id.to_string(),
             checkpoint: None,
             ours: false,
@@ -630,6 +631,7 @@ impl DurableSessionManager {
         let _lock = self.lock_running(session_id)?;
         let active = self.require_active_review(session_id)?;
         let result = self.abort_locked(AbortParams {
+            live_processes: Default::default(),
             session_id: session_id.to_string(),
             checkpoint: Some(active.checkpoint_id),
         })?;

@@ -6,6 +6,7 @@
 use crate::backend::SandboxBackend;
 use crate::error::{Error, Result};
 use crate::protocol::{ExecRequest, ExecResult, SessionSpec};
+use crate::worker::LiveProcess;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -134,6 +135,11 @@ enum Command {
         spec: SessionSpec,
         request: ExecRequest,
     },
+    /// Processes an earlier exec left running; `kill` also stops them.
+    Processes {
+        session_id: String,
+        kill: bool,
+    },
     Reset,
     Shutdown,
 }
@@ -158,6 +164,7 @@ enum ResultValue {
     Started,
     NetworkStarted { version: u32 },
     Exec(ExecResult),
+    Processes(Vec<LiveProcess>),
     Reset,
     ShuttingDown,
 }
@@ -166,6 +173,12 @@ trait CommandBackend: Send + 'static {
     fn start_session(&mut self, session_id: &str, spec: &SessionSpec) -> Result<()>;
     fn stop_session(&mut self, session_id: &str) -> Result<()>;
     fn exec(&mut self, session_id: &str, request: ExecRequest) -> Result<ExecResult>;
+    fn live_processes(&mut self, _session_id: &str) -> Result<Vec<LiveProcess>> {
+        Ok(Vec::new())
+    }
+    fn stop_live_processes(&mut self, _session_id: &str) -> Result<Vec<LiveProcess>> {
+        Ok(Vec::new())
+    }
 }
 
 struct SandboxCommandBackend<T>(T);
@@ -181,6 +194,14 @@ impl<T: SandboxBackend + 'static> CommandBackend for SandboxCommandBackend<T> {
 
     fn exec(&mut self, session_id: &str, request: ExecRequest) -> Result<ExecResult> {
         SandboxBackend::exec(&mut self.0, session_id, request)
+    }
+
+    fn live_processes(&mut self, session_id: &str) -> Result<Vec<LiveProcess>> {
+        SandboxBackend::live_processes(&mut self.0, session_id)
+    }
+
+    fn stop_live_processes(&mut self, session_id: &str) -> Result<Vec<LiveProcess>> {
+        SandboxBackend::stop_live_processes(&mut self.0, session_id)
     }
 }
 
@@ -241,6 +262,18 @@ impl<B: CommandBackend> PersistentExecutor<B> {
                 }
                 Err(error)
             }
+        }
+    }
+
+    fn processes(&mut self, session_id: &str, kill: bool) -> Result<Vec<LiveProcess>> {
+        // Without a warm runtime for this session nothing can be running.
+        if self.active.as_ref().map(|a| a.session_id.as_str()) != Some(session_id) {
+            return Ok(Vec::new());
+        }
+        if kill {
+            self.backend.stop_live_processes(session_id)
+        } else {
+            self.backend.live_processes(session_id)
         }
     }
 
@@ -347,6 +380,26 @@ pub fn exec(
         ResultValue::Exec(result) => Ok(result),
         _ => Err(Error::Backend(
             "unexpected command executor response".into(),
+        )),
+    }
+}
+
+/// Processes a finished exec left running in the session's warm sandbox.
+/// With `kill`, stops them first and returns the survivors.
+pub fn processes(endpoint: &Endpoint, session_id: &str, kill: bool) -> Result<Vec<LiveProcess>> {
+    if !helper_is_alive(endpoint)? {
+        return Ok(Vec::new());
+    }
+    match request(
+        endpoint,
+        Command::Processes {
+            session_id: session_id.to_owned(),
+            kill,
+        },
+    )? {
+        ResultValue::Processes(processes) => Ok(processes),
+        _ => Err(Error::Backend(
+            "unexpected command executor processes response".into(),
         )),
     }
 }
@@ -572,6 +625,11 @@ fn handle_connection<B: CommandBackend>(
             }
             result
         }
+        Command::Processes { session_id, kill } => executor
+            .lock()
+            .map_err(|_| Error::Backend("command executor lock poisoned".into()))?
+            .processes(&session_id, kill)
+            .map(ResultValue::Processes),
         Command::Reset => executor
             .lock()
             .map_err(|_| Error::Backend("command executor lock poisoned".into()))?
@@ -598,7 +656,7 @@ fn request(endpoint: &Endpoint, command: Command) -> Result<ResultValue> {
         // command. A stalled helper must fail its initial handshake quickly.
         Command::Exec { .. } => CONNECT_TIMEOUT,
         Command::Shutdown => EXEC_TIMEOUT,
-        Command::Reset => STOP_TIMEOUT,
+        Command::Reset | Command::Processes { .. } => STOP_TIMEOUT,
         Command::Ping => CONNECT_TIMEOUT,
     };
     stream.set_read_timeout(Some(initial_timeout))?;

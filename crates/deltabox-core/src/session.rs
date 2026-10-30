@@ -6,14 +6,14 @@ use crate::journal::{Journal, JournalEntry, JournalKind};
 use crate::policy::Policy;
 use crate::protocol::{
     AbortParams, AbortResult, CheckpointInfo, CheckpointParams, CommitParams, CommitResult,
-    DiffParams, DiffResult, ExecParams, ExecRequest, ExecResult, FsReadResult, SessionInfo,
-    SessionSpec, SessionStatus,
+    DiffParams, DiffResult, ExecParams, ExecRequest, ExecResult, FsReadResult, LiveProcessPolicy,
+    SessionInfo, SessionSpec, SessionStatus,
 };
 use crate::snapshot::{
     diff_snapshots, load_snapshot, read_capped_file, save_snapshot, BASE_SCAN_FILE,
 };
 use crate::state_layout::state_root;
-use crate::worker::ScanEntry;
+use crate::worker::{LiveProcess, ScanEntry};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::File;
@@ -393,8 +393,53 @@ impl SessionManager {
         })
     }
 
+    /// Processes a finished `exec` left running in the session sandbox.
+    pub fn live_processes(&mut self, session_id: &str) -> Result<Vec<LiveProcess>> {
+        self.ensure_running(session_id)?;
+        self.backend.live_processes(session_id)
+    }
+
+    /// Stop those processes; returns any that survived.
+    pub fn stop_live_processes(&mut self, session_id: &str) -> Result<Vec<LiveProcess>> {
+        self.ensure_running(session_id)?;
+        self.backend.stop_live_processes(session_id)
+    }
+
+    /// Apply `policy` before a commit or abort closes the review.
+    fn enforce_live_processes(
+        &mut self,
+        session_id: &str,
+        policy: LiveProcessPolicy,
+    ) -> Result<()> {
+        if policy == LiveProcessPolicy::Detach {
+            // Commit and abort restart this view's sandbox, which would kill
+            // the process anyway; do not pretend it survives.
+            return match self.backend.live_processes(session_id)?.as_slice() {
+                [] => Ok(()),
+                _ => Err(Error::Unsupported(
+                    "copy-private sessions restart their sandbox on commit and abort, \
+                     so processes cannot be left running; use kill"
+                        .into(),
+                )),
+            };
+        }
+        let mut live = self.backend.live_processes(session_id)?;
+        if live.is_empty() {
+            return Ok(());
+        }
+        if policy == LiveProcessPolicy::Kill {
+            live = self.backend.stop_live_processes(session_id)?;
+        }
+        if live.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::LiveProcesses(LiveProcess::describe(&live)))
+        }
+    }
+
     pub fn commit(&mut self, params: CommitParams) -> Result<CommitResult> {
         self.ensure_running(&params.session_id)?;
+        self.enforce_live_processes(&params.session_id, params.live_processes)?;
         let store_dir = self.store_dir(&params.session_id);
         let mut manifest = CheckpointStore::open(&store_dir, DEFAULT_CHECKPOINT_CAP)?;
         let head = manifest.head().map(str::to_string).unwrap_or_default();
@@ -437,6 +482,7 @@ impl SessionManager {
 
     pub fn abort(&mut self, params: AbortParams) -> Result<AbortResult> {
         self.ensure_running(&params.session_id)?;
+        self.enforce_live_processes(&params.session_id, params.live_processes)?;
         let store_dir = self.store_dir(&params.session_id);
         let manifest = CheckpointStore::open(&store_dir, DEFAULT_CHECKPOINT_CAP)?;
         let head = manifest.head().map(str::to_string).unwrap_or_default();
@@ -793,6 +839,7 @@ mod tests {
 
         let committed = manager
             .commit(CommitParams {
+                live_processes: Default::default(),
                 session_id: info.session_id.clone(),
                 checkpoint: None,
                 ours: false,
@@ -808,6 +855,7 @@ mod tests {
             .unwrap();
         let aborted = manager
             .abort(AbortParams {
+                live_processes: Default::default(),
                 session_id: info.session_id,
                 checkpoint: None,
             })

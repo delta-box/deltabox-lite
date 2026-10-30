@@ -26,6 +26,14 @@ pub enum WorkerCommand {
     Scan {
         id: u64,
     },
+    /// List processes still alive after their `exec` returned.
+    Processes {
+        id: u64,
+    },
+    /// Terminate every such process and wait briefly for them to exit.
+    KillProcesses {
+        id: u64,
+    },
     Write {
         id: u64,
         path: String,
@@ -61,6 +69,25 @@ pub struct WorkerExecResult {
     pub truncated: bool,
 }
 
+/// A process that outlived the `exec` that started it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveProcess {
+    pub pid: u32,
+    /// Executable name as reported by the kernel (`comm`).
+    pub name: String,
+}
+
+impl LiveProcess {
+    /// One-line description for error messages: `sleep (pid 42), node (pid 57)`.
+    pub fn describe(processes: &[LiveProcess]) -> String {
+        processes
+            .iter()
+            .map(|p| format!("{} (pid {})", p.name, p.pid))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScanEntryKind {
@@ -92,6 +119,7 @@ pub fn is_excluded_dir(name: &str) -> bool {
 /// Run the worker loop until stdin reaches EOF.
 pub fn run_worker(root: &Path, runtime: &Path) -> Result<()> {
     configure_parent_death_signal()?;
+    configure_child_subreaper();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     writeln!(out, "{}", serde_json::to_string(&WorkerEvent::Ready)?)?;
@@ -140,6 +168,14 @@ pub fn run_worker(root: &Path, runtime: &Path) -> Result<()> {
                     message: e.to_string(),
                 },
             },
+            WorkerCommand::Processes { id } => WorkerEvent::Ok {
+                id,
+                result: serde_json::to_value(live_processes())?,
+            },
+            WorkerCommand::KillProcesses { id } => WorkerEvent::Ok {
+                id,
+                result: serde_json::to_value(kill_live_processes())?,
+            },
             WorkerCommand::Write {
                 id,
                 path,
@@ -176,6 +212,116 @@ fn configure_parent_death_signal() -> Result<()> {
 #[cfg(not(target_os = "linux"))]
 fn configure_parent_death_signal() -> Result<()> {
     Ok(())
+}
+
+/// Make the worker adopt orphaned descendants. A command that backgrounds a
+/// process and exits would otherwise hand it to init, out of the worker's
+/// reach; as subreaper the worker can still find and stop it.
+#[cfg(target_os = "linux")]
+fn configure_child_subreaper() {
+    unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) };
+}
+
+#[cfg(not(target_os = "linux"))]
+fn configure_child_subreaper() {}
+
+/// Every descendant of the worker as `(pid, state, comm)`. Every exec child
+/// has been waited on by the time this runs, so descendants are processes a
+/// command left behind: directly adopted orphans and whatever they spawned.
+#[cfg(target_os = "linux")]
+fn worker_descendants() -> Vec<(u32, char, String)> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let mut table = Vec::new();
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        // "<pid> (<comm>) <state> <ppid> ..."; comm may contain spaces and ')'.
+        let (Some(open), Some(close)) = (stat.find('('), stat.rfind(')')) else {
+            continue;
+        };
+        let mut rest = stat[close + 1..].split_whitespace();
+        let (Some(state), Some(ppid)) = (rest.next(), rest.next()) else {
+            continue;
+        };
+        let Ok(ppid) = ppid.parse::<u32>() else {
+            continue;
+        };
+        table.push((
+            pid,
+            ppid,
+            state.chars().next().unwrap_or('?'),
+            stat[open + 1..close].to_owned(),
+        ));
+    }
+    let mut parents = vec![std::process::id()];
+    let mut found = Vec::new();
+    while let Some(parent) = parents.pop() {
+        for (pid, ppid, state, name) in &table {
+            if *ppid == parent {
+                parents.push(*pid);
+                found.push((*pid, *state, name.clone()));
+            }
+        }
+    }
+    found
+}
+
+/// Reap adopted orphans that have exited, then report the ones still alive.
+#[cfg(target_os = "linux")]
+fn live_processes() -> Vec<LiveProcess> {
+    let mut live = Vec::new();
+    for (pid, state, name) in worker_descendants() {
+        if state == 'Z' {
+            // Only adopted orphans are our children; for any other zombie this
+            // fails with ECHILD and its own parent reaps it.
+            unsafe { libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG) };
+        } else {
+            live.push(LiveProcess { pid, name });
+        }
+    }
+    live
+}
+
+#[cfg(not(target_os = "linux"))]
+fn live_processes() -> Vec<LiveProcess> {
+    Vec::new()
+}
+
+/// SIGTERM then SIGKILL every process a command left behind.
+/// Returns whatever is still alive afterwards.
+#[cfg(target_os = "linux")]
+fn kill_live_processes() -> Vec<LiveProcess> {
+    for signal in [libc::SIGTERM, libc::SIGKILL] {
+        let live = live_processes();
+        if live.is_empty() {
+            break;
+        }
+        for process in &live {
+            unsafe { libc::kill(process.pid as libc::pid_t, signal) };
+        }
+        for _ in 0..50 {
+            if live_processes().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+    live_processes()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn kill_live_processes() -> Vec<LiveProcess> {
+    Vec::new()
 }
 
 fn run_exec(root: &Path, runtime: &Path, exec: &WorkerExec) -> Result<WorkerExecResult> {

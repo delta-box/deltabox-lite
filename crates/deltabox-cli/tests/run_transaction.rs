@@ -171,3 +171,45 @@ fn help_describes_the_temporary_transaction_and_argv_boundary() {
     assert!(stdout.contains("--abort"), "{stdout}");
     assert!(stdout.contains("<COMMAND>..."), "{stdout}");
 }
+
+#[cfg(target_os = "linux")]
+fn run_with_policy(project: &Path, state: &Path, policy: &str, script: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_deltabox"))
+        .env("DELTABOX_STATE_DIR", state)
+        .args([
+            "run",
+            "--project",
+            project.to_str().unwrap(),
+            "--commit",
+            "--live-processes",
+            policy,
+            "--fs-mode",
+            "copy-private",
+            "--require-fs-mode",
+            "--",
+            "sh",
+            "-c",
+            script,
+        ])
+        .output()
+        .unwrap()
+}
+
+// A copy-private exec runs in a throwaway sandbox that is torn down when the
+// command returns, so a backgrounded process never reaches commit and no
+// `--live-processes` policy ever has to refuse.
+#[cfg(target_os = "linux")]
+#[test]
+fn run_commits_when_a_command_backgrounds_a_process() {
+    let script = "printf kept > result.txt; sleep 300 >/dev/null 2>&1 </dev/null &";
+    for policy in ["refuse", "kill"] {
+        let project = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let output = run_with_policy(project.path(), state.path(), policy, script);
+        assert!(output.status.success(), "{policy}: {output:?}");
+        assert_eq!(
+            std::fs::read_to_string(project.path().join("result.txt")).unwrap(),
+            "kept"
+        );
+    }
+}

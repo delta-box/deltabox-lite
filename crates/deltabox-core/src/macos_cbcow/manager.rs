@@ -1088,6 +1088,7 @@ impl Manager {
             return self.commit_fast_locked(
                 &mut session,
                 CommitParams {
+                    live_processes: Default::default(),
                     session_id: session_id.into(),
                     checkpoint: None,
                     ours: false,
@@ -1098,6 +1099,7 @@ impl Manager {
         self.running_meta(session_id)?;
         self.require_review(session_id)?;
         self.commit_locked(CommitParams {
+            live_processes: Default::default(),
             session_id: session_id.into(),
             checkpoint: None,
             ours: false,
@@ -1115,6 +1117,7 @@ impl Manager {
             let result = self.abort_fast_locked(
                 &mut session,
                 AbortParams {
+                    live_processes: Default::default(),
                     session_id: session_id.into(),
                     checkpoint: Some(active.checkpoint_id),
                 },
@@ -1127,6 +1130,7 @@ impl Manager {
         self.running_meta(session_id)?;
         let active = self.require_review(session_id)?;
         let result = self.abort_locked(AbortParams {
+            live_processes: Default::default(),
             session_id: session_id.into(),
             checkpoint: Some(active.checkpoint_id),
         })?;

@@ -174,6 +174,23 @@ pub struct DiffParams {
     pub to: Option<String>,
 }
 
+/// What to do with processes a command left running when a review closes.
+///
+/// Rolling the tree back under a live writer is incoherent, and committing
+/// while one is mid-write can capture a torn file, so the default is to
+/// refuse and let the caller choose.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveProcessPolicy {
+    /// Fail the commit or abort and report the processes.
+    #[default]
+    Refuse,
+    /// Stop the processes first (SIGTERM, then SIGKILL).
+    Kill,
+    /// Leave them running; they keep writing into the next review scope.
+    Detach,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitParams {
     pub session_id: String,
@@ -185,6 +202,8 @@ pub struct CommitParams {
     /// qualifies — changes made outside deltabox still fail closed.
     #[serde(default)]
     pub ours: bool,
+    #[serde(default)]
+    pub live_processes: LiveProcessPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +211,8 @@ pub struct AbortParams {
     pub session_id: String,
     #[serde(default)]
     pub checkpoint: Option<String>,
+    #[serde(default)]
+    pub live_processes: LiveProcessPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

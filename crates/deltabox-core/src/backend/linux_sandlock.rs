@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::policy::{NetworkMode, Policy};
 use crate::protocol::{AbortResult, CommitResult, ExecRequest, ExecResult, SessionSpec};
 use crate::snapshot::{copy_tree, move_paths_to_dir};
-use crate::worker::{ScanEntry, WorkerCommand, WorkerEvent, WorkerExec};
+use crate::worker::{LiveProcess, ScanEntry, WorkerCommand, WorkerEvent, WorkerExec};
 use sandlock_core::sandbox::{BranchAction, ByteSize, Process, StdioMode};
 use sandlock_core::{Protection, Sandbox};
 use std::collections::HashMap;
@@ -45,6 +45,10 @@ enum InnerCmd {
     },
     Scan {
         resp: std_mpsc::Sender<ChanResult<Vec<String>>>,
+    },
+    Processes {
+        kill: bool,
+        resp: std_mpsc::Sender<ChanResult<Vec<LiveProcess>>>,
     },
     CurrentUpper {
         resp: std_mpsc::Sender<PathBuf>,
@@ -298,6 +302,22 @@ impl SandboxBackend for SandlockBackend {
         Ok(crate::snapshot::build_scan_entries(
             &paths, &upper, &project,
         ))
+    }
+
+    fn live_processes(&mut self, session_id: &str) -> Result<Vec<LiveProcess>> {
+        self.call(
+            session_id,
+            |resp| InnerCmd::Processes { kill: false, resp },
+            COMMAND_TIMEOUT,
+        )
+    }
+
+    fn stop_live_processes(&mut self, session_id: &str) -> Result<Vec<LiveProcess>> {
+        self.call(
+            session_id,
+            |resp| InnerCmd::Processes { kill: true, resp },
+            COMMAND_TIMEOUT,
+        )
     }
 
     fn current_upper(&mut self, session_id: &str) -> Result<PathBuf> {
@@ -560,6 +580,40 @@ async fn serve_loop(
                         tokio::spawn(async move {
                             let out = match orx.await {
                                 Ok(Ok(value)) => serde_json::from_value::<Vec<String>>(value)
+                                    .map_err(|e| e.to_string()),
+                                Ok(Err(e)) => Err(e),
+                                Err(_) => Err("worker disconnected".into()),
+                            };
+                            let _ = resp.send(out);
+                        });
+                    }
+                    InnerCmd::Processes { kill, resp } => {
+                        if let Some(f) = &fatal {
+                            let _ = resp.send(Err(f.clone()));
+                            continue;
+                        }
+                        if !ready {
+                            let _ = resp.send(Err("worker not ready".into()));
+                            continue;
+                        }
+                        let id = next_id;
+                        next_id += 1;
+                        let (otx, orx) = oneshot::channel();
+                        pending.insert(id, otx);
+                        let command = if kill {
+                            WorkerCommand::KillProcesses { id }
+                        } else {
+                            WorkerCommand::Processes { id }
+                        };
+                        let line = serde_json::to_string(&command)?;
+                        if writer_tx.as_ref().expect("writer").send(line).is_err() {
+                            pending.remove(&id);
+                            let _ = resp.send(Err("worker pipe closed".into()));
+                            continue;
+                        }
+                        tokio::spawn(async move {
+                            let out = match orx.await {
+                                Ok(Ok(value)) => serde_json::from_value::<Vec<LiveProcess>>(value)
                                     .map_err(|e| e.to_string()),
                                 Ok(Err(e)) => Err(e),
                                 Err(_) => Err("worker disconnected".into()),
