@@ -9,6 +9,8 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-30
+
 ### Fixed
 
 - Start macOS native sessions on large projects in a fraction of the time. On
