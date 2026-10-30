@@ -21,6 +21,14 @@ Project changes are reviewable and rollback-able; writes elsewhere on the host
 are immediate and cannot be rolled back. Through-mode project writes are also
 immediately visible, and retain the exclusive-writer contract described below.
 
+Session start builds the accepted base, and the private `LIVE` tree, with one
+APFS `clonefile` call per top-level project entry, so APFS copies whole
+subtrees in the kernel. Such a directory clone resets directory times and drops
+nested ACLs, set-id bits, group ownership, and hard links, so every entry is
+then compared with a scan of the project and repaired where it differs. The
+through-mode index reuses that scan. Start-up still reads every entry, but no
+longer rewrites each one.
+
 Each session starts a small FSEvents helper to retain the warm file-level event
 stream across CLI processes. The helper owns no filesystem state: if it exits,
 the next operation rebuilds it from the persisted event ID and device UUID.

@@ -9,6 +9,16 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+### Fixed
+
+- Start macOS native sessions on large projects in a fraction of the time. On
+  a 76,741-entry, 4.7 GB project, `session start` went from 43 s to under 4 s
+  in through mode and from 85 s to under 8 s in private mode (Apple M4, macOS
+  26.5.1). The accepted base and private `LIVE` tree are cloned with one APFS
+  `clonefile` call per top-level entry, then checked against a scan of the
+  project and repaired where the clone differs, instead of being cloned and
+  re-stamped one entry at a time (#34).
+
 ## [0.1.4] - 2026-10-21
 
 ### Changed
