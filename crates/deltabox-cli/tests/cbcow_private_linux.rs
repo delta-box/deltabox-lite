@@ -644,6 +644,96 @@ fn a_killed_private_commit_releases_frozen_writers() {
     );
 }
 
+// A commit that dies after reaching the host but before the engine accepts
+// leaves recovery to finish it. If a process wrote in the meantime, accepting
+// now would take that write too without it ever reaching the host, so
+// recovery must undo the host half and leave everything pending instead.
+#[test]
+fn recovery_rolls_back_a_crashed_commit_when_the_session_changed_since() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("value.txt"), "old").unwrap();
+    let session = Session::start(project.path());
+    session.write("value.txt", "new");
+    let trigger = tempfile::tempdir().unwrap();
+    assert_exec_ok(&session.exec_shell(&background_writer(&trigger.path().join("go"))));
+
+    let crashed = session.command_with_env(
+        ["commit", &session.id],
+        "DELTABOX_TEST_CRASH_AT",
+        "private_publish_host_applied",
+    );
+    assert!(!crashed.status.success());
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("value.txt")).unwrap(),
+        "new"
+    );
+    std::fs::write(trigger.path().join("go"), b"").unwrap();
+    let live = PathBuf::from(session.mount_record()["source"].as_str().unwrap());
+    wait_for(&live.join("late.txt"), "the background write never landed");
+
+    let status = session.status();
+    assert_eq!(status["pending_changes"], 3, "{status}");
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("value.txt")).unwrap(),
+        "old"
+    );
+    assert!(!project.path().join("published.txt").exists());
+    assert_ok(&session.commit());
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("value.txt")).unwrap(),
+        "new"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("late.txt")).unwrap(),
+        "late"
+    );
+}
+
+// A publication recorded before frozen checkpoints existed cannot prove the
+// session is unchanged, so recovery takes the safe side and rolls back.
+#[test]
+fn recovery_rolls_back_a_crashed_commit_without_a_frozen_checkpoint() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("value.txt"), "old").unwrap();
+    let session = Session::start(project.path());
+    session.write("value.txt", "new");
+    let crashed = session.command_with_env(
+        ["commit", &session.id],
+        "DELTABOX_TEST_CRASH_AT",
+        "private_publish_host_applied",
+    );
+    assert!(!crashed.status.success());
+    let record = project
+        .path()
+        .join(".deltabox")
+        .join(&session.id)
+        .join("publication.json");
+    let mut publication: Value = serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+    assert!(publication["frozen_checkpoint"].is_u64(), "{publication}");
+    publication
+        .as_object_mut()
+        .unwrap()
+        .remove("frozen_checkpoint");
+    std::fs::write(&record, serde_json::to_vec(&publication).unwrap()).unwrap();
+
+    assert_eq!(session.status()["pending_changes"], 1);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("value.txt")).unwrap(),
+        "old"
+    );
+    assert_ok(&session.commit());
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("value.txt")).unwrap(),
+        "new"
+    );
+}
+
 /// Shell script that writes published.txt now and, from a detached process
 /// that outlives the exec, late.txt once `trigger` exists.
 fn background_writer(trigger: &Path) -> String {

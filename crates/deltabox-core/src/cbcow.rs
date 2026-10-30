@@ -826,6 +826,21 @@ impl Manager {
                 folded_publications: None,
             });
         }
+        // Name the frozen state, so recovery can tell whether the session still
+        // matches what reached the host. Without a freeze there is no single
+        // state to name; recovery then rolls back instead.
+        let frozen_checkpoint = match freeze_id {
+            Some(_) => match self.request(
+                record,
+                ControlCommand::Checkpoint {
+                    label: Some("publish".into()),
+                },
+            )? {
+                ResultValue::Checkpoint(checkpoint) => Some(checkpoint.id),
+                _ => return Err(Error::Backend("unexpected checkpoint response".into())),
+            },
+            None => None,
+        };
         let strict = record.durability == DurabilityMode::Strict;
         // Publication window: validation, host application, and retirement
         // must be atomic against sibling publications and recoveries.
@@ -897,6 +912,7 @@ impl Manager {
             &publish_changes,
             endorsed.as_ref(),
             status.accepted_checkpoint,
+            frozen_checkpoint,
             strict,
         )?;
         maybe_crash("private_publish_prepared");
@@ -1317,22 +1333,45 @@ impl Manager {
             }
             PublicationPhase::HostApplied => {
                 let status = self.engine_status(record)?;
+                let mut roll_back = false;
                 if status.accepted_checkpoint == publication.engine_accepted_checkpoint {
-                    match self.request(
-                        record,
-                        ControlCommand::Commit {
-                            target: None,
-                            freeze: None,
-                        },
-                    )? {
-                        ResultValue::Committed(_) => {}
-                        _ => return Err(Error::Backend("unexpected commit response".into())),
+                    // The engine has not accepted yet. Accepting now is only
+                    // safe if the session is still exactly what reached the
+                    // host: a process may have written since the crash, and
+                    // accepting that would drop it from host and diff alike.
+                    let freeze = self.freeze_writes(record)?;
+                    let freeze_id = freeze.as_ref().map(control::Freeze::id);
+                    let unchanged = match (publication.frozen_checkpoint, freeze_id) {
+                        (Some(checkpoint), Some(_)) => self
+                            .engine_changes(record, Some(checkpoint))
+                            .is_ok_and(|changes| changes.is_empty()),
+                        _ => false,
+                    };
+                    if unchanged {
+                        match self.request(
+                            record,
+                            ControlCommand::Commit {
+                                target: None,
+                                freeze: freeze_id,
+                            },
+                        )? {
+                            ResultValue::Committed(_) => {}
+                            _ => return Err(Error::Backend("unexpected commit response".into())),
+                        }
+                    } else {
+                        roll_back = true;
                     }
                 }
-                publication.phase = PublicationPhase::EngineCommitted;
-                publication.save(&store)?;
                 let mut accepted =
                     AcceptedIndex::open_with_durability(&store.join(ACCEPTED_INDEX), strict)?;
+                if roll_back {
+                    // Undo the host half instead: every change stays pending
+                    // in the session, as if the crashed commit never ran.
+                    publication.restore(&store, &self.project)?;
+                } else {
+                    publication.phase = PublicationPhase::EngineCommitted;
+                    publication.save(&store)?;
+                }
                 accepted.refresh(&self.project, &publication.changes)?;
             }
             PublicationPhase::EngineCommitted => {
