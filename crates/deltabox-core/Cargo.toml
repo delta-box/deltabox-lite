@@ -45,7 +45,7 @@ cc = "1"
 # task was killed (RECV ENOENT); 0.8.5 stopped, and every notified syscall in
 # the sandbox then failed with ENOSYS. 0.8.9 releases process slots on exit,
 # not on wait, which the process limit needs to stay accurate.
-sandlock-core = "0.8.9"
+sandlock-core = "=0.8.8"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
