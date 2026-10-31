@@ -219,15 +219,12 @@ fn run_exec(root: &Path, runtime: &Path, exec: &WorkerExec) -> Result<WorkerExec
     let (err_text, err_trunc) = err_thread
         .join()
         .map_err(|_| Error::Backend("output thread join failed".into()))?;
-    let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| Error::Backend(format!("exec wait failed: {error}")))?
-        {
-            break status;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    };
+    // A blocking wait, not a `try_wait` poll: sandlock frees the command's
+    // process slot when it sees the wait, so polling leaks one slot per exec
+    // and the session fails at its 32nd command.
+    let status = child
+        .wait()
+        .map_err(|error| Error::Backend(format!("exec wait failed: {error}")))?;
     Ok(WorkerExecResult {
         exit_code: status.code(),
         stdout: out_text,

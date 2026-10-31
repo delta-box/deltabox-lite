@@ -247,6 +247,25 @@ fn abort_invalidates_cached_content_and_namespace() {
     );
 }
 
+// The sandbox allows 32 concurrent processes by default and frees a
+// command's slot when it sees the worker wait on it. A worker that only polls
+// with a non-blocking wait never frees it, so a long session ran out of slots
+// at its 32nd command ("Resource temporarily unavailable").
+#[test]
+fn a_long_session_does_not_run_out_of_process_slots() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    let session = Session::start(project.path());
+    for index in 0..45 {
+        let output = session.exec_shell("true");
+        assert_ok(&output);
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["exit_code"], 0, "exec {index}: {result}");
+    }
+}
+
 #[test]
 fn abort_then_recreated_files_are_immediately_readable() {
     if !available() {
