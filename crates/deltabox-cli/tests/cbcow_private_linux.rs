@@ -794,8 +794,9 @@ fn recovery_rolls_back_a_crashed_commit_without_a_frozen_checkpoint() {
 /// Shell script that writes published.txt now and, from a detached process
 /// that outlives the exec, late.txt once `trigger` exists.
 fn background_writer(trigger: &Path) -> String {
+    // TEMPORARY DIAGNOSTIC: the writer logs its progress and stderr.
     format!(
-        "printf published > published.txt; (setsid sh -c 'while [ ! -e {} ]; do sleep 0.01; done; printf late > late.txt' >/dev/null 2>&1 &)",
+        "printf published > published.txt; (setsid sh -c 'echo started > bg.log; while [ ! -e {} ]; do sleep 0.01; done; echo trigger >> bg.log; printf late > late.txt; echo wrote >> bg.log' >bg.out 2>bg.err &)",
         trigger.display()
     )
 }
@@ -823,7 +824,7 @@ fn wait_for(path: &Path, message: &str) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !path.exists() {
         if Instant::now() >= deadline {
-            dump_diagnostics();
+            dump_diagnostics(path.parent());
         }
         assert!(Instant::now() < deadline, "{message}");
         std::thread::sleep(Duration::from_millis(5));
@@ -831,7 +832,19 @@ fn wait_for(path: &Path, message: &str) {
 }
 
 // TEMPORARY DIAGNOSTIC: remove once the CI-only failure is understood.
-fn dump_diagnostics() {
+fn dump_diagnostics(dir: Option<&Path>) {
+    if let Some(dir) = dir {
+        for name in ["bg.log", "bg.out", "bg.err"] {
+            match std::fs::read_to_string(dir.join(name)) {
+                Ok(text) => eprintln!("DIAG {name}: {text:?}"),
+                Err(error) => eprintln!("DIAG {name}: unreadable ({error})"),
+            }
+        }
+        let names: Vec<_> = std::fs::read_dir(dir)
+            .map(|entries| entries.flatten().map(|e| e.file_name()).collect())
+            .unwrap_or_default();
+        eprintln!("DIAG dir {} has {:?}", dir.display(), names);
+    }
     let ps = Command::new("ps")
         .args(["-eo", "pid,ppid,pgid,sid,stat,user,args"])
         .output()
