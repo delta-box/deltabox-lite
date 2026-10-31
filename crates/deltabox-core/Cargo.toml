@@ -41,7 +41,12 @@ learning_mode_windows = { git = "https://github.com/microsoft/mxc", rev = "6cd3d
 cc = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-sandlock-core = "0.8"
+# >= 0.8.6 keeps supervising after the kernel withdraws a notification whose
+# task was killed (RECV ENOENT). 0.8.5 stopped, and every notified syscall in
+# the sandbox then failed with ENOSYS. 0.8.9 is excluded: in CI (Ubuntu 24.04,
+# non-root) the first execve of a process whose parent has already exited
+# (`(cmd &)`, `setsid`, daemons) fails with EFAULT, so it never starts.
+sandlock-core = ">=0.8.6, <0.8.9"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

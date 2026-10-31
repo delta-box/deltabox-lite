@@ -503,6 +503,11 @@ fn publication_recovers_each_process_crash_boundary() {
     }
 }
 
+// The tail is written through a file rather than a pipe: dash forks both
+// sides of `printf tail | dd` back to back, and the first child's SIGCHLD can
+// interrupt the second fork while the sandbox supervisor is still answering
+// it, so the shell fails with "Cannot fork". See
+// `fork_is_not_interrupted_by_sigchld_while_the_supervisor_answers`.
 #[test]
 fn publication_preserves_hardlinks_xattrs_and_sparse_layout() {
     if !available() {
@@ -515,7 +520,7 @@ fn publication_preserves_hardlinks_xattrs_and_sparse_layout() {
     xattr::set(project.path().join("linked"), "user.deltafs", b"base").unwrap();
     let session = Session::start(project.path());
     let output = session.exec_shell(
-        "printf changed > linked; python3 -c \"import os; os.setxattr('linked', b'user.deltafs', b'changed')\"; setfacl -m u:65534:r linked; truncate -s 16777216 sparse.bin; printf tail | dd of=sparse.bin bs=1 seek=16777212 conv=notrunc status=none",
+        "printf changed > linked; python3 -c \"import os; os.setxattr('linked', b'user.deltafs', b'changed')\"; setfacl -m u:65534:r linked; truncate -s 16777216 sparse.bin; printf tail > tail.bin; dd if=tail.bin of=sparse.bin bs=1 seek=16777212 conv=notrunc status=none; rm tail.bin",
     );
     assert_exec_ok(&output);
     assert_ok(&session.commit());
@@ -541,6 +546,58 @@ fn publication_preserves_hardlinks_xattrs_and_sparse_layout() {
     let sparse = std::fs::metadata(project.path().join("sparse.bin")).unwrap();
     assert_eq!(sparse.len(), 16 * 1024 * 1024);
     assert!(sparse.blocks() * 512 < sparse.len());
+}
+
+// Probe run inside the sandbox: a pipeline whose first child exits at once,
+// with a SIGCHLD handler that lacks SA_RESTART, as dash installs. Outside the
+// sandbox it never fails.
+const SIGCHLD_FORK_PROBE: &str = r#"
+import errno, os, signal, sys
+signal.signal(signal.SIGCHLD, lambda *args: None)
+interrupted = 0
+for _ in range(200):
+    reader, writer = os.pipe()
+    children = []
+    try:
+        for index in range(2):
+            pid = os.fork()
+            if pid == 0:
+                if index == 0:
+                    os.write(writer, b"a")
+                else:
+                    os.read(reader, 1)
+                os._exit(0)
+            children.append(pid)
+            if index == 0:
+                os.close(writer)
+                writer = None
+    except OSError as error:
+        if error.errno == errno.EINTR:
+            interrupted += 1
+    if writer is not None:
+        os.close(writer)
+    os.close(reader)
+    for pid in children:
+        os.waitpid(pid, 0)
+print("forks interrupted by SIGCHLD:", interrupted)
+sys.exit(1 if interrupted else 0)
+"#;
+
+// Sandlock traps every fork. A signal that arrives while the supervisor is
+// answering one interrupts it, and without SA_RESTART the caller sees EINTR,
+// which fork(2) is not specified to return. Shells that use dash for `sh`
+// fail pipelines this way in about 5% of fresh sessions ("Cannot fork"); bash
+// restarts the call. Ignored until the supervisor can finish the call itself.
+#[test]
+#[ignore = "known sandlock limitation: fork can fail with EINTR when SIGCHLD arrives mid-answer"]
+fn fork_is_not_interrupted_by_sigchld_while_the_supervisor_answers() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("probe.py"), SIGCHLD_FORK_PROBE).unwrap();
+    let session = Session::start(project.path());
+    assert_exec_ok(&session.exec_shell("python3 probe.py"));
 }
 
 #[test]
