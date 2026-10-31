@@ -794,9 +794,8 @@ fn recovery_rolls_back_a_crashed_commit_without_a_frozen_checkpoint() {
 /// Shell script that writes published.txt now and, from a detached process
 /// that outlives the exec, late.txt once `trigger` exists.
 fn background_writer(trigger: &Path) -> String {
-    // TEMPORARY DIAGNOSTIC: the writer logs its progress and stderr.
     format!(
-        "printf published > published.txt; (setsid sh -c 'echo started > bg.log; while [ ! -e {} ]; do sleep 0.01; done; echo trigger >> bg.log; printf late > late.txt; echo wrote >> bg.log' >bg.out 2>bg.err &)",
+        "printf published > published.txt; (setsid sh -c 'while [ ! -e {} ]; do sleep 0.01; done; printf late > late.txt' >/dev/null 2>&1 &)",
         trigger.display()
     )
 }
@@ -823,58 +822,8 @@ fn paused_commit(session: &Session, pause: &Path) -> Child {
 fn wait_for(path: &Path, message: &str) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !path.exists() {
-        if Instant::now() >= deadline {
-            dump_diagnostics(path.parent());
-        }
         assert!(Instant::now() < deadline, "{message}");
         std::thread::sleep(Duration::from_millis(5));
-    }
-}
-
-// TEMPORARY DIAGNOSTIC: remove once the CI-only failure is understood.
-fn dump_diagnostics(dir: Option<&Path>) {
-    if let Some(dir) = dir {
-        for name in ["bg.log", "bg.out", "bg.err"] {
-            match std::fs::read_to_string(dir.join(name)) {
-                Ok(text) => eprintln!("DIAG {name}: {text:?}"),
-                Err(error) => eprintln!("DIAG {name}: unreadable ({error})"),
-            }
-        }
-        let names: Vec<_> = std::fs::read_dir(dir)
-            .map(|entries| entries.flatten().map(|e| e.file_name()).collect())
-            .unwrap_or_default();
-        eprintln!("DIAG dir {} has {:?}", dir.display(), names);
-    }
-    let ps = Command::new("ps")
-        .args(["-eo", "pid,ppid,pgid,sid,stat,user,args"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
-    eprintln!("=== DIAG whoami={:?} uid={}", std::env::var("USER"), unsafe { libc::geteuid() });
-    for line in ps.lines().filter(|l| {
-        l.contains("PID") || l.contains("deltabox") || l.contains("setsid") || l.contains("sleep") || l.contains("sh -c") || l.contains("probe")
-    }) {
-        eprintln!("DIAG ps: {line}");
-    }
-    let mut roots = Vec::new();
-    if let Ok(x) = std::env::var("XDG_STATE_HOME") {
-        roots.push(PathBuf::from(x).join("deltabox-lite"));
-    }
-    if let Ok(h) = std::env::var("HOME") {
-        roots.push(PathBuf::from(h).join(".local/state/deltabox-lite"));
-    }
-    for root in roots {
-        eprintln!("DIAG state root {} exists={}", root.display(), root.exists());
-        if let Ok(entries) = std::fs::read_dir(&root) {
-            for entry in entries.flatten() {
-                let log = entry.path().join("command-helper.log");
-                if let Ok(text) = std::fs::read_to_string(&log) {
-                    if !text.trim().is_empty() {
-                        eprintln!("DIAG {}:\n{}", log.display(), text.chars().take(1500).collect::<String>());
-                    }
-                }
-            }
-        }
     }
 }
 
