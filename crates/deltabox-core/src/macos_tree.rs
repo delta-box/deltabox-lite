@@ -277,7 +277,8 @@ pub(crate) fn remove_path(path: &Path) -> Result<()> {
 }
 
 /// `remove_path` for trees cloned from a project, which can carry read-only
-/// directories and locked (`uchg`) files that plain removal refuses.
+/// directories, locked (`uchg`) files and restrictive ACLs that plain removal
+/// refuses.
 pub(crate) fn remove_tree(path: &Path) -> Result<()> {
     if remove_path(path).is_ok() {
         return Ok(());
@@ -286,21 +287,22 @@ pub(crate) fn remove_tree(path: &Path) -> Result<()> {
     remove_path(path)
 }
 
-/// Clear lock flags below `path` and give the owner full access to every
-/// directory, so that everything in it can be listed and unlinked. Each
+/// Clear lock flags and ACLs below `path` and give the owner full access to
+/// every directory, so that everything in it can be listed and unlinked. Each
 /// directory is opened up before it is read: one without owner access can
 /// neither be listed nor have its entries unlinked.
 pub(crate) fn unlock_tree(path: &Path) -> Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.st_flags() != 0 {
-        set_flags(path, 0, metadata.file_type().is_symlink())?;
+    let file_type = fs::symlink_metadata(path)?.file_type();
+    if !file_type.is_dir() {
+        unlock_entry(path)?;
+        // acl_set_link_np refuses symlinks with ENOTSUP.
+        return if file_type.is_symlink() {
+            Ok(())
+        } else {
+            clear_acl(path)
+        };
     }
-    if !metadata.is_dir() {
-        return Ok(());
-    }
-    if metadata.mode() & 0o700 != 0o700 {
-        fs::set_permissions(path, fs::Permissions::from_mode(metadata.mode() | 0o700))?;
-    }
+    unlock_directory(path)?;
     for entry in fs::read_dir(path)? {
         unlock_tree(&entry?.path())?;
     }

@@ -2050,8 +2050,8 @@ fn write_file(path: &Path, bytes: &[u8], durable: bool) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// A read-only directory holding a locked file, as a clone of a project
-    /// can contain; plain recursive removal refuses both.
+    /// Read-only and ACL-denied directories and locked files, as a clone of a
+    /// project can contain; plain recursive removal refuses them all.
     fn locked_tree(root: &Path) {
         let directory = root.join("read-only");
         fs::create_dir_all(&directory).unwrap();
@@ -2068,6 +2068,25 @@ mod tests {
         fs::create_dir_all(&closed).unwrap();
         fs::write(closed.join("file.txt"), "unreachable").unwrap();
         fs::set_permissions(&closed, fs::Permissions::from_mode(0)).unwrap();
+        // ACLs can shut the owner out whatever the mode bits say.
+        let denied = root.join("deep/acl-denied");
+        fs::create_dir_all(&denied).unwrap();
+        fs::write(denied.join("undeletable.txt"), "denied").unwrap();
+        std::os::unix::fs::symlink("no-such-target", denied.join("link")).unwrap();
+        let user = Command::new("/usr/bin/id").arg("-un").output().unwrap();
+        let user = String::from_utf8(user.stdout).unwrap();
+        for (access, path) in [
+            ("delete", denied.join("undeletable.txt")),
+            ("list,search,delete_child", denied),
+        ] {
+            let status = Command::new("/bin/chmod")
+                .arg("+a")
+                .arg(format!("{} deny {access}", user.trim()))
+                .arg(path)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
     }
 
     #[test]
