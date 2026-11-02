@@ -13,6 +13,8 @@ pub struct Request {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
 pub enum Method {
+    #[serde(rename = "network.capabilities")]
+    NetworkCapabilities {},
     #[serde(rename = "session.start")]
     SessionStart(SessionStartParams),
     #[serde(rename = "session.stop")]
@@ -91,6 +93,10 @@ pub struct ExecParams {
     /// engine state, and helper endpoints stay denied.
     #[serde(default)]
     pub execution_profile: ExecutionProfile,
+    /// Exact host:port grants already approved by the trusted RPC caller.
+    /// Only accepted when the session policy enables allow_approval.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub network_allow: Vec<String>,
 }
 
 /// Filesystem breadth granted to one command execution.
@@ -464,6 +470,12 @@ pub struct ExecRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NetworkDenial {
+    pub target: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ExecResult {
     pub exit_code: Option<i32>,
     pub stdout: String,
@@ -471,6 +483,9 @@ pub struct ExecResult {
     pub duration_ms: u64,
     #[serde(default)]
     pub truncated: bool,
+    /// Authenticated proxy denials only; direct OS-level denials have no destination event.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub network_denials: Vec<NetworkDenial>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

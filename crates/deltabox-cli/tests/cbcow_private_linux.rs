@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 fn available() -> bool {
@@ -575,6 +575,199 @@ fn sqlite_database_publishes_and_retired_backups_are_reclaimed() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(std::fs::read_dir(reclaim).is_ok_and(|mut entries| entries.next().is_none()));
+}
+
+// A process left running in the session (git's detached auto-maintenance, a
+// watcher) keeps writing during a commit. Its writes must wait at the write
+// gate and stay pending: accepted by the engine without reaching the host, a
+// file would vanish from every later diff and commit.
+#[test]
+fn background_writes_wait_for_a_private_commit_and_stay_pending() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("base.txt"), "base").unwrap();
+    let session = Session::start(project.path());
+    let trigger = tempfile::tempdir().unwrap();
+    assert_exec_ok(&session.exec_shell(&background_writer(&trigger.path().join("go"))));
+
+    let pause = tempfile::tempdir().unwrap();
+    let commit = paused_commit(&session, pause.path());
+    std::fs::write(trigger.path().join("go"), b"").unwrap();
+    let live = PathBuf::from(session.mount_record()["source"].as_str().unwrap());
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        !live.join("late.txt").exists(),
+        "a background write landed while the commit held the write gate"
+    );
+
+    std::fs::write(pause.path().join("private_commit_frozen.release"), b"").unwrap();
+    assert_ok(&commit.wait_with_output().unwrap());
+    wait_for(&live.join("late.txt"), "the background write never resumed");
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("published.txt")).unwrap(),
+        "published"
+    );
+    assert!(!project.path().join("late.txt").exists());
+    let diff = session.command(["diff", &session.id]);
+    assert_ok(&diff);
+    assert!(
+        String::from_utf8_lossy(&diff.stdout).contains("late.txt"),
+        "the late write must stay pending: {}",
+        String::from_utf8_lossy(&diff.stdout)
+    );
+}
+
+// The freeze lives on the publisher's control connection, so a commit that
+// dies inside the frozen window must not leave the session's writers stuck.
+#[test]
+fn a_killed_private_commit_releases_frozen_writers() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("base.txt"), "base").unwrap();
+    let session = Session::start(project.path());
+    let trigger = tempfile::tempdir().unwrap();
+    assert_exec_ok(&session.exec_shell(&background_writer(&trigger.path().join("go"))));
+
+    let pause = tempfile::tempdir().unwrap();
+    let mut commit = paused_commit(&session, pause.path());
+    std::fs::write(trigger.path().join("go"), b"").unwrap();
+    commit.kill().unwrap();
+    commit.wait().unwrap();
+    let live = PathBuf::from(session.mount_record()["source"].as_str().unwrap());
+    wait_for(
+        &live.join("late.txt"),
+        "writers stayed frozen after the commit died",
+    );
+}
+
+// A commit that dies after reaching the host but before the engine accepts
+// leaves recovery to finish it. If a process wrote in the meantime, accepting
+// now would take that write too without it ever reaching the host, so
+// recovery must undo the host half and leave everything pending instead.
+#[test]
+fn recovery_rolls_back_a_crashed_commit_when_the_session_changed_since() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("value.txt"), "old").unwrap();
+    let session = Session::start(project.path());
+    session.write("value.txt", "new");
+    let trigger = tempfile::tempdir().unwrap();
+    assert_exec_ok(&session.exec_shell(&background_writer(&trigger.path().join("go"))));
+
+    let crashed = session.command_with_env(
+        ["commit", &session.id],
+        "DELTABOX_TEST_CRASH_AT",
+        "private_publish_host_applied",
+    );
+    assert!(!crashed.status.success());
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("value.txt")).unwrap(),
+        "new"
+    );
+    std::fs::write(trigger.path().join("go"), b"").unwrap();
+    let live = PathBuf::from(session.mount_record()["source"].as_str().unwrap());
+    wait_for(&live.join("late.txt"), "the background write never landed");
+
+    let status = session.status();
+    assert_eq!(status["pending_changes"], 3, "{status}");
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("value.txt")).unwrap(),
+        "old"
+    );
+    assert!(!project.path().join("published.txt").exists());
+    assert_ok(&session.commit());
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("value.txt")).unwrap(),
+        "new"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("late.txt")).unwrap(),
+        "late"
+    );
+}
+
+// A publication recorded before frozen checkpoints existed cannot prove the
+// session is unchanged, so recovery takes the safe side and rolls back.
+#[test]
+fn recovery_rolls_back_a_crashed_commit_without_a_frozen_checkpoint() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("value.txt"), "old").unwrap();
+    let session = Session::start(project.path());
+    session.write("value.txt", "new");
+    let crashed = session.command_with_env(
+        ["commit", &session.id],
+        "DELTABOX_TEST_CRASH_AT",
+        "private_publish_host_applied",
+    );
+    assert!(!crashed.status.success());
+    let record = project
+        .path()
+        .join(".deltabox")
+        .join(&session.id)
+        .join("publication.json");
+    let mut publication: Value = serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+    assert!(publication["frozen_checkpoint"].is_u64(), "{publication}");
+    publication
+        .as_object_mut()
+        .unwrap()
+        .remove("frozen_checkpoint");
+    std::fs::write(&record, serde_json::to_vec(&publication).unwrap()).unwrap();
+
+    assert_eq!(session.status()["pending_changes"], 1);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("value.txt")).unwrap(),
+        "old"
+    );
+    assert_ok(&session.commit());
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("value.txt")).unwrap(),
+        "new"
+    );
+}
+
+/// Shell script that writes published.txt now and, from a detached process
+/// that outlives the exec, late.txt once `trigger` exists.
+fn background_writer(trigger: &Path) -> String {
+    format!(
+        "printf published > published.txt; (setsid sh -c 'while [ ! -e {} ]; do sleep 0.01; done; printf late > late.txt' >/dev/null 2>&1 &)",
+        trigger.display()
+    )
+}
+
+/// Start a commit that pauses inside its write freeze, before reading the
+/// change list, and wait until it gets there.
+fn paused_commit(session: &Session, pause: &Path) -> Child {
+    let commit = Command::new(env!("CARGO_BIN_EXE_deltabox"))
+        .env("DELTABOX_TEST_PAUSE_AT", "private_commit_frozen")
+        .env("DELTABOX_TEST_PAUSE_DIR", pause)
+        .args(["commit", &session.id, "--project"])
+        .arg(&session.project)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for(
+        &pause.join("private_commit_frozen.arrived"),
+        "the commit never reached its write freeze",
+    );
+    commit
+}
+
+fn wait_for(path: &Path, message: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !path.exists() {
+        assert!(Instant::now() < deadline, "{message}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 fn git_head(project: &Path) -> String {

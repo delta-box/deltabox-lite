@@ -35,6 +35,7 @@ struct SessionRuntime {
     tx: tokio_mpsc::Sender<InnerCmd>,
     thread: Option<std::thread::JoinHandle<()>>,
     spec: SessionSpec,
+    network_proxy: Option<crate::network::NetworkProxy>,
 }
 
 enum InnerCmd {
@@ -147,7 +148,8 @@ impl SandboxBackend for SandlockBackend {
         }
         let (tx, rx) = tokio_mpsc::channel(16);
         let (ready_tx, ready_rx) = std_mpsc::channel();
-        let thread_spec = spec.clone();
+        let mut thread_spec = spec.clone();
+        let network_proxy = crate::network::NetworkProxy::prepare(&mut thread_spec.policy)?;
         let worker_bin = self.worker_bin.clone();
         let direct_write = self.direct_write;
         let sid = session_id.to_string();
@@ -164,6 +166,7 @@ impl SandboxBackend for SandlockBackend {
                 tx,
                 thread: Some(thread),
                 spec: spec.clone(),
+                network_proxy,
             },
         );
         Ok(())
@@ -190,12 +193,23 @@ impl SandboxBackend for SandlockBackend {
         )
     }
 
-    fn exec(&mut self, session_id: &str, req: ExecRequest) -> Result<ExecResult> {
-        self.call(
+    fn exec(&mut self, session_id: &str, mut req: ExecRequest) -> Result<ExecResult> {
+        let proxy = self
+            .sessions
+            .get(session_id)
+            .and_then(|v| v.network_proxy.as_ref());
+        if let Some(proxy) = proxy {
+            proxy.environment(&mut req);
+        }
+        let mut result = self.call(
             session_id,
             |resp| InnerCmd::Exec { req, resp },
             COMMAND_TIMEOUT,
-        )
+        )?;
+        if let Some(proxy) = proxy {
+            result.network_denials = proxy.denials();
+        }
+        Ok(result)
     }
 
     fn read_file(&mut self, session_id: &str, path: &Path) -> Result<Option<Vec<u8>>> {

@@ -184,6 +184,7 @@ impl PersistentBash {
             stderr: String::from_utf8_lossy(&stderr.output).into_owned(),
             duration_ms: started.elapsed().as_millis() as u64,
             truncated: stdout.truncated || stderr.truncated,
+            network_denials: Vec::new(),
         })
     }
 
@@ -429,10 +430,11 @@ pub fn exec(request: ExecRequest) -> Result<ExecResult> {
         stderr,
         duration_ms: started.elapsed().as_millis() as u64,
         truncated: stdout_truncated || stderr_truncated,
+        network_denials: Vec::new(),
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 mod tests {
     use super::*;
 

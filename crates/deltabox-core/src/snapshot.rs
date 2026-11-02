@@ -7,7 +7,7 @@ use crate::worker::{ScanEntry, ScanEntryKind};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{copy, Write};
+use std::io::{copy, Read, Write};
 use std::path::Path;
 
 pub const BASE_SCAN_FILE: &str = "base_scan.json";
@@ -276,16 +276,18 @@ pub fn copy_tree_incremental(src: &Path, prev: Option<&Path>, dst: &Path) -> Res
             std::fs::create_dir_all(&target)?;
             continue;
         }
-        let unchanged = prev.is_some_and(|p| {
+        let unchanged = if let Some(p) = prev {
             let prev_path = p.join(rel);
             match (
                 std::fs::symlink_metadata(&prev_path),
                 std::fs::symlink_metadata(entry.path()),
             ) {
-                (Ok(a), Ok(b)) => same_entry(&a, &b),
+                (Ok(a), Ok(b)) => same_entry(&prev_path, entry.path(), &a, &b)?,
                 _ => false,
             }
-        });
+        } else {
+            false
+        };
         if unchanged {
             continue;
         }
@@ -311,10 +313,36 @@ pub fn copy_tree_incremental(src: &Path, prev: Option<&Path>, dst: &Path) -> Res
     Ok(copied)
 }
 
-fn same_entry(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
-    a.len() == b.len()
-        && a.file_type().is_symlink() == b.file_type().is_symlink()
-        && a.modified().ok() == b.modified().ok()
+fn same_entry(
+    a_path: &Path,
+    b_path: &Path,
+    a: &std::fs::Metadata,
+    b: &std::fs::Metadata,
+) -> Result<bool> {
+    if a.len() != b.len()
+        || a.file_type().is_symlink() != b.file_type().is_symlink()
+        || a.modified().ok() != b.modified().ok()
+    {
+        return Ok(false);
+    }
+    if a.file_type().is_symlink() {
+        return Ok(std::fs::read_link(a_path)? == std::fs::read_link(b_path)?);
+    }
+    if !a.is_file() || !b.is_file() {
+        return Ok(false);
+    }
+    let (mut a, mut b) = (File::open(a_path)?, File::open(b_path)?);
+    let (mut a_buf, mut b_buf) = ([0u8; 64 * 1024], [0u8; 64 * 1024]);
+    loop {
+        let a_len = a.read(&mut a_buf)?;
+        let b_len = b.read(&mut b_buf)?;
+        if a_len != b_len || a_buf[..a_len] != b_buf[..b_len] {
+            return Ok(false);
+        }
+        if a_len == 0 {
+            return Ok(true);
+        }
+    }
 }
 
 pub fn preserve_symlink_times(src: &Path, dst: &Path) -> Result<()> {
@@ -535,6 +563,7 @@ mod tests {
         copy_tree_incremental(src.path(), None, prev.path()).unwrap();
         // Now change one file in the live tree.
         std::fs::write(src.path().join("changed.txt"), "v2").unwrap();
+        preserve_mtime(&prev.path().join("changed.txt"), &src.path().join("changed.txt")).unwrap();
         let dst = tempfile::tempdir().unwrap();
 
         let copied = copy_tree_incremental(src.path(), Some(prev.path()), dst.path()).unwrap();

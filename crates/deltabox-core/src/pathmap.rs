@@ -20,11 +20,18 @@ impl PathMapper {
         let sandbox_project = sandbox_project.into();
         Self {
             host_project: resolve_existing_prefix(&host_project),
+            #[cfg(not(windows))]
             sandbox_project: resolve_existing_prefix(&sandbox_project),
+            // Keep a WinFsp drive path: canonicalization resolves network
+            // volumes to UNC names and changes the PSEC grant identity.
+            #[cfg(windows)]
+            sandbox_project,
         }
     }
 
     pub fn map_path(&self, path: &Path) -> PathBuf {
+        #[cfg(windows)]
+        if path.starts_with(&self.sandbox_project) { return path.to_path_buf(); }
         let resolved = resolve_existing_prefix(path);
         if resolved.starts_with(&self.sandbox_project) {
             return resolved;
@@ -97,7 +104,7 @@ fn is_path_list(key: &str) -> bool {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

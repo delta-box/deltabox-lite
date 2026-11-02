@@ -11,6 +11,7 @@ description = "Node-API bindings for embedding deltabox-lite"
 crate-type = ["cdylib"]
 
 [dependencies]
+serde_json.workspace = true
 deltabox-core = { path = "../deltabox-core" }
 napi = { version = "2", default-features = false, features = ["napi8", "tokio_rt"] }
 napi-derive = "2"

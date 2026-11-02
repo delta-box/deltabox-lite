@@ -241,6 +241,7 @@ mode = "deny_all"
                 env: None,
                 label: None,
                 execution_profile: Default::default(),
+                network_allow: Vec::new(),
             })
             .unwrap()
     };

@@ -14,8 +14,8 @@ Give agents a confined workspace with explicit diff, commit, and abort semantics
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#license)
 [![npm](https://img.shields.io/npm/v/deltabox-lite?logo=npm)](https://www.npmjs.com/package/deltabox-lite)
-[![Rust](https://img.shields.io/badge/rust-1.87+-orange.svg)](#)
-[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey.svg)](#)
+[![Rust](https://img.shields.io/badge/rust-1.89+-orange.svg)](#)
+[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)](#)
 [![Pi](https://img.shields.io/badge/pi-deltabox-purple.svg)](https://github.com/delta-box/pi-deltabox)
 [![DSH](https://img.shields.io/badge/dsh-deltabox-blue.svg)](https://github.com/delta-box/dsh-deltabox)
 
@@ -25,11 +25,59 @@ deltabox-lite is a standalone sandbox runtime for AI coding agents. Agents keep
 full execution freedom inside a confined filesystem view, and every change
 they make can be **reviewed**, **committed**, or **aborted** - per task or per
 tool call. Linux defaults to a commit-biased FUSE view; macOS uses native APFS
-clones and FSEvents. Private modes keep changes hidden from the host until
-commit.
+clones and FSEvents; Windows uses a WinFsp view. Private modes keep changes
+hidden from the host until commit.
 
 Think of it as Git for agent sessions: less ceremony, more control, and no
 anxiety about binary or large files.
+
+## 📰 News
+- **[2026/10/25]** DSH v0.1.5: Support DSH v0.2.2
+
+- **[2026/10/21]** Release `v0.1.4`: **Windows x64** available now. With WinFsp, and MXC network policy enforcement. Companion DSH `0.1.4` and Pi `0.1.3` add Windows installation and PowerShell integration.
+
+- **[2026/10/19]** Added Windows WinFsp support with strict durability for private sessions, plus execution-scoped network approvals ([PR #33](https://github.com/delta-box/deltabox-lite/pull/33), [PR #35](https://github.com/delta-box/deltabox-lite/pull/35)).
+- **[2026/10/16]** Open-sourced DeltaBox Lite and published the introduction “DeltaBox Lite: A Lightweight File Sandbox for Terminal AI Agents.”
+- **[2026/10/14]** Released `v0.1.0` and `v0.1.1`, updated DSH / Pi integrations, and fixed `read-write` execution in macOS sessions.
+- **[2026/09]** Expanded the Native Node API and execution profiles; added npm, Homebrew, an install script, and a multi-platform prebuilt release pipeline.
+- **[2026/08]** Built Linux / macOS file sandboxing, the CB-CoW state engine, and the diff / commit / abort workflow; added DSH / Pi integrations and concurrent private sessions for multiple agents.
+
+<details>
+<summary>View full history</summary>
+
+### 2026
+
+- **[10/19]** Added Windows WinFsp sessions with `cbcow-through` and `cbcow-private` modes, and fixed access permissions for existing view directories ([PR #33](https://github.com/delta-box/deltabox-lite/pull/33)).
+- **[10/19]** Added execution-scoped network approvals: a proxy restricts destination hosts and ports, and temporary grants expire when the command finishes ([PR #35](https://github.com/delta-box/deltabox-lite/pull/35)).
+- **[10/16]** Open-sourced the project and published the introduction “DeltaBox Lite: A Lightweight File Sandbox for Terminal AI Agents.”
+- **[10/15]** Added an installation prompt for AI agents and environment checks.
+- **[10/14]** Released `v0.1.0` and `v0.1.1`, updated DSH / Pi plugins and installation guides, and fixed protected `read-write` execution in macOS through sessions ([PR #32](https://github.com/delta-box/deltabox-lite/pull/32)).
+- **[09/22]** Added the npm launcher, tag-triggered multi-platform prebuilds, release tooling, Homebrew support, and an install script ([PR #29](https://github.com/delta-box/deltabox-lite/pull/29)).
+- **[09/19]** Added embedded native execution and the Native Node API, and exposed execution profiles through the native API and CLI ([PR #22](https://github.com/delta-box/deltabox-lite/pull/22), [PR #23](https://github.com/delta-box/deltabox-lite/pull/23)).
+- **[08/31]** Added concurrent private sessions for multiple agents with publish-lock arbitration, and optimized staging and digest computation before commit ([PR #4](https://github.com/delta-box/deltabox-lite/pull/4), [PR #14](https://github.com/delta-box/deltabox-lite/pull/14)).
+- **[08/25]** Merged the native Pi plugin integration and optimized DeltaFS control-response transport ([PR #8](https://github.com/delta-box/deltabox-lite/pull/8), [PR #11](https://github.com/delta-box/deltabox-lite/pull/11)).
+- **[08/18]** Merged the DSH plugin integration, moved default session state into the project's `.deltabox` directory, and fixed macOS session access after state relocation.
+- **[08/15]** Added single-command transactions with `deltabox run --commit` / `--abort` to keep or discard changes.
+- **[08/13]** Added a persistent session command executor that reuses the execution environment to reduce overhead across commands.
+- **[08/10]** Added native macOS CB-CoW support using APFS and FSEvents, packaged the native runtime, and exposed structured session interfaces.
+- **[08/09]** Added private CB-CoW and strict durability modes, and expanded Linux filesystem operation support.
+- **[08/08]** Implemented the commit-biased state engine and integrated it with Linux FUSE.
+- **[08/07]** Added the native macOS Seatbelt sandbox backend and began building the CB-CoW architecture.
+- **[08/06]** Added durable sessions without a global service, persistent review state, crash recovery, and stronger sandbox policies.
+- **[08/05]** Initialized the project with Linux Sandlock sessions, checkpoint / commit / abort, fast snapshots, incremental state handling, and readable diffs.
+
+</details>
+
+## Roadmap
+
+- [x] MacOS, Linux, Windows Support
+- [x] Private Workspace
+- [x] Fast, Reliable Rollback
+- [x] Pi Plugin
+- [x] DSH Plugin
+- [x] HTTP/HTTPS Proxy 
+- [ ] PTY, stdin Support
+- [ ] Credential Masking
 
 ## Demo
 
@@ -40,7 +88,8 @@ Run a command, inspect its change set, and choose whether to keep or discard it:
 ## Highlights
 
 - **Native isolation, not a container** - Linux composes Sandlock/Landlock/
-  seccomp with DeltaFS FUSE; macOS uses Seatbelt plus APFS clones and FSEvents.
+  seccomp with DeltaFS FUSE; macOS uses Seatbelt plus APFS clones and FSEvents;
+  Windows uses MXC process security with WinFsp filesystem routing.
 - **Service-free durable sessions** - Linux starts a session-scoped filesystem
   helper and macOS starts a session-scoped event helper automatically. Durable
   files remain authoritative across independent CLI processes; no global daemon
@@ -80,14 +129,27 @@ directly into your agent.
 
 ### Manual Install
 
-Run the following on Mac or Linux to install deltabox-lite CLI:
+Run the following on macOS or Linux to install the deltabox-lite CLI:
 
 ```
 curl -fsSL https://raw.githubusercontent.com/delta-box/deltabox-lite/main/scripts/install.sh | sh
 ```
 
-The prebuilt binaries ship for macOS (arm64, x64) and Linux (x64, arm64) can be found on
+The prebuilt binaries ship for macOS (arm64, x64), Linux (x64, arm64), and
+Windows (x64). They can be found on the
 [GitHub release](https://github.com/delta-box/deltabox-lite/releases).
+
+On Windows, install [WinFsp](https://winfsp.dev/rel/) first, then use PowerShell:
+
+```powershell
+npm install --global deltabox-lite
+deltabox --version
+```
+
+Windows `deltabox` commands run directly from PowerShell. Pi's `bash` tool uses
+Pi's own shell selection, which defaults to Git Bash on Windows. The CLI does
+not require Git Bash. Sandboxed command execution needs Windows MXC process
+security support; if it is unavailable, session startup reports an error.
 
 deltabox-lite CLI can also be installed via the following package managers:
 
@@ -145,7 +207,7 @@ or discard changes. See the
 configuration, including explicit command isolation settings.
 
 Both integrations use FUSE on Linux for CB-CoW (`/dev/fuse` and `fusermount3`
-or `fusermount`) and APFS/FSEvents on macOS.
+or `fusermount`), APFS/FSEvents on macOS, and WinFsp on Windows.
 
 ## Quick start
 
@@ -234,7 +296,8 @@ a terminal on stdin, so use non-interactive flags for tools such as Git.
 ### Choosing a filesystem mode
 
 Linux and macOS request `cbcow-through` by default and visibly fall back to
-`copy-private` if the native provider is unavailable. Select the mode
+`copy-private` if the native provider is unavailable. Windows supports
+`cbcow-through` and `cbcow-private` with WinFsp. Select the mode
 explicitly when a workflow requires it:
 
 ```bash
@@ -407,3 +470,4 @@ This project utilizes excellent work of existing sandbox projects like **[`sandl
 
 
 **⭐ Star this repo if you find deltabox-lite helpful!**
+

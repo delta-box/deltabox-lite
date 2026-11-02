@@ -113,6 +113,11 @@ pub struct Publication {
     /// sibling republished after this publication (its backup is stale).
     #[serde(default)]
     pub base_seq: u64,
+    /// Engine checkpoint taken inside the write freeze, before the copy: the
+    /// exact session state this publication carries. Recovery finishes the
+    /// commit only while the session still diffs empty against it.
+    #[serde(default)]
+    pub frozen_checkpoint: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -576,6 +581,7 @@ impl Publication {
         changes: &[Change],
         endorsed: Option<&BTreeMap<String, String>>,
         engine_accepted_checkpoint: u64,
+        frozen_checkpoint: Option<u64>,
         durable: bool,
     ) -> Result<Self> {
         let changes = collapse_changes(changes, accepted, live)?;
@@ -624,6 +630,7 @@ impl Publication {
             changes: plan,
             durable,
             base_seq,
+            frozen_checkpoint,
         };
         if durable {
             sync_tree(&backup)?;
@@ -1349,7 +1356,9 @@ mod tests {
             change("gone", ChangeKind::Deleted),
         ];
         let publication =
-            Publication::prepare(&store, &project, &live, &accepted, &changes, None, 0, false)
+            Publication::prepare(
+                &store, &project, &live, &accepted, &changes, None, 0, None, false,
+            )
                 .unwrap();
         publication.apply(&store, &project).unwrap();
         assert_eq!(fs::read_to_string(project.join("a")).unwrap(), "new");

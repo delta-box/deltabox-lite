@@ -4,8 +4,8 @@ use deltabox_core::changeset::{Change, ChangeKind};
 use deltabox_core::coordinator::{CommandExecutionMode, CoordinatorOptions, SessionCoordinator};
 use deltabox_core::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
-    CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecResult, FilesystemMode,
-    ExecutionProfile, ReviewBeginParams, ReviewKind, SessionInfo, SessionStatus,
+    CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecResult, ExecutionProfile,
+    FilesystemMode, ReviewBeginParams, ReviewKind, SessionInfo, SessionStatus,
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -68,6 +68,12 @@ pub struct NativeSessionInfo {
 }
 
 #[napi(object)]
+pub struct NativeNetworkDenial {
+    pub target: String,
+    pub reason: String,
+}
+
+#[napi(object)]
 pub struct NativeExecResult {
     #[napi(js_name = "exit_code")]
     pub exit_code: Either<i32, Null>,
@@ -76,6 +82,8 @@ pub struct NativeExecResult {
     #[napi(js_name = "duration_ms")]
     pub duration_ms: f64,
     pub truncated: bool,
+    #[napi(js_name = "network_denials")]
+    pub network_denials: Vec<NativeNetworkDenial>,
 }
 
 #[napi(object)]
@@ -190,6 +198,7 @@ struct ResolvedNativeOptions {
 #[napi]
 pub struct NativeDeltabox {
     coordinator: Arc<SessionCoordinator>,
+    helper_binary: String,
     fs_mode: FilesystemMode,
     isolation: NativeIsolation,
 }
@@ -210,7 +219,7 @@ impl NativeDeltabox {
         let coordinator = SessionCoordinator::new_with_options(
             Path::new(&project_root),
             CoordinatorOptions {
-                helper_bin: Some(PathBuf::from(helper_binary)),
+                helper_bin: Some(PathBuf::from(&helper_binary)),
                 command_execution,
                 state_dir: options.state_dir,
                 runtime_dir: options.runtime_dir,
@@ -220,6 +229,7 @@ impl NativeDeltabox {
         .map_err(native_error)?;
         Ok(Self {
             coordinator: Arc::new(coordinator),
+            helper_binary,
             fs_mode: options.fs_mode,
             isolation: options.isolation,
         })
@@ -284,6 +294,18 @@ impl NativeDeltabox {
         .await
     }
 
+    /// Protocol capability; hosts must probe before sending network grants.
+    #[napi]
+    pub fn network_approvals_version(&self) -> napi::Result<u32> {
+        let output = std::process::Command::new(&self.helper_binary)
+            .arg("network-capabilities").output().map_err(native_error)?;
+        if !output.status.success() || serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            .ok().and_then(|v| v.get("version").and_then(|v| v.as_u64())) != Some(1) {
+            return Err(napi::Error::from_reason("upgrade the helper binary for network approvals v1"));
+        }
+        Ok(1)
+    }
+
     #[napi]
     pub async fn exec(
         &self,
@@ -293,6 +315,7 @@ impl NativeDeltabox {
         environment: Option<Vec<NativeEnvironmentEntry>>,
         label: Option<String>,
         execution_profile: Option<String>,
+        network_allow: Option<Vec<String>>,
     ) -> napi::Result<NativeExecResult> {
         let coordinator = Arc::clone(&self.coordinator);
         let execution_profile = parse_execution_profile(execution_profile.as_deref())?;
@@ -310,6 +333,7 @@ impl NativeDeltabox {
                     }),
                     label,
                     execution_profile,
+                    network_allow: network_allow.unwrap_or_default(),
                 })
                 .map(exec_result)
                 .map_err(native_error)
@@ -698,6 +722,14 @@ fn exec_result(value: ExecResult) -> NativeExecResult {
         stderr: value.stderr,
         duration_ms: value.duration_ms as f64,
         truncated: value.truncated,
+        network_denials: value
+            .network_denials
+            .into_iter()
+            .map(|v| NativeNetworkDenial {
+                target: v.target,
+                reason: v.reason,
+            })
+            .collect(),
     }
 }
 

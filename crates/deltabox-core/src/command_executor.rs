@@ -156,6 +156,7 @@ struct StartConfirmation {
 enum ResultValue {
     Pong,
     Started,
+    NetworkStarted { version: u32 },
     Exec(ExecResult),
     Reset,
     ShuttingDown,
@@ -222,7 +223,12 @@ impl<B: CommandBackend> PersistentExecutor<B> {
         }
 
         match self.backend.exec(session_id, request) {
-            Ok(result) => Ok(result),
+            Ok(result) => {
+                if spec.policy.network.allow_approval {
+                    self.stop()?;
+                }
+                Ok(result)
+            }
             Err(error) => {
                 // Never retry an exec automatically: the caller cannot know
                 // whether a lost response followed observable side effects.
@@ -524,7 +530,12 @@ fn handle_connection<B: CommandBackend>(
             // confirm receipt before execution; after that confirmation, the
             // helper owns the operation lock until every observable side
             // effect has finished.
-            write_response(&mut stream, Response::ok(ResultValue::Started))?;
+            let started = if spec.policy.network.allow_approval {
+                ResultValue::NetworkStarted { version: 1 }
+            } else {
+                ResultValue::Started
+            };
+            write_response(&mut stream, Response::ok(started))?;
             if !read_start_confirmation(&mut stream)? {
                 return Ok(());
             }
@@ -581,6 +592,7 @@ fn request(endpoint: &Endpoint, command: Command) -> Result<ResultValue> {
     let token = fs::read_to_string(&endpoint.token_file)?;
     let mut stream = UnixStream::connect(&endpoint.socket)?;
     let expects_start = matches!(&command, Command::Exec { .. });
+    let needs_network = matches!(&command, Command::Exec { spec, .. } if spec.policy.network.allow_approval);
     let initial_timeout = match &command {
         // Only the post-Started response may legitimately take as long as the
         // command. A stalled helper must fail its initial handshake quickly.
@@ -604,9 +616,14 @@ fn request(endpoint: &Endpoint, command: Command) -> Result<ResultValue> {
     let mut reader = BufReader::new(stream);
     let result = read_result(&mut reader)?;
     if expects_start {
-        if !matches!(result, ResultValue::Started) {
+        let compatible = if needs_network {
+            matches!(result, ResultValue::NetworkStarted { version: 1 })
+        } else {
+            matches!(result, ResultValue::Started)
+        };
+        if !compatible {
             return Err(Error::Backend(
-                "command executor did not acknowledge the operation lock".into(),
+                "command executor did not acknowledge the operation lock or required network approval protocol".into(),
             ));
         }
         // Once Started has crossed the wire the helper may observe command
@@ -974,6 +991,7 @@ mod tests {
                 stderr: String::new(),
                 duration_ms: 1,
                 truncated: false,
+                network_denials: Vec::new(),
             })
         }
     }
@@ -1015,6 +1033,20 @@ mod tests {
         assert_eq!(counts.stops.load(Ordering::Relaxed), 0);
         executor.stop().unwrap();
         assert_eq!(counts.stops.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn network_approval_runtime_is_closed_after_each_exec() {
+        let directory = tempfile::tempdir().unwrap();
+        let counts = Arc::new(Counts::default());
+        let mut executor = PersistentExecutor::new(FakeBackend { counts: Arc::clone(&counts) });
+        let mut spec = spec(directory.path());
+        spec.policy.network.mode = crate::policy::NetworkMode::Allowlist;
+        spec.policy.network.allow_approval = true;
+        for _ in 0..2 { executor.exec("session", 1, &spec, exec_request("one")).unwrap(); }
+        assert_eq!(counts.starts.load(Ordering::Relaxed), 2);
+        assert_eq!(counts.stops.load(Ordering::Relaxed), 2);
+        assert!(executor.active.is_none());
     }
 
     #[test]
@@ -1143,6 +1175,32 @@ mod tests {
         assert_eq!(counts.starts.load(Ordering::Relaxed), 1);
         assert_eq!(counts.execs.load(Ordering::Relaxed), 2);
         assert_eq!(counts.stops.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn network_execution_rejects_legacy_helper_before_start_confirmation() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::new(
+            directory.path().join("executor.sock"),
+            directory.path().join("token"),
+            directory.path().join("ready"),
+        );
+        fs::write(&endpoint.token_file, "test-token\n").unwrap();
+        let listener = UnixListener::bind(&endpoint.socket).unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            write_response(reader.get_mut(), Response::ok(ResultValue::Started)).unwrap();
+            line.clear();
+            assert_eq!(reader.read_line(&mut line).unwrap(), 0, "must close without authorizing execution");
+        });
+        let mut network_spec = spec(directory.path());
+        network_spec.policy.network.allow_approval = true;
+        assert!(exec(&endpoint, "session", 1, network_spec, exec_request("must-not-run")).is_err());
+        server.join().unwrap();
     }
 
     #[test]

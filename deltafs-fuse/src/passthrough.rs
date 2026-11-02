@@ -1,4 +1,5 @@
 use crate::engine::{EngineError, EngineOptions, StateEngine};
+use crate::gate::WriteGate;
 use anyhow::{bail, Context, Result};
 use fuser::{
     AccessFlags, BackgroundSession, CopyFileRangeFlags, Errno, FileAttr, FileHandle, FileType,
@@ -312,6 +313,7 @@ impl HandleTable {
 pub struct DeltaFs {
     source: PathBuf,
     engine: Arc<Mutex<StateEngine>>,
+    gate: Arc<WriteGate>,
     inodes: Arc<Mutex<InodeTable>>,
     handles: Mutex<HandleTable>,
 }
@@ -322,6 +324,7 @@ impl DeltaFs {
             inodes: Arc::new(Mutex::new(InodeTable::new(source.clone())?)),
             source,
             engine,
+            gate: Arc::new(WriteGate::default()),
             handles: Mutex::new(HandleTable::new()),
         })
     }
@@ -354,6 +357,18 @@ impl DeltaFs {
     }
 
     fn mutate<T>(
+        &self,
+        operation: impl FnOnce(&mut StateEngine) -> crate::engine::Result<T>,
+    ) -> io::Result<T> {
+        let _entry = self.gate.enter();
+        self.mutate_entered(operation)
+    }
+
+    /// `mutate` for callers that entered the write gate themselves, before
+    /// taking the handle table: waiting at the gate while holding that table
+    /// would also stall reads through open handles. The gate is not
+    /// reentrant, so these callers must not use `mutate`.
+    fn mutate_entered<T>(
         &self,
         operation: impl FnOnce(&mut StateEngine) -> crate::engine::Result<T>,
     ) -> io::Result<T> {
@@ -425,9 +440,14 @@ impl DeltaFs {
 pub struct MountedEngine {
     session: BackgroundSession,
     inodes: Arc<Mutex<InodeTable>>,
+    gate: Arc<WriteGate>,
 }
 
 impl MountedEngine {
+    pub fn gate(&self) -> Arc<WriteGate> {
+        self.gate.clone()
+    }
+
     pub fn invalidate(&self) -> io::Result<()> {
         let notifier = self.session.notifier();
         let mut inodes = self.inodes.lock().expect("inode table poisoned");
@@ -790,6 +810,7 @@ impl Filesystem for DeltaFs {
         reply: ReplyWrite,
     ) {
         let result: io::Result<usize> = (|| {
+            let _entry = self.gate.enter();
             let handles = self.handles.lock().expect("handle table poisoned");
             let open = handles
                 .files
@@ -797,7 +818,9 @@ impl Filesystem for DeltaFs {
                 .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
             if let Some(path) = &open.mutation_path {
                 let relative = self.relative(path)?;
-                self.mutate(|engine| engine.write_file(&relative, &open.file, offset, data))?;
+                self.mutate_entered(|engine| {
+                    engine.write_file(&relative, &open.file, offset, data)
+                })?;
             } else {
                 open.file.write_at(data, offset)?;
             }
@@ -879,6 +902,7 @@ impl Filesystem for DeltaFs {
             return;
         }
         let result = (|| {
+            let _entry = self.gate.enter();
             let handles = self.handles.lock().expect("handle table poisoned");
             let open = handles
                 .files
@@ -886,7 +910,7 @@ impl Filesystem for DeltaFs {
                 .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
             if let Some(path) = &open.mutation_path {
                 let relative = self.relative(path)?;
-                self.mutate(|engine| {
+                self.mutate_entered(|engine| {
                     engine.fallocate_file(&relative, &open.file, offset, length, mode)
                 })
             } else {
@@ -956,6 +980,7 @@ impl Filesystem for DeltaFs {
             return;
         }
         let result = (|| {
+            let _entry = self.gate.enter();
             let handles = self.handles.lock().expect("handle table poisoned");
             let input = handles
                 .files
@@ -970,7 +995,7 @@ impl Filesystem for DeltaFs {
             }
             if let Some(path) = &output.mutation_path {
                 let relative = self.relative(path)?;
-                self.mutate(|engine| {
+                self.mutate_entered(|engine| {
                     engine.copy_file_range_file(
                         &relative,
                         &output.file,
@@ -1301,6 +1326,7 @@ pub fn spawn_engine(
     }
     let filesystem = DeltaFs::new(source, engine)?;
     let inodes = filesystem.inodes.clone();
+    let gate = filesystem.gate.clone();
     let mut config = fuser::Config::default();
     config.mount_options.extend([
         MountOption::FSName("deltafs-fuse".into()),
@@ -1320,7 +1346,11 @@ pub fn spawn_engine(
         config.clone_fd = true;
     }
     let session = fuser::spawn_mount(filesystem, mountpoint, &config)?;
-    Ok(MountedEngine { session, inodes })
+    Ok(MountedEngine {
+        session,
+        inodes,
+        gate,
+    })
 }
 
 fn renamed_path(new: &Path, suffix: &Path) -> PathBuf {

@@ -1,6 +1,6 @@
 name: prebuilds
 
-# Build the four platform prebuilds and, for a version tag, publish them.
+# Build the five platform prebuilds and, for a version tag, publish them.
 #
 #   workflow_dispatch   build + verify only; artifacts on the run page
 #   push tag v*         build + verify, then one restartable publish job:
@@ -36,10 +36,12 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.87.0
+      - uses: dtolnay/rust-toolchain@1.89.0
         with:
           targets: ${{ matrix.target }}
       - uses: actions/setup-node@v4
@@ -47,8 +49,11 @@ jobs:
           node-version: 22
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+      - if: runner.os == 'Windows'
+        run: choco install winfsp --yes --no-progress
       - run: node scripts/package-prebuild.mjs ${{ matrix.target }} dist
       - name: Verify packaged launcher
+        if: runner.os != 'Windows'
         # Mirror the documented install path (`npm install --global
         # deltabox-lite`) closely enough to catch the two ways it breaks: a
         # wrapper without a launcher, and a wrapper whose optionalDependencies
@@ -86,11 +91,37 @@ jobs:
           '
           "$prefix/bin/deltabox" --version
       - name: Verify binary tarball
+        if: runner.os != 'Windows'
         run: |
           mkdir -p dist/tarball
           (cd dist && shasum -a 256 -c ./*.tar.gz.sha256)
           tar -xzf dist/deltabox-*.tar.gz -C dist/tarball
           dist/tarball/deltabox --version
+      - name: Verify Windows package and tarball
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/smoke | Out-Null
+          npm pack ./npm/deltabox-lite --pack-destination dist/smoke
+          $prefix = Join-Path (Resolve-Path dist/smoke) install
+          $wrapperTgz = (Get-ChildItem dist/smoke/deltabox-lite-*.tgz | Select-Object -First 1).FullName
+          npm install --prefix $prefix --offline --ignore-scripts --omit=optional --no-audit --no-fund $wrapperTgz
+          $wrapper = Join-Path $prefix node_modules/deltabox-lite
+          $platform = Join-Path $wrapper node_modules/deltabox-lite-windows-x64
+          New-Item -ItemType Directory -Force $platform | Out-Null
+          $platformTgz = (Get-ChildItem dist/deltabox-lite-windows-x64-*.tgz | Select-Object -First 1).FullName
+          tar -xzf $platformTgz --strip-components=1 -C $platform
+          $env:WRAPPER = $wrapper
+          node -e 'const p=require("node:path"); const w=require(p.join(process.env.WRAPPER,"package.json")); const n=require(p.join(process.env.WRAPPER,"node_modules/deltabox-lite-windows-x64/package.json")); if(w.optionalDependencies[n.name]!==n.version) process.exit(1); const api=require(process.env.WRAPPER); if(!require("node:fs").existsSync(api.binaryPath())) process.exit(1); if(typeof api.loadNative().NativeDeltabox!=="function") process.exit(1)'
+          node (Join-Path $wrapper bin/deltabox.js) --version
+          $archive = (Get-ChildItem dist/deltabox-*.tar.gz | Select-Object -First 1).FullName
+          $sidecar = Get-Content "$archive.sha256"
+          $expected = ($sidecar -split '\s+')[0].ToLowerInvariant()
+          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "Windows tarball SHA256 mismatch" }
+          New-Item -ItemType Directory -Force dist/tarball | Out-Null
+          tar -xzf $archive -C dist/tarball
+          ./dist/tarball/deltabox.exe --version
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
@@ -128,7 +159,7 @@ jobs:
             exit 1
           fi
           ls -1 dist
-          test "$(ls dist/*.tar.gz | wc -l)" -eq 4 || { echo "::error::expected 4 platform tarballs"; exit 1; }
+          test "$(ls dist/*.tar.gz | wc -l)" -eq 5 || { echo "::error::expected 5 platform tarballs"; exit 1; }
       - run: npm pack ./npm/deltabox-lite --pack-destination dist
       - name: Create the draft release and upload assets
         # The tag's annotation body is the changelog section for this version

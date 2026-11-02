@@ -4,6 +4,7 @@ use crate::command_executor::{self, Endpoint as CommandEndpoint};
 use crate::coordinator::CommandExecutionMode;
 use crate::error::{Error, Result};
 use crate::journal::{Journal, JournalEntry, JournalKind};
+use crate::locks::Lock;
 use crate::pathmap::PathMapper;
 use crate::policy::Policy;
 use crate::private_publish::{
@@ -16,7 +17,6 @@ use crate::protocol::{
     FilesystemInfo, FsReadResult, ReviewBeginParams, SessionInfo, SessionSpec, SessionStatus,
 };
 use crate::session::{now_ms, SessionMeta, SessionRegistry};
-use crate::locks::Lock;
 use crate::state_layout::{publish_lock_path, runtime_base, state_base, state_root, SessionLayout};
 use base64::Engine;
 use deltafs_fuse::control::{self, Command as ControlCommand, ResultValue};
@@ -125,6 +125,9 @@ impl Manager {
             Some(path) => Policy::load(path)?,
             None => Policy::default_agent(),
         };
+        if policy.network.allow_approval && self.execution_mode == CommandExecutionMode::Trusted {
+            return Err(Error::Unsupported("network approvals require deltabox isolation".into()));
+        }
         let deny_paths = resolve_deny_paths(&policy, &self.project)?;
         let quota_bytes = policy.limits.max_storage_bytes.unwrap_or(u64::MAX);
 
@@ -477,7 +480,13 @@ impl Manager {
             env,
             label,
             execution_profile,
+            network_allow,
         } = params;
+        if self.execution_mode == CommandExecutionMode::Trusted && !network_allow.is_empty() {
+            return Err(Error::Unsupported(
+                "network grants require deltabox isolation".into(),
+            ));
+        }
         let _lock = self.exec_lock(&session_id)?;
         let meta = self.running_meta(&session_id)?;
         let result = match self.execution_mode {
@@ -537,6 +546,7 @@ impl Manager {
                 let mapper = PathMapper::new(&self.project, &record.mountpoint);
                 let mut policy = self.policy(&meta)?;
                 policy.apply_execution_profile(execution_profile);
+                policy.apply_network_allow(&network_allow)?;
                 execution_profile
                     .ensure_backing_project_is_deniable(&record.mountpoint, &self.project)?;
                 let deny_paths: Vec<PathBuf> =
@@ -761,7 +771,13 @@ impl Manager {
         }
         let applied = self.pending(&record)?;
         let target = parse_checkpoint(params.checkpoint.as_deref())?;
-        let checkpoint = match self.request(&record, ControlCommand::Commit { target })? {
+        let checkpoint = match self.request(
+            &record,
+            ControlCommand::Commit {
+                target,
+                freeze: None,
+            },
+        )? {
             ResultValue::Committed(checkpoint) => checkpoint,
             _ => return Err(Error::Backend("unexpected commit response".into())),
         };
@@ -783,12 +799,25 @@ impl Manager {
                 _ => return Err(Error::Backend("unexpected abort response".into())),
             }
         }
+        // Processes left running in the session keep writing. Hold their
+        // writes from the change list through the engine commit, so what is
+        // published is exactly what the engine accepts.
+        let freeze = self.freeze_writes(record)?;
+        let freeze_id = freeze.as_ref().map(control::Freeze::id);
+        crate::test_hooks::maybe_pause("private_commit_frozen");
         let changes = self.engine_changes(record, None)?;
         if changes.is_empty() {
-            let checkpoint = match self.request(record, ControlCommand::Commit { target: None })? {
+            let checkpoint = match self.request(
+                record,
+                ControlCommand::Commit {
+                    target: None,
+                    freeze: freeze_id,
+                },
+            )? {
                 ResultValue::Committed(checkpoint) => checkpoint,
                 _ => return Err(Error::Backend("unexpected commit response".into())),
             };
+            drop(freeze);
             self.save_review(&params.session_id, None)?;
             self.append(&params.session_id, JournalKind::Commit, None)?;
             return Ok(CommitResult {
@@ -797,6 +826,21 @@ impl Manager {
                 folded_publications: None,
             });
         }
+        // Name the frozen state, so recovery can tell whether the session still
+        // matches what reached the host. Without a freeze there is no single
+        // state to name; recovery then rolls back instead.
+        let frozen_checkpoint = match freeze_id {
+            Some(_) => match self.request(
+                record,
+                ControlCommand::Checkpoint {
+                    label: Some("publish".into()),
+                },
+            )? {
+                ResultValue::Checkpoint(checkpoint) => Some(checkpoint.id),
+                _ => return Err(Error::Backend("unexpected checkpoint response".into())),
+            },
+            None => None,
+        };
         let strict = record.durability == DurabilityMode::Strict;
         // Publication window: validation, host application, and retirement
         // must be atomic against sibling publications and recoveries.
@@ -868,6 +912,7 @@ impl Manager {
             &publish_changes,
             endorsed.as_ref(),
             status.accepted_checkpoint,
+            frozen_checkpoint,
             strict,
         )?;
         maybe_crash("private_publish_prepared");
@@ -876,10 +921,17 @@ impl Manager {
         publication.save(&store)?;
         maybe_crash("private_publish_host_applied");
 
-        let checkpoint = match self.request(record, ControlCommand::Commit { target: None })? {
+        let checkpoint = match self.request(
+            record,
+            ControlCommand::Commit {
+                target: None,
+                freeze: freeze_id,
+            },
+        )? {
             ResultValue::Committed(checkpoint) => checkpoint,
             _ => return Err(Error::Backend("unexpected commit response".into())),
         };
+        drop(freeze);
         publication.phase = PublicationPhase::EngineCommitted;
         publication.save(&store)?;
         maybe_crash("private_publish_engine_committed");
@@ -1216,6 +1268,18 @@ impl Manager {
         }
     }
 
+    /// Hold every write to the session's view until the returned freeze is
+    /// dropped. `None` when the running helper predates freezing (it was
+    /// started by an older CLI); the commit then runs unfrozen, as before.
+    fn freeze_writes(&self, record: &MountRecord) -> Result<Option<control::Freeze>> {
+        let token = fs::read_to_string(&record.token_file)?;
+        match control::freeze(&record.socket, token.trim()) {
+            Ok(freeze) => Ok(Some(freeze)),
+            Err(error) if error.to_string().contains("unknown variant `freeze`") => Ok(None),
+            Err(error) => Err(Error::Backend(format!("filesystem freeze: {error}"))),
+        }
+    }
+
     fn engine_changes(
         &self,
         record: &MountRecord,
@@ -1269,16 +1333,45 @@ impl Manager {
             }
             PublicationPhase::HostApplied => {
                 let status = self.engine_status(record)?;
+                let mut roll_back = false;
                 if status.accepted_checkpoint == publication.engine_accepted_checkpoint {
-                    match self.request(record, ControlCommand::Commit { target: None })? {
-                        ResultValue::Committed(_) => {}
-                        _ => return Err(Error::Backend("unexpected commit response".into())),
+                    // The engine has not accepted yet. Accepting now is only
+                    // safe if the session is still exactly what reached the
+                    // host: a process may have written since the crash, and
+                    // accepting that would drop it from host and diff alike.
+                    let freeze = self.freeze_writes(record)?;
+                    let freeze_id = freeze.as_ref().map(control::Freeze::id);
+                    let unchanged = match (publication.frozen_checkpoint, freeze_id) {
+                        (Some(checkpoint), Some(_)) => self
+                            .engine_changes(record, Some(checkpoint))
+                            .is_ok_and(|changes| changes.is_empty()),
+                        _ => false,
+                    };
+                    if unchanged {
+                        match self.request(
+                            record,
+                            ControlCommand::Commit {
+                                target: None,
+                                freeze: freeze_id,
+                            },
+                        )? {
+                            ResultValue::Committed(_) => {}
+                            _ => return Err(Error::Backend("unexpected commit response".into())),
+                        }
+                    } else {
+                        roll_back = true;
                     }
                 }
-                publication.phase = PublicationPhase::EngineCommitted;
-                publication.save(&store)?;
                 let mut accepted =
                     AcceptedIndex::open_with_durability(&store.join(ACCEPTED_INDEX), strict)?;
+                if roll_back {
+                    // Undo the host half instead: every change stays pending
+                    // in the session, as if the crashed commit never ran.
+                    publication.restore(&store, &self.project)?;
+                } else {
+                    publication.phase = PublicationPhase::EngineCommitted;
+                    publication.save(&store)?;
+                }
                 accepted.refresh(&self.project, &publication.changes)?;
             }
             PublicationPhase::EngineCommitted => {
