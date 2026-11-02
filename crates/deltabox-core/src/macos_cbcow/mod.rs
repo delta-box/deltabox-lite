@@ -1,4 +1,4 @@
 mod manager;
 mod state;
 
-pub use manager::Manager;
+pub use manager::{reclaim_retired, Manager};
