@@ -2067,7 +2067,7 @@ mod tests {
         let closed = root.join("deep/no-access");
         fs::create_dir_all(&closed).unwrap();
         fs::write(closed.join("file.txt"), "unreachable").unwrap();
-        fs::set_permissions(&closed, fs::Permissions::from_mode(0)).unwrap();
+        fs::set_permissions(&closed, fs::Permissions::from_mode(0o000)).unwrap();
         // ACLs can shut the owner out whatever the mode bits say.
         let denied = root.join("deep/acl-denied");
         fs::create_dir_all(&denied).unwrap();
