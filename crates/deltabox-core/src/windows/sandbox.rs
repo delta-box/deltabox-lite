@@ -94,6 +94,7 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
             "Windows read-write execution profiles are reserved; use workspace-write".into(),
         ));
     }
+    let script_timeout = crate::protocol::command_timeout(params.timeout_ms)?.as_millis() as _;
     // Network: this command's grants, then the proxy where one is needed. The
     // policy it leaves behind names only what PSEC rules can express.
     let mut policy = manifest.policy.clone();
@@ -115,6 +116,7 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
         .as_ref()
         .map(|proxy| {
             let mut request = ExecRequest {
+                timeout_ms: None,
                 argv: Vec::new(),
                 cwd: None,
                 env: None,
@@ -298,7 +300,7 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
             .map_err(|e| Error::Backend(e.to_string()))?,
         working_directory: unicode(&cwd)?,
         env: env.into_iter().map(|(k, v)| format!("{k}={v}")).collect(),
-        script_timeout: 600_000,
+        script_timeout,
         policy: ContainerPolicy {
             capabilities: vec!["registryRead".into()],
             readwrite_paths: writable_roots,
@@ -505,6 +507,7 @@ pub fn execute_trusted(manifest: &Manifest, params: ExecParams) -> Result<ExecRe
         })
         .transpose()?;
     crate::trusted::exec(ExecRequest {
+        timeout_ms: params.timeout_ms,
         argv,
         cwd: Some(cwd),
         env,

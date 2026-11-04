@@ -7,7 +7,9 @@
 use super::SandboxBackend;
 use crate::error::{Error, Result};
 use crate::policy::{NetworkMode, Policy};
-use crate::protocol::{AbortResult, CommitResult, ExecRequest, ExecResult, SessionSpec};
+use crate::protocol::{
+    command_timeout, AbortResult, CommitResult, ExecRequest, ExecResult, SessionSpec,
+};
 use crate::snapshot::{copy_tree, move_paths_to_dir};
 use crate::worker::{ScanEntry, WorkerCommand, WorkerEvent, WorkerExec};
 use sandlock_core::sandbox::{BranchAction, ByteSize, Process, StdioMode};
@@ -194,6 +196,7 @@ impl SandboxBackend for SandlockBackend {
     }
 
     fn exec(&mut self, session_id: &str, mut req: ExecRequest) -> Result<ExecResult> {
+        let timeout = command_timeout(req.timeout_ms)?;
         let proxy = self
             .sessions
             .get(session_id)
@@ -201,11 +204,7 @@ impl SandboxBackend for SandlockBackend {
         if let Some(proxy) = proxy {
             proxy.environment(&mut req);
         }
-        let mut result = self.call(
-            session_id,
-            |resp| InnerCmd::Exec { req, resp },
-            COMMAND_TIMEOUT,
-        )?;
+        let mut result = self.call(session_id, |resp| InnerCmd::Exec { req, resp }, timeout)?;
         if let Some(proxy) = proxy {
             result.network_denials = proxy.denials();
         }

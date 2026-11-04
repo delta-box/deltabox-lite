@@ -175,6 +175,9 @@ struct ExecArgs {
     /// Filesystem breadth for this command only: workspace-write or read-write.
     #[arg(long, value_parser = parse_execution_profile)]
     execution_profile: Option<ExecutionProfile>,
+    /// Execution deadline for this command in milliseconds (default 600000, maximum 14400000).
+    #[arg(long)]
+    timeout_ms: Option<u64>,
     #[arg(long)]
     env: Vec<String>,
     #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
@@ -437,6 +440,7 @@ fn main() -> anyhow::Result<()> {
                 label: args.label,
                 execution_profile: args.execution_profile.unwrap_or_default(),
                 network_allow: Vec::new(),
+                timeout_ms: args.timeout_ms,
             })?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
@@ -775,6 +779,7 @@ fn run_transaction(args: RunArgs) -> anyhow::Result<i32> {
             label: args.label,
             execution_profile: Default::default(),
             network_allow: Vec::new(),
+            timeout_ms: None,
         })?;
         std::io::stdout()
             .lock()

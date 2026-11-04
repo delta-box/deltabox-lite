@@ -241,6 +241,7 @@ impl DurableSessionManager {
             .map(|p| map_project_path(&self.project, &working, p))
             .transpose()?;
         let request = ExecRequest {
+            timeout_ms: params.timeout_ms,
             argv: params.argv,
             cwd,
             env: params.env,
@@ -694,6 +695,7 @@ impl DurableSessionManager {
         self.update_working_copy_transaction(session_id, |candidate| {
             let mapper = PathMapper::new(&self.project, candidate);
             let request = ExecRequest {
+                timeout_ms: request.timeout_ms,
                 argv: request
                     .argv
                     .into_iter()

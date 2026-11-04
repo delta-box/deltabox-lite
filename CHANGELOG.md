@@ -9,6 +9,15 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+### Added
+
+- Let callers choose a per-command execution deadline. `session.exec` accepts
+  `timeout_ms`, the Node.js binding takes a trailing `timeoutMs` argument on
+  `exec()`, and `deltabox exec` accepts `--timeout-ms`. The default stays 600 s
+  and the maximum is 4 hours; 0 and larger values are rejected. The Linux and
+  trusted paths are tested; the macOS and Windows paths are wired the same way
+  but have not been built or run.
+
 ## [0.1.5] - 2026-10-30
 
 ### Fixed

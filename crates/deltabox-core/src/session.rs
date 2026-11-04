@@ -267,6 +267,7 @@ impl SessionManager {
         let label = params.label.clone();
         self.ensure_running(&params.session_id)?;
         let req = ExecRequest {
+            timeout_ms: params.timeout_ms,
             argv: params.argv,
             cwd: params.cwd,
             env: params.env,
@@ -765,6 +766,7 @@ mod tests {
                 label: Some("greeting".into()),
                 execution_profile: Default::default(),
                 network_allow: Vec::new(),
+                timeout_ms: None,
             })
             .unwrap();
         assert_eq!(exec.stdout, "echo hi");

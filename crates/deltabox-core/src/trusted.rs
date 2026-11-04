@@ -5,7 +5,7 @@
 //! over process isolation; the default coordinator mode remains sandboxed.
 
 use crate::error::{Error, Result};
-use crate::protocol::{ExecRequest, ExecResult};
+use crate::protocol::{command_timeout, ExecRequest, ExecResult};
 use crate::worker::{read_capped, MAX_EXEC_OUTPUT_BYTES};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -15,8 +15,6 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
-
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Clone, Copy)]
 enum OutputStream {
@@ -142,7 +140,7 @@ impl PersistentBash {
 
         let mut stdout = MarkerCollector::status(stdout_prefix);
         let mut stderr = MarkerCollector::exact(stderr_marker);
-        let deadline = started + COMMAND_TIMEOUT;
+        let deadline = started + command_timeout(request.timeout_ms)?;
         while !stdout.done() || !stderr.done() {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -378,6 +376,7 @@ pub fn exec(request: ExecRequest) -> Result<ExecResult> {
     let Some(program) = request.argv.first() else {
         return Err(Error::InvalidPolicy("empty argv".into()));
     };
+    let timeout = command_timeout(request.timeout_ms)?;
 
     let mut command = Command::new(program);
     command.args(&request.argv[1..]);
@@ -402,7 +401,7 @@ pub fn exec(request: ExecRequest) -> Result<ExecResult> {
     let stdout_reader = thread::spawn(move || read_capped(stdout));
     let stderr_reader = thread::spawn(move || read_capped(stderr));
 
-    let deadline = started + COMMAND_TIMEOUT;
+    let deadline = started + timeout;
     let status = loop {
         if let Some(status) = child
             .try_wait()
@@ -439,10 +438,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn per_command_timeout_ends_a_long_command_and_is_validated() {
+        let long = |timeout_ms| ExecRequest {
+            timeout_ms,
+            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+            cwd: None,
+            env: None,
+        };
+        let started = Instant::now();
+        let error = exec(long(Some(200))).unwrap_err();
+        assert!(error.to_string().contains("timed out"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(4));
+        assert!(exec(long(Some(0))).is_err());
+        // Without an explicit deadline a short command still completes under the default.
+        let quick = exec(ExecRequest {
+            timeout_ms: None,
+            argv: vec!["/bin/sh".into(), "-c".into(), "printf done".into()],
+            cwd: None,
+            env: None,
+        })
+        .unwrap();
+        assert_eq!(quick.stdout, "done");
+    }
+
+    #[test]
     fn inherits_process_environment_and_applies_overrides() {
         const INHERITED: &str = "DELTABOX_TRUSTED_INHERITED_TEST";
         std::env::set_var(INHERITED, "host-value");
         let result = exec(ExecRequest {
+            timeout_ms: None,
             argv: vec![
                 "/bin/sh".into(),
                 "-c".into(),
@@ -465,6 +489,7 @@ mod tests {
         let first = exec_reusing_bash(
             &mut shell,
             ExecRequest {
+                timeout_ms: None,
                 argv: vec![
                     "bash".into(),
                     "-c".into(),
@@ -478,6 +503,7 @@ mod tests {
         let second = exec_reusing_bash(
             &mut shell,
             ExecRequest {
+                timeout_ms: None,
                 argv: vec![
                     "/bin/bash".into(),
                     "-c".into(),

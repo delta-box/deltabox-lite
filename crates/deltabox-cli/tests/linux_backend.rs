@@ -41,7 +41,8 @@ fn exec_sh(manager: &mut SessionManager, session_id: &str, script: &str) -> (i32
             env: None,
             label: None,
             execution_profile: Default::default(),
-                network_allow: Vec::new(),
+            network_allow: Vec::new(),
+            timeout_ms: None,
         })
         .unwrap();
     (result.exit_code.unwrap_or(-1), result.stdout, result.stderr)
@@ -335,7 +336,8 @@ fn exec_cwd_and_env() {
             env: Some(vec![("DBX_VAR".into(), "hello-env".into())]),
             label: Some("cwd-env".into()),
             execution_profile: Default::default(),
-                network_allow: Vec::new(),
+            network_allow: Vec::new(),
+            timeout_ms: None,
         })
         .unwrap();
     assert_eq!(result.exit_code, Some(0));
@@ -432,6 +434,7 @@ fn rooted_write_grant_cannot_escape_resolved_denies() {
             .exec(
                 "rooted",
                 ExecRequest {
+                    timeout_ms: None,
                     argv: vec!["sh".into(), "-c".into(), script],
                     cwd: None,
                     env: None,

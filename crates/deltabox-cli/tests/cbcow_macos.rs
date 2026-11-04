@@ -242,6 +242,7 @@ mode = "deny_all"
                 label: None,
                 execution_profile: Default::default(),
                 network_allow: Vec::new(),
+                timeout_ms: None,
             })
             .unwrap()
     };

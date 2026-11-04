@@ -1008,6 +1008,7 @@ mod tests {
 
     fn exec_request(value: &str) -> ExecRequest {
         ExecRequest {
+            timeout_ms: None,
             argv: vec![value.into()],
             cwd: None,
             env: None,

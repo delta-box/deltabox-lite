@@ -481,6 +481,7 @@ impl Manager {
             label,
             execution_profile,
             network_allow,
+            timeout_ms,
         } = params;
         if self.execution_mode == CommandExecutionMode::Trusted && !network_allow.is_empty() {
             return Err(Error::Unsupported(
@@ -494,6 +495,7 @@ impl Manager {
                 let record = self.ensure_helper(&session_id)?;
                 let mapper = PathMapper::new(&self.project, &record.mountpoint);
                 let request = ExecRequest {
+                    timeout_ms: timeout_ms,
                     argv: argv
                         .into_iter()
                         .map(|value| mapper.map_arg(&value))
@@ -569,6 +571,7 @@ impl Manager {
                         .push(path.to_string_lossy().into_owned());
                 }
                 let request = ExecRequest {
+                    timeout_ms: timeout_ms,
                     argv: argv
                         .into_iter()
                         .map(|value| mapper.map_arg(&value))

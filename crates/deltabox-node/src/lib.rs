@@ -316,12 +316,26 @@ impl NativeDeltabox {
         label: Option<String>,
         execution_profile: Option<String>,
         network_allow: Option<Vec<String>>,
+        timeout_ms: Option<f64>,
     ) -> napi::Result<NativeExecResult> {
         let coordinator = Arc::clone(&self.coordinator);
         let execution_profile = parse_execution_profile(execution_profile.as_deref())?;
+        // JavaScript numbers are f64; reject anything that is not a whole, positive millisecond count.
+        let timeout_ms = timeout_ms
+            .map(|value| {
+                if value.fract() == 0.0 && value >= 1.0 && value <= u64::MAX as f64 {
+                    Ok(value as u64)
+                } else {
+                    Err(napi::Error::from_reason(
+                        "timeoutMs must be a positive integer number of milliseconds",
+                    ))
+                }
+            })
+            .transpose()?;
         run_blocking(move || {
             coordinator
                 .exec(ExecParams {
+                    timeout_ms,
                     session_id,
                     argv,
                     cwd: cwd.map(PathBuf::from),

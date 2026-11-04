@@ -5,7 +5,9 @@ use crate::changeset::ChangeKind;
 use crate::error::{Error, Result};
 use crate::pathmap::PathMapper;
 use crate::policy::{NetworkMode, Policy};
-use crate::protocol::{AbortResult, CommitResult, ExecRequest, ExecResult, SessionSpec};
+use crate::protocol::{
+    command_timeout, AbortResult, CommitResult, ExecRequest, ExecResult, SessionSpec,
+};
 use crate::snapshot::{
     build_scan_entries, clone_or_copy_file, diff_snapshots, preserve_symlink_times,
 };
@@ -25,7 +27,6 @@ use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
 
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub struct SeatbeltBackend {
     direct_write: bool,
@@ -430,6 +431,7 @@ impl SandboxBackend for SeatbeltBackend {
     }
 
     fn exec(&mut self, session_id: &str, mut req: ExecRequest) -> Result<ExecResult> {
+        let timeout = command_timeout(req.timeout_ms)?;
         let state = self.state(session_id)?;
         if let Some(proxy) = &state.network_proxy {
             proxy.environment(&mut req);
@@ -531,7 +533,7 @@ impl SandboxBackend for SeatbeltBackend {
         let stderr = child.stderr.take().expect("stderr piped");
         let out_thread = std::thread::spawn(move || read_capped(stdout));
         let err_thread = std::thread::spawn(move || read_capped(stderr));
-        let Some(status) = child.wait_timeout(COMMAND_TIMEOUT)? else {
+        let Some(status) = child.wait_timeout(timeout)? else {
             let _ = child.kill();
             let _ = child.wait();
             return Err(Error::Backend("session command timed out".into()));

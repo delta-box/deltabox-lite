@@ -131,6 +131,8 @@ export interface NativeDeltaboxInstance {
     label?: string,
     executionProfile?: NativeExecutionProfile,
     networkAllow?: string[],
+    /** Execution deadline in milliseconds: 600000 by default, at most 14400000. */
+    timeoutMs?: number,
   ): Promise<NativeExecResult>
   readFile(sessionId: string, path: string): Promise<Buffer>
   writeFile(sessionId: string, path: string, content: Buffer): Promise<void>

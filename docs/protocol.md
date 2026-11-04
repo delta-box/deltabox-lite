@@ -24,7 +24,7 @@ each response is one JSON object per line.
 | `session.start` | `{project, policy?, fs_mode?, require_fs_mode?, durability?, group_commit_ms?}` | `SessionInfo` |
 | `session.stop` | `{session_id}` | `SessionInfo` |
 | `session.status` | `{session_id}` | `SessionInfo` |
-| `session.exec` | `{session_id, argv, cwd?, env?, label?, execution_profile?}` | `ExecResult` |
+| `session.exec` | `{session_id, argv, cwd?, env?, label?, execution_profile?, timeout_ms?}` | `ExecResult` |
 | `checkpoint.create` | `{session_id, label?}` | `CheckpointInfo` |
 | `diff.list` | `{session_id, from?, to?}` | `DiffResult` |
 | `changes.commit` | `{session_id, checkpoint?}` | `CommitResult` |
@@ -98,6 +98,13 @@ sessions are rejected with an unsupported-operation error.
 A commit rejected because the host moved returns error `data` =
 `{"type": "project-conflict", message, conflicts: [{path, host_change}],
 truncated}` alongside the unchanged error `message`.
+
+`timeout_ms` on `session.exec` is optional and sets this command's execution
+deadline in milliseconds. It defaults to 600000 (10 minutes) and values of 0 or
+above 14400000 (4 hours) are rejected with `invalid policy`. The Node.js binding
+exposes it as the last optional `timeoutMs` argument of `exec()` and the CLI as
+`deltabox exec --timeout-ms`. When the deadline passes the command is killed and
+the call fails with `session command timed out`.
 
 `label` on `session.exec` is optional free-form attribution (e.g. the Pi tool
 name); it is recorded in the session journal so change sets can be grouped by

@@ -97,6 +97,10 @@ pub struct ExecParams {
     /// Only accepted when the session policy enables allow_approval.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub network_allow: Vec<String>,
+    /// Execution deadline for this command in milliseconds. `None` keeps the
+    /// 600 s default; values above [`MAX_COMMAND_TIMEOUT`] are rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 /// Filesystem breadth granted to one command execution.
@@ -462,6 +466,9 @@ pub enum SessionStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecRequest {
+    /// See [`ExecParams::timeout_ms`].
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
     pub argv: Vec<String>,
     #[serde(default)]
     pub cwd: Option<PathBuf>,
@@ -733,5 +740,42 @@ mod tests {
             );
             let _: Request = serde_json::from_str(&raw).unwrap();
         }
+    }
+}
+
+/// Deadline applied to a command when the caller does not choose one.
+pub const DEFAULT_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+/// Longest deadline a caller may request, so a runaway command cannot hold a session forever.
+pub const MAX_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4 * 60 * 60);
+
+/// Resolve a requested per-command deadline, rejecting zero and values above the maximum.
+pub fn command_timeout(timeout_ms: Option<u64>) -> crate::error::Result<std::time::Duration> {
+    let Some(ms) = timeout_ms else {
+        return Ok(DEFAULT_COMMAND_TIMEOUT);
+    };
+    let requested = std::time::Duration::from_millis(ms);
+    if requested.is_zero() || requested > MAX_COMMAND_TIMEOUT {
+        return Err(crate::error::Error::InvalidPolicy(format!(
+            "timeout_ms must be between 1 and {}",
+            MAX_COMMAND_TIMEOUT.as_millis()
+        )));
+    }
+    Ok(requested)
+}
+
+#[cfg(test)]
+mod command_timeout_tests {
+    use super::*;
+
+    #[test]
+    fn defaults_and_bounds() {
+        assert_eq!(command_timeout(None).unwrap(), DEFAULT_COMMAND_TIMEOUT);
+        assert_eq!(
+            command_timeout(Some(1_800_000)).unwrap(),
+            std::time::Duration::from_secs(1800)
+        );
+        assert!(command_timeout(Some(0)).is_err());
+        assert!(command_timeout(Some(MAX_COMMAND_TIMEOUT.as_millis() as u64 + 1)).is_err());
+        assert!(command_timeout(Some(MAX_COMMAND_TIMEOUT.as_millis() as u64)).is_ok());
     }
 }

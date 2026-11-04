@@ -484,6 +484,7 @@ impl Manager {
             label,
             execution_profile,
             network_allow,
+            timeout_ms,
         } = params;
         if !network_allow.is_empty() && self.execution_mode == CommandExecutionMode::Trusted {
             return Err(Error::Unsupported(
@@ -491,7 +492,7 @@ impl Manager {
             ));
         }
         if let Some(fast) = self.fast_session(&session_id) {
-            return self.exec_fast(fast, session_id, argv, cwd, env, label);
+            return self.exec_fast(fast, session_id, argv, cwd, env, label, timeout_ms);
         }
         let _lock = self.exec_lock(&session_id)?;
         let meta = self.running_meta(&session_id)?;
@@ -516,6 +517,7 @@ impl Manager {
                 let live = state.live();
                 let mapper = PathMapper::new(&self.project, &live);
                 crate::trusted::exec(ExecRequest {
+                    timeout_ms: timeout_ms,
                     argv: argv
                         .into_iter()
                         .map(|value| mapper.map_arg(&value))
@@ -573,6 +575,7 @@ impl Manager {
                     ]),
                 };
                 let request = ExecRequest {
+                    timeout_ms: timeout_ms,
                     argv,
                     cwd,
                     env: command_executor::capture_environment(env),
@@ -1219,6 +1222,7 @@ impl Manager {
         cwd: Option<PathBuf>,
         env: Option<Vec<(String, String)>>,
         label: Option<String>,
+        timeout_ms: Option<u64>,
     ) -> Result<ExecResult> {
         let mut session = fast.lock().expect("embedded session poisoned");
         self.require_fast_running(&session)?;
@@ -1227,6 +1231,7 @@ impl Manager {
         let result = crate::trusted::exec_reusing_bash(
             &mut session.shell,
             ExecRequest {
+                timeout_ms: timeout_ms,
                 argv: argv
                     .into_iter()
                     .map(|value| mapper.map_arg(&value))
