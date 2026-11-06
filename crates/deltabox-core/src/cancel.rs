@@ -93,6 +93,13 @@ pub fn register(killer: impl Fn() + Send + Sync + 'static) -> Registration {
     }
 }
 
+impl Registration {
+    /// Whether a cancel scope is open, i.e. whether a cancel can ever arrive.
+    pub fn is_active(&self) -> bool {
+        self.scope.is_some()
+    }
+}
+
 impl Drop for Registration {
     fn drop(&mut self) {
         if let Some((handle, id)) = self.scope.take() {

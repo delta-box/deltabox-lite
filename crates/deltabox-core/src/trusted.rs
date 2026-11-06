@@ -408,6 +408,13 @@ pub fn exec(request: ExecRequest) -> Result<ExecResult> {
         let pgid = child.id() as i32;
         crate::cancel::register(move || crate::cancel::kill_process_group(pgid))
     };
+    // Windows has no process groups; a job object plays the same role. If the
+    // job cannot be created the command still runs, it just cannot be
+    // cancelled as a tree.
+    #[cfg(windows)]
+    let _cancel = job::Job::containing(&child)
+        .map(std::sync::Arc::new)
+        .map(|job| crate::cancel::register(move || job.terminate()));
     let stdout = child.stdout.take().expect("stdout is piped");
     let stderr = child.stderr.take().expect("stderr is piped");
     let stdout_reader = thread::spawn(move || read_capped(stdout));
@@ -433,6 +440,71 @@ pub fn exec(request: ExecRequest) -> Result<ExecResult> {
         truncated: stdout_truncated || stderr_truncated,
         network_denials: Vec::new(),
     })
+}
+
+/// A Windows job object that holds a command and its descendants so they can
+/// be terminated together.
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    pub struct Job(HANDLE);
+
+    // SAFETY: a job handle may be used from any thread.
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    impl Job {
+        /// Create a job that kills its processes when closed and put `child` in it.
+        pub fn containing(child: &std::process::Child) -> Option<Job> {
+            // SAFETY: plain Win32 calls with valid arguments; the handle is
+            // owned by the returned `Job` and closed exactly once in `Drop`.
+            unsafe {
+                let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if handle.is_null() {
+                    return None;
+                }
+                let job = Job(handle);
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                if SetInformationJobObject(
+                    job.0,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const core::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                ) == 0
+                {
+                    return None;
+                }
+                if AssignProcessToJobObject(job.0, child.as_raw_handle() as HANDLE) == 0 {
+                    return None;
+                }
+                Some(job)
+            }
+        }
+
+        pub fn terminate(&self) {
+            // SAFETY: `self.0` is a live job handle.
+            unsafe {
+                TerminateJobObject(self.0, 1);
+            }
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY: closes the handle this job owns, once.
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
 }
 
 #[cfg(all(test, not(windows)))]
