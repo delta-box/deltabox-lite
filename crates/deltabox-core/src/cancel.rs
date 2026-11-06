@@ -55,8 +55,19 @@ pub struct Scope {
 /// Open a cancellation scope on the calling thread.
 pub fn scope() -> (Scope, CancelHandle) {
     let handle = CancelHandle::default();
+    let scope = enter(&handle);
+    (scope, handle)
+}
+
+/// Make an existing handle current for the calling thread.
+///
+/// Use this when the handle must exist before the thread that runs the
+/// command does, for example to register it where another thread can cancel
+/// it before the command has started. A cancel that already happened is not
+/// lost: anything registered afterwards is killed immediately.
+pub fn enter(handle: &CancelHandle) -> Scope {
     let previous = CURRENT.with(|current| current.replace(Some(handle.clone())));
-    (Scope { previous }, handle)
+    Scope { previous }
 }
 
 impl Drop for Scope {
@@ -165,6 +176,23 @@ mod tests {
         }));
         handle.cancel();
         assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn enter_installs_an_existing_handle_and_keeps_an_earlier_cancel() {
+        let handle = CancelHandle::default();
+        handle.cancel();
+        let count = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&count);
+        let scope = enter(&handle);
+        let registration = register(move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+        });
+        assert!(registration.is_active());
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        drop(registration);
+        drop(scope);
+        assert!(!register(|| {}).is_active(), "scope is restored on drop");
     }
 
     #[test]

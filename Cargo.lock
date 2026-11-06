@@ -466,10 +466,12 @@ name = "deltabox-node"
 version = "0.1.5"
 dependencies = [
  "deltabox-core",
+ "libc",
  "napi",
  "napi-build",
  "napi-derive",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

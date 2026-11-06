@@ -1680,4 +1680,53 @@ mod tests {
         }
         server.join().unwrap();
     }
+
+    #[test]
+    fn a_cancel_before_the_exec_starts_never_runs_the_command() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::new(
+            directory.path().join("executor.sock"),
+            directory.path().join("token"),
+            directory.path().join("ready"),
+        );
+        fs::write(&endpoint.token_file, "test-token\n").unwrap();
+        let counts = Arc::new(Counts::default());
+        let server_counts = Arc::clone(&counts);
+        let server_endpoint = endpoint.clone();
+        let server = thread::spawn(move || {
+            run_with_backend(
+                Config {
+                    endpoint: server_endpoint,
+                    worker_bin: PathBuf::from("unused"),
+                },
+                FakeBackend {
+                    counts: server_counts,
+                },
+            )
+            .unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !matches!(request(&endpoint, Command::Ping), Ok(ResultValue::Pong)) {
+            assert!(Instant::now() < deadline, "server did not become ready");
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let handle = crate::cancel::CancelHandle::default();
+        handle.cancel();
+        let _scope = crate::cancel::enter(&handle);
+        let error = exec(
+            &endpoint,
+            "session",
+            1,
+            spec(directory.path()),
+            exec_request("never"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("command cancelled"), "{error}");
+        assert_eq!(counts.execs.load(Ordering::Relaxed), 0);
+        drop(_scope);
+        shutdown(&endpoint).unwrap();
+        server.join().unwrap();
+    }
 }

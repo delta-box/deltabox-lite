@@ -10,10 +10,70 @@ use deltabox_core::protocol::{
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 fn native_error(error: impl std::fmt::Display) -> napi::Error {
     napi::Error::from_reason(error.to_string())
+}
+
+/// In-flight executions that a host asked to be able to cancel, by its own id.
+///
+/// The handle is registered before the blocking work is scheduled, so a cancel
+/// that arrives before the command has started is not lost: the command is
+/// killed the moment it registers.
+#[derive(Default)]
+struct Executions(Mutex<HashMap<String, deltabox_core::cancel::CancelHandle>>);
+
+struct Execution {
+    registry: Arc<Executions>,
+    id: String,
+    handle: deltabox_core::cancel::CancelHandle,
+}
+
+impl Executions {
+    fn begin(self: &Arc<Self>, id: String) -> napi::Result<Execution> {
+        let handle = deltabox_core::cancel::CancelHandle::default();
+        let mut running = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if running.contains_key(&id) {
+            return Err(napi::Error::from_reason(format!(
+                "execution id {id:?} is already in use"
+            )));
+        }
+        running.insert(id.clone(), handle.clone());
+        Ok(Execution {
+            registry: Arc::clone(self),
+            id,
+            handle,
+        })
+    }
+
+    /// Cancel an execution. Returns whether one with that id was running.
+    fn cancel(&self, id: &str) -> bool {
+        let handle = self
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .cloned();
+        match handle {
+            Some(handle) => {
+                handle.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+impl Drop for Execution {
+    fn drop(&mut self) {
+        self.registry
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.id);
+    }
 }
 
 async fn run_blocking<T>(
@@ -198,6 +258,7 @@ struct ResolvedNativeOptions {
 #[napi]
 pub struct NativeDeltabox {
     coordinator: Arc<SessionCoordinator>,
+    executions: Arc<Executions>,
     helper_binary: String,
     fs_mode: FilesystemMode,
     isolation: NativeIsolation,
@@ -229,6 +290,7 @@ impl NativeDeltabox {
         .map_err(native_error)?;
         Ok(Self {
             coordinator: Arc::new(coordinator),
+            executions: Arc::new(Executions::default()),
             helper_binary,
             fs_mode: options.fs_mode,
             isolation: options.isolation,
@@ -316,10 +378,18 @@ impl NativeDeltabox {
         label: Option<String>,
         execution_profile: Option<String>,
         network_allow: Option<Vec<String>>,
+        exec_id: Option<String>,
     ) -> napi::Result<NativeExecResult> {
         let coordinator = Arc::clone(&self.coordinator);
         let execution_profile = parse_execution_profile(execution_profile.as_deref())?;
+        // With an `execId` the host can end this command with `cancelExec`.
+        let execution = exec_id
+            .map(|id| self.executions.begin(id))
+            .transpose()?;
         run_blocking(move || {
+            let _scope = execution
+                .as_ref()
+                .map(|execution| deltabox_core::cancel::enter(&execution.handle));
             coordinator
                 .exec(ExecParams {
                     session_id,
@@ -339,6 +409,15 @@ impl NativeDeltabox {
                 .map_err(native_error)
         })
         .await
+    }
+
+    /// End the command started by `exec` with this `execId`: its whole process
+    /// tree is killed and the `exec` promise rejects with "command cancelled"
+    /// (or resolves with a non-zero result for an unsandboxed command).
+    /// Returns false when no execution with that id is running.
+    #[napi]
+    pub fn cancel_exec(&self, exec_id: String) -> bool {
+        self.executions.cancel(&exec_id)
     }
 
     #[napi]
@@ -852,5 +931,117 @@ mod tests {
         for isolation in ["bubblewrap", "docker", "trusted"] {
             assert!(resolve_native_options(Some(options(None, Some(isolation)))).is_err());
         }
+    }
+
+    #[test]
+    fn executions_reject_a_duplicate_id_and_forget_finished_ones() {
+        let registry = Arc::new(Executions::default());
+        let first = registry.begin("a".into()).unwrap();
+        assert!(registry.begin("a".into()).is_err());
+        assert!(registry.cancel("a"));
+        assert!(!registry.cancel("missing"));
+        drop(first);
+        assert!(!registry.cancel("a"), "a finished execution is forgotten");
+        assert!(registry.begin("a".into()).is_ok(), "its id can be reused");
+    }
+
+    #[test]
+    fn cancel_reaches_a_command_registered_on_another_thread_and_is_sticky() {
+        let registry = Arc::new(Executions::default());
+        let execution = registry.begin("job".into()).unwrap();
+        // Cancelled before the blocking work has even started.
+        assert!(registry.cancel("job"));
+        let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = Arc::clone(&killed);
+        std::thread::spawn(move || {
+            let _scope = deltabox_core::cancel::enter(&execution.handle);
+            let _registration = deltabox_core::cancel::register(move || {
+                seen.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        })
+        .join()
+        .unwrap();
+        assert!(killed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// End to end through the real binding: a trusted-mode exec with an id is
+    /// ended by `cancel_exec`, process tree included.
+    #[cfg(unix)]
+    #[test]
+    fn cancel_exec_ends_a_running_command_and_its_children() {
+        use std::time::{Duration, Instant};
+
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let pid_file = directory.path().join("child.pid");
+        let native = NativeDeltabox::new(
+            project.to_string_lossy().into_owned(),
+            "unused".into(),
+            Some(NativeDeltaboxOptions {
+                state_dir: Some(directory.path().join("state").to_string_lossy().into_owned()),
+                runtime_dir: Some(directory.path().join("runtime").to_string_lossy().into_owned()),
+                fs_mode: Some("copy-private".into()),
+                isolation: Some("none".into()),
+            }),
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let session = native
+                .start_session(None, None, None, Some("copy-private".into()), Some(true))
+                .await
+                .unwrap();
+            let canceller = {
+                let executions = Arc::clone(&native.executions);
+                let pid_file = pid_file.clone();
+                tokio::spawn(async move {
+                    // Cancel once the command has started its background child.
+                    let deadline = Instant::now() + Duration::from_secs(20);
+                    while !pid_file.exists() {
+                        assert!(Instant::now() < deadline, "command never started");
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    assert!(executions.cancel("job"));
+                })
+            };
+            let started = Instant::now();
+            let result = native
+                .exec(
+                    session.session_id.clone(),
+                    vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        format!("sleep 60 & echo $! > '{}'; wait", pid_file.display()),
+                    ],
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("job".into()),
+                )
+                .await;
+            canceller.await.unwrap();
+            assert!(started.elapsed() < Duration::from_secs(40), "cancel did not end the command");
+            if let Ok(result) = result {
+                assert!(!matches!(result.exit_code, Either::A(0)));
+            }
+            let child: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            // kill(pid, 0) succeeds for zombies, so also accept /proc state Z.
+            let alive = |pid: i32| match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+                Ok(stat) => stat
+                    .rsplit(')')
+                    .next()
+                    .and_then(|rest| rest.split_whitespace().next())
+                    .is_some_and(|state| state != "Z"),
+                Err(_) => unsafe { libc::kill(pid, 0) == 0 },
+            };
+            while alive(child) {
+                assert!(Instant::now() < deadline, "the command's child survived the cancel");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
     }
 }

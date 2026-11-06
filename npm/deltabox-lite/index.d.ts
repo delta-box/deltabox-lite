@@ -131,7 +131,24 @@ export interface NativeDeltaboxInstance {
     label?: string,
     executionProfile?: NativeExecutionProfile,
     networkAllow?: string[],
+    /**
+     * Lets the host end this command with {@link cancelExec}. Must be unique
+     * among executions that are still running.
+     */
+    execId?: string,
   ): Promise<NativeExecResult>
+  /**
+   * End the command started by `exec` with this `execId`: its whole process
+   * tree is killed. A sandboxed command's `exec` promise then rejects with
+   * "command cancelled"; an unsandboxed one resolves with a non-zero result.
+   * A cancel that arrives before the command has started is not lost.
+   * Returns false when no execution with that id is running.
+   *
+   * There is no time limit on a command, so hosts that want one should
+   * cancel on their own deadline or abort signal. Descendants that move
+   * themselves into a new session or process group are not reached.
+   */
+  cancelExec(execId: string): boolean
   readFile(sessionId: string, path: string): Promise<Buffer>
   writeFile(sessionId: string, path: string, content: Buffer): Promise<void>
   recordFileChanges(sessionId: string, paths: string[]): Promise<void>
