@@ -91,9 +91,12 @@ pub fn is_excluded_dir(name: &str) -> bool {
 
 /// Run the worker loop until stdin reaches EOF.
 pub fn run_worker(root: &Path, runtime: &Path) -> Result<()> {
-    configure_parent_death_signal()?;
+    // Install the handler before arming the parent-death signal: when the
+    // process that owns this worker disappears, the kernel sends SIGTERM and
+    // the handler kills the running command's whole process group.
     #[cfg(unix)]
     install_cancel_handler()?;
+    configure_parent_death_signal()?;
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     writeln!(out, "{}", serde_json::to_string(&WorkerEvent::Ready)?)?;
@@ -166,7 +169,7 @@ pub fn run_worker(root: &Path, runtime: &Path) -> Result<()> {
 #[cfg(target_os = "linux")]
 fn configure_parent_death_signal() -> Result<()> {
     let parent = unsafe { libc::getppid() };
-    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } != 0 {
+    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) } != 0 {
         return Err(std::io::Error::last_os_error().into());
     }
     if unsafe { libc::getppid() } != parent || parent == 1 {

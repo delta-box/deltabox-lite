@@ -18,6 +18,9 @@ anyhow.workspace = true
 serde_json.workspace = true
 base64 = "0.22"
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 libc.workspace = true
