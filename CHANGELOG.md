@@ -9,6 +9,27 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+### Changed
+
+- A command's lifetime is now bound to the request that started it. The
+  hard-coded 10-minute (`600s`) command limit is removed from the Linux,
+  macOS and trusted backends, and the command-helper client no longer gives up
+  after 615 s. A command now runs until it exits or its request goes away.
+- When a client disconnects mid-`exec` (Ctrl-C, closed terminal, crashed host),
+  the command-helper kills the command's whole process group, waits for it to
+  die, then releases the operation lock and retires the warm runtime. Before,
+  such an orphaned command kept running. Descendants that move themselves
+  into a new session or process group (`setsid`, daemonizing) are not reached
+  by this.
+- New `deltabox_core::cancel` module: embedders can open a `cancel::scope()` on
+  the thread that runs a command and call `CancelHandle::cancel()` from any
+  other thread to end it.
+
+### Removed
+
+- The `session command timed out` error for running commands. Callers that
+  relied on it as a safety net must enforce their own deadline by cancelling.
+
 ## [0.1.5] - 2026-10-30
 
 ### Fixed

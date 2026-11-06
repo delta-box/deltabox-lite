@@ -15,12 +15,17 @@ use sandlock_core::{Protection, Sandbox};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::mpsc as std_mpsc;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc as tokio_mpsc, oneshot};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(600);
+/// Bound for the worker's internal file operations (scan, write). Running
+/// commands are deliberately not bounded here; they end when they exit or when
+/// the request that started them is cancelled.
+const FILE_OP_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Result type used for channels between the caller and the session runtime.
 type ChanResult<T> = std::result::Result<T, String>;
@@ -36,6 +41,8 @@ struct SessionRuntime {
     thread: Option<std::thread::JoinHandle<()>>,
     spec: SessionSpec,
     network_proxy: Option<crate::network::NetworkProxy>,
+    /// PID of the session's worker process, 0 until it has started.
+    worker_pid: Arc<AtomicI32>,
 }
 
 enum InnerCmd {
@@ -100,7 +107,7 @@ impl SandlockBackend {
         &self,
         session_id: &str,
         make: impl FnOnce(std_mpsc::Sender<ChanResult<T>>) -> InnerCmd,
-        timeout: Duration,
+        timeout: Option<Duration>,
     ) -> Result<T> {
         let runtime = self
             .sessions
@@ -111,9 +118,14 @@ impl SandlockBackend {
             .tx
             .blocking_send(make(tx))
             .map_err(|_| Error::Backend("session runtime closed".into()))?;
-        let res = rx
-            .recv_timeout(timeout)
-            .map_err(|_| Error::Backend("session command timed out".into()))?;
+        let res = match timeout {
+            Some(timeout) => rx
+                .recv_timeout(timeout)
+                .map_err(|_| Error::Backend("session command timed out".into()))?,
+            None => rx
+                .recv()
+                .map_err(|_| Error::Backend("session runtime closed".into()))?,
+        };
         res.map_err(Error::Backend)
     }
 }
@@ -153,8 +165,18 @@ impl SandboxBackend for SandlockBackend {
         let worker_bin = self.worker_bin.clone();
         let direct_write = self.direct_write;
         let sid = session_id.to_string();
+        let worker_pid = Arc::new(AtomicI32::new(0));
+        let runtime_worker_pid = Arc::clone(&worker_pid);
         let thread = std::thread::spawn(move || {
-            run_session(sid, thread_spec, worker_bin, direct_write, rx, ready_tx)
+            run_session(
+                sid,
+                thread_spec,
+                worker_bin,
+                direct_write,
+                rx,
+                ready_tx,
+                runtime_worker_pid,
+            )
         });
         ready_rx
             .recv_timeout(READY_TIMEOUT)
@@ -167,6 +189,7 @@ impl SandboxBackend for SandlockBackend {
                 thread: Some(thread),
                 spec: spec.clone(),
                 network_proxy,
+                worker_pid,
             },
         );
         Ok(())
@@ -189,7 +212,7 @@ impl SandboxBackend for SandlockBackend {
         self.call(
             session_id,
             |resp| InnerCmd::Ping { resp },
-            Duration::from_secs(10),
+            Some(Duration::from_secs(10)),
         )
     }
 
@@ -201,11 +224,24 @@ impl SandboxBackend for SandlockBackend {
         if let Some(proxy) = proxy {
             proxy.environment(&mut req);
         }
-        let mut result = self.call(
-            session_id,
-            |resp| InnerCmd::Exec { req, resp },
-            COMMAND_TIMEOUT,
-        )?;
+        // Bind the command to this call: if the request is cancelled, ask the
+        // worker to kill the command's process group and exit (SIGTERM).
+        let worker_pid = self
+            .sessions
+            .get(session_id)
+            .map(|runtime| Arc::clone(&runtime.worker_pid));
+        let _cancel = worker_pid.map(|worker_pid| {
+            crate::cancel::register(move || {
+                let pid = worker_pid.load(Ordering::SeqCst);
+                if pid > 1 {
+                    // SAFETY: kill has no memory-safety preconditions.
+                    unsafe {
+                        libc::kill(pid, libc::SIGTERM);
+                    }
+                }
+            })
+        });
+        let mut result = self.call(session_id, |resp| InnerCmd::Exec { req, resp }, None)?;
         if let Some(proxy) = proxy {
             result.network_denials = proxy.denials();
         }
@@ -283,13 +319,16 @@ impl SandboxBackend for SandlockBackend {
                 content,
                 resp,
             },
-            COMMAND_TIMEOUT,
+            Some(FILE_OP_TIMEOUT),
         )
     }
 
     fn scan(&mut self, session_id: &str) -> Result<Vec<ScanEntry>> {
-        let paths: Vec<String> =
-            self.call(session_id, |resp| InnerCmd::Scan { resp }, COMMAND_TIMEOUT)?;
+        let paths: Vec<String> = self.call(
+            session_id,
+            |resp| InnerCmd::Scan { resp },
+            Some(FILE_OP_TIMEOUT),
+        )?;
         let Some(runtime) = self.sessions.get(session_id) else {
             return Err(Error::SessionNotFound(session_id.to_string()));
         };
@@ -325,7 +364,7 @@ impl SandboxBackend for SandlockBackend {
         self.call(
             session_id,
             move |resp| InnerCmd::Freeze { dest, prev, resp },
-            Duration::from_secs(120),
+            Some(Duration::from_secs(120)),
         )
     }
 
@@ -438,6 +477,7 @@ fn run_session(
     direct_write: bool,
     rx: tokio_mpsc::Receiver<InnerCmd>,
     ready_tx: std_mpsc::Sender<ChanResult<()>>,
+    worker_pid: Arc<AtomicI32>,
 ) {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -450,7 +490,14 @@ fn run_session(
             return;
         }
     };
-    let result = runtime.block_on(serve_loop(spec, worker_bin, direct_write, rx, ready_tx));
+    let result = runtime.block_on(serve_loop(
+        spec,
+        worker_bin,
+        direct_write,
+        rx,
+        ready_tx,
+        worker_pid,
+    ));
     if let Err(e) = result {
         eprintln!("deltabox: session {session_id} runtime error: {e}");
     }
@@ -462,6 +509,7 @@ async fn serve_loop(
     direct_write: bool,
     mut cmd_rx: tokio_mpsc::Receiver<InnerCmd>,
     ready_tx: std_mpsc::Sender<ChanResult<()>>,
+    worker_pid: Arc<AtomicI32>,
 ) -> Result<()> {
     let fs_storage = spec.store_dir.join("cow");
     std::fs::create_dir_all(&fs_storage)?;
@@ -478,6 +526,9 @@ async fn serve_loop(
                 return Err(e);
             }
         };
+    if let Some(pid) = process.as_ref().and_then(|p| p.pid()) {
+        worker_pid.store(pid, Ordering::SeqCst);
+    }
     let _ = ready_tx.send(Ok(()));
     let mut ready = true;
 

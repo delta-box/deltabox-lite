@@ -5,6 +5,7 @@
 //! extension, wrappers) decide review granularity.
 
 pub mod backend;
+pub mod cancel;
 #[cfg(target_os = "linux")]
 pub mod cbcow;
 pub mod changeset;
