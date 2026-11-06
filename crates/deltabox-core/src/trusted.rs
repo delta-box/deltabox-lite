@@ -585,7 +585,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[test]
     fn cancel_kills_the_command_and_its_children_without_a_timeout() {
         let directory = tempfile::tempdir().unwrap();
@@ -624,7 +624,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[test]
     fn cancel_kills_a_running_persistent_bash_command() {
         let directory = tempfile::tempdir().unwrap();
@@ -656,5 +656,39 @@ mod tests {
             assert!(Instant::now() < deadline, "grandchild survived the cancel");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn cancel_kills_the_command_tree_without_a_timeout() {
+        let (_scope, handle) = crate::cancel::scope();
+        let canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(500));
+            handle.cancel();
+        });
+        let started = Instant::now();
+        // `ping` is a grandchild that would hold the output pipes open for a
+        // minute; `exec` only returns promptly if the whole job was killed.
+        let result = exec(ExecRequest {
+            argv: vec![
+                "cmd".into(),
+                "/c".into(),
+                "ping -n 60 127.0.0.1 >nul".into(),
+            ],
+            cwd: None,
+            env: None,
+        })
+        .unwrap();
+        canceller.join().unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "cancel did not end the command tree"
+        );
+        assert_ne!(result.exit_code, Some(0));
     }
 }
