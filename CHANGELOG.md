@@ -9,26 +9,47 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+### Added
+
+- Node API: `NativeDeltabox.exec(..., execId)` takes an optional trailing id,
+  and the new `cancelExec(execId)` ends that command's whole process tree
+  (it returns whether such an execution was running). A cancel that arrives
+  before the command has started is not lost. Sandboxed commands reject with
+  `command cancelled`; unsandboxed ones resolve with a non-zero result. Hosts
+  that want a deadline or an abort button should use this; see the typings.
+- `deltabox_core::cancel`: embedders can open a `cancel::scope()` on the thread
+  that runs a command and call `CancelHandle::cancel()` from another thread.
+
 ### Changed
 
-- A command's lifetime is now bound to the request that started it. The
-  hard-coded 10-minute (`600s`) command limit is removed from the Linux,
-  macOS and trusted backends, and the command-helper client no longer gives up
-  after 615 s. A command now runs until it exits or its request goes away.
-- When a client disconnects mid-`exec` (Ctrl-C, closed terminal, crashed host),
-  the command-helper kills the command's whole process group, waits for it to
-  die, then releases the operation lock and retires the warm runtime. Before,
-  such an orphaned command kept running. Descendants that move themselves
-  into a new session or process group (`setsid`, daemonizing) are not reached
-  by this.
-- New `deltabox_core::cancel` module: embedders can open a `cancel::scope()` on
-  the thread that runs a command and call `CancelHandle::cancel()` from any
-  other thread to end it.
+- A command's lifetime is now bound to the request that started it, and
+  Deltabox no longer limits how long a command may run. The hard-coded
+  10-minute (`600s`) limit is gone from the Linux, macOS, Windows (MXC) and
+  trusted backends, and the command-helper client no longer gives up after
+  615 s. A command runs until it exits or its request goes away. Callers that
+  relied on the limit as a safety net must enforce their own deadline by
+  cancelling.
+- Ctrl-C, a closed terminal, `kill`, or a crashed host on `deltabox exec` or
+  `run` now ends the command and its children instead of orphaning them. In
+  helper-routed modes (for example Linux `cbcow-through`) the command-helper
+  watches the client connection, kills the command's process group on hangup,
+  waits for it to die, releases the operation lock, and retires the warm
+  runtime. In in-process modes the CLI turns SIGINT, SIGTERM and SIGHUP into
+  a cancel (a second signal exits immediately). On Linux the worker's
+  parent-death signal is now SIGTERM, so a SIGKILLed CLI also takes its
+  command down. On macOS, which has no parent-death signal, a SIGKILLed CLI in
+  an in-process mode can still orphan its command. Descendants that move
+  themselves into a new session or process group (`setsid`, daemonizing) are
+  not reached.
+- Windows: the MXC sandbox runs without a script timeout and a cancel ends
+  its job object; unsandboxed commands run in a kill-on-close job object.
+- The aarch64 macOS CI and prebuild jobs now run on `macos-15`; GitHub no
+  longer accepts the `macos-14` configuration for this repository.
 
 ### Removed
 
-- The `session command timed out` error for running commands. Callers that
-  relied on it as a safety net must enforce their own deadline by cancelling.
+- The `session command timed out` error for running commands, and the
+  `wait-timeout` dependency.
 
 ## [0.1.5] - 2026-10-30
 
