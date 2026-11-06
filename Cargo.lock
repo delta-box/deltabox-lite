@@ -421,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "deltabox"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -436,7 +436,7 @@ dependencies = [
 
 [[package]]
 name = "deltabox-core"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "appcontainer_common",
  "base64",
@@ -463,7 +463,7 @@ dependencies = [
 
 [[package]]
 name = "deltabox-node"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "deltabox-core",
  "libc",
@@ -477,7 +477,7 @@ dependencies = [
 
 [[package]]
 name = "deltafs-fuse"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
