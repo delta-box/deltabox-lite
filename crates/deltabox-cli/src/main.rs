@@ -411,12 +411,14 @@ fn main() -> anyhow::Result<()> {
             }
         },
         Command::Run(args) => {
+            let _cancel = cancel_on_termination();
             let exit_code = run_transaction(args)?;
             if exit_code != 0 {
                 std::process::exit(exit_code);
             }
         }
         Command::Exec(args) => {
+            let _cancel = cancel_on_termination();
             validate_exec_command(&args.command)?;
             let manager = SessionCoordinator::new(&args.project, None)?;
             let env = if args.env.is_empty() {
@@ -706,6 +708,38 @@ fn default_backend() -> DefaultBackend {
 fn default_backend() -> DefaultBackend {
     DefaultBackend
 }
+
+/// Bind the commands this process runs to the process itself: Ctrl-C, a
+/// closed terminal or a plain `kill` (SIGINT, SIGTERM, SIGHUP) cancels the
+/// running command's process tree instead of orphaning it. A second signal
+/// exits immediately, in case cancelling does not finish the job. SIGKILL
+/// cannot be caught; on Linux the worker's parent-death signal covers it.
+#[cfg(unix)]
+fn cancel_on_termination() -> deltabox_core::cancel::Scope {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static SIGNALLED: AtomicBool = AtomicBool::new(false);
+    extern "C" fn on_signal(_: libc::c_int) {
+        if SIGNALLED.swap(true, Ordering::SeqCst) {
+            // SAFETY: _exit is async-signal-safe.
+            unsafe { libc::_exit(130) };
+        }
+    }
+    let (scope, handle) = deltabox_core::cancel::scope();
+    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        // SAFETY: the handler only touches an atomic and calls _exit.
+        unsafe { libc::signal(signal, on_signal as libc::sighandler_t) };
+    }
+    std::thread::spawn(move || {
+        while !SIGNALLED.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        handle.cancel();
+    });
+    scope
+}
+
+#[cfg(not(unix))]
+fn cancel_on_termination() {}
 
 fn split_env(s: &str) -> anyhow::Result<(String, String)> {
     let (k, v) = s.split_once('=').context("env entries must be KEY=VALUE")?;

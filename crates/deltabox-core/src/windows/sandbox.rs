@@ -298,7 +298,9 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
             .map_err(|e| Error::Backend(e.to_string()))?,
         working_directory: unicode(&cwd)?,
         env: env.into_iter().map(|(k, v)| format!("{k}={v}")).collect(),
-        script_timeout: 600_000,
+        // 0 means no limit. The command lives as long as the request that
+        // started it; a cancel ends it (see below).
+        script_timeout: 0,
         policy: ContainerPolicy {
             capabilities: vec!["registryRead".into()],
             readwrite_paths: writable_roots,
@@ -342,7 +344,30 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
         .ok_or_else(|| Error::Backend("missing MXC stderr".into()))?;
     let out = std::thread::spawn(move || crate::worker::read_capped(stdout));
     let err = std::thread::spawn(move || crate::worker::read_capped(stderr));
+    // Bind the command to this call. MXC's `kill` terminates the whole job
+    // object, so a cancel reaches every descendant. `kill` needs `&mut`, so
+    // poll for exit instead of blocking in `wait` while a cancel can arrive.
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let registration = {
+        let cancelled = std::sync::Arc::clone(&cancelled);
+        crate::cancel::register(move || cancelled.store(true, std::sync::atomic::Ordering::SeqCst))
+    };
+    if registration.is_active() {
+        loop {
+            match process.try_wait() {
+                Ok(Some(_)) | Err(_) => break,
+                Ok(None) => {}
+            }
+            if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+                let _ = process.kill();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+    // `wait` owns descendant termination and teardown, so it always runs.
     let exit = process.wait();
+    drop(registration);
     let (stdout, out_cut) = out
         .join()
         .map_err(|_| Error::Backend("stdout reader failed".into()))?;

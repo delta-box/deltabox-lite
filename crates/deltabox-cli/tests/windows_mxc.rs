@@ -15,7 +15,7 @@
 //! `cargo test -p deltabox --test windows_mxc -- --ignored --test-threads=1`.
 use base64::Engine as _;
 use serde_json::Value;
-use std::{fs, path::{Path, PathBuf}, process::{Command, Output}};
+use std::{fs, path::{Path, PathBuf}, process::{Command, Output}, time::{Duration, Instant}};
 
 struct Session {
     root: tempfile::TempDir,
@@ -168,6 +168,63 @@ fn copy_private_commands_run_in_the_private_copy_and_policy_violations_roll_back
     let result: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(result["exit_code"], 3);
     assert_eq!(s.pending(), 3);
+}
+
+/// Cancelling an in-flight exec ends the whole sandboxed command tree and
+/// leaves the session usable. The exec runs in-process (there is no helper
+/// connection on Windows) under a cancel scope, so this drives the MXC `kill`
+/// path directly. `ping` is a grandchild of cmd: if only the root were killed,
+/// the exec would not return until the ping finished.
+#[test]
+#[ignore = "requires native MXC PSEC and WinFsp for CB-CoW; run explicitly on a supported Windows host"]
+fn cancelling_an_exec_kills_the_sandboxed_command_tree() {
+    use deltabox_core::coordinator::{CoordinatorOptions, SessionCoordinator};
+    use deltabox_core::protocol::ExecParams;
+
+    let s = Session::start("copy-private", &[("a.txt", "v1")]);
+    let coordinator = SessionCoordinator::new_with_options(
+        &s.project,
+        CoordinatorOptions {
+            state_dir: Some(s.root.path().join("state")),
+            runtime_dir: Some(s.root.path().join("runtime")),
+            ..CoordinatorOptions::default()
+        },
+    )
+    .unwrap();
+
+    let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe");
+    let (_scope, handle) = deltabox_core::cancel::scope();
+    let canceller = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(3));
+        handle.cancel();
+    });
+    let started = Instant::now();
+    let result = coordinator.exec(ExecParams {
+        session_id: s.id.clone(),
+        argv: vec![shell.to_str().unwrap().into(), "/c".into(), "ping -n 120 127.0.0.1 >nul".into()],
+        cwd: None,
+        env: None,
+        label: None,
+        execution_profile: Default::default(),
+        network_allow: Vec::new(),
+    });
+    canceller.join().unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(60),
+        "cancel did not end the command tree (took {:?}, result {result:?})",
+        started.elapsed()
+    );
+    // A killed command never reports success.
+    if let Ok(result) = &result {
+        assert_ne!(result.exit_code, Some(0), "{result:?}");
+    }
+
+    // The session still runs commands after a cancel.
+    let out = s.cmd("echo alive");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["exit_code"], 0, "{value}");
+    assert!(value["stdout"].as_str().unwrap().contains("alive"));
 }
 
 /// A command started by the sandboxed cmd works when written without a path

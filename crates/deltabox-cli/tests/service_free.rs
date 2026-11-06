@@ -1420,3 +1420,93 @@ fn optional_serve_recovers_after_worker_failure() {
     drop(input);
     assert!(serve.wait().unwrap().success());
 }
+
+/// Whether any process on the host has a command line containing `needle`.
+fn process_exists(needle: &str) -> bool {
+    Command::new("pgrep")
+        .args(["-f", needle])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn start_in(project: &Path, mode: &str) -> String {
+    run(
+        project,
+        &[
+            "session",
+            "start",
+            project.to_str().unwrap(),
+            "--fs-mode",
+            mode,
+            "--require-fs-mode",
+        ],
+    )
+    .stdout
+    .split(|b| *b == b'\n')
+    .next()
+    .map(|s| String::from_utf8_lossy(s).trim().to_string())
+    .unwrap()
+}
+
+/// A command lives exactly as long as the `exec` that started it: when the CLI
+/// dies mid-command (Ctrl-C, a closed terminal, `kill`, a crashed host) the
+/// command and its children must die with it, and the session must keep
+/// working afterwards.
+fn assert_client_death_kills_the_command_tree(mode: &str, signal: libc::c_int, case: u32) {
+    let project = tempfile::tempdir().unwrap();
+    let sid = start_in(project.path(), mode);
+    // A distinctive duration identifies this case's grandchild on the host.
+    let sleep = format!("sleep {}.{}{case}", 4000 + std::process::id() % 1000, std::process::id());
+
+    let mut client = Command::new(bin())
+        .args(["exec", &sid, "--project", project.path().to_str().unwrap(), "--", "sh", "-c"])
+        .arg(format!("{sleep} & wait"))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !process_exists(&sleep) {
+        assert!(Instant::now() < deadline, "[{mode} sig {signal}] the command never started");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // SAFETY: plain kill(2) on a child this test owns.
+    unsafe { libc::kill(client.id() as i32, signal) };
+    let _ = client.wait();
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while process_exists(&sleep) {
+        assert!(
+            Instant::now() < deadline,
+            "[{mode} sig {signal}] the command survived its client dying"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let result = exec(project.path(), &sid, "echo alive");
+    assert_eq!(result["exit_code"], 0, "[{mode} sig {signal}] {result}");
+    assert!(result["stdout"].as_str().unwrap().contains("alive"), "{result}");
+
+    let _ = Command::new(bin())
+        .args(["session", "stop", &sid, "--project", project.path().to_str().unwrap()])
+        .output();
+}
+
+#[test]
+fn interrupting_the_exec_client_kills_the_running_command_tree() {
+    assert_client_death_kills_the_command_tree("copy-private", libc::SIGINT, 1);
+    assert_client_death_kills_the_command_tree("copy-private", libc::SIGTERM, 2);
+}
+
+/// SIGKILL cannot be handled, so only the kernel-side mechanisms apply: on
+/// Linux the worker's parent-death signal (in-process modes) and the helper's
+/// hangup detection (helper-routed modes).
+#[cfg(target_os = "linux")]
+#[test]
+fn killing_the_exec_client_kills_the_running_command_tree() {
+    assert_client_death_kills_the_command_tree("copy-private", libc::SIGKILL, 3);
+    assert_client_death_kills_the_command_tree("cbcow-through", libc::SIGKILL, 4);
+    assert_client_death_kills_the_command_tree("cbcow-through", libc::SIGINT, 5);
+}

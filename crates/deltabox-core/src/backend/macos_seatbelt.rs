@@ -22,10 +22,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use wait_timeout::ChildExt;
 
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub struct SeatbeltBackend {
     direct_write: bool,
@@ -526,16 +524,19 @@ impl SandboxBackend for SeatbeltBackend {
         apply_limits(&mut command, &state.spec.policy);
 
         let start = Instant::now();
+        // Own process group: a cancel kills the sandboxed command and all of
+        // its children, not only the direct child.
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
         let mut child = command.spawn()?;
+        let _cancel = {
+            let pgid = child.id() as i32;
+            crate::cancel::register(move || crate::cancel::kill_process_group(pgid))
+        };
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
         let out_thread = std::thread::spawn(move || read_capped(stdout));
         let err_thread = std::thread::spawn(move || read_capped(stderr));
-        let Some(status) = child.wait_timeout(COMMAND_TIMEOUT)? else {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(Error::Backend("session command timed out".into()));
-        };
+        let status = child.wait()?;
         let (stdout, out_truncated) = out_thread
             .join()
             .map_err(|_| Error::Backend("stdout reader failed".into()))?;

@@ -91,6 +91,11 @@ pub fn is_excluded_dir(name: &str) -> bool {
 
 /// Run the worker loop until stdin reaches EOF.
 pub fn run_worker(root: &Path, runtime: &Path) -> Result<()> {
+    // Install the handler before arming the parent-death signal: when the
+    // process that owns this worker disappears, the kernel sends SIGTERM and
+    // the handler kills the running command's whole process group.
+    #[cfg(unix)]
+    install_cancel_handler()?;
     configure_parent_death_signal()?;
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -164,7 +169,7 @@ pub fn run_worker(root: &Path, runtime: &Path) -> Result<()> {
 #[cfg(target_os = "linux")]
 fn configure_parent_death_signal() -> Result<()> {
     let parent = unsafe { libc::getppid() };
-    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } != 0 {
+    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) } != 0 {
         return Err(std::io::Error::last_os_error().into());
     }
     if unsafe { libc::getppid() } != parent || parent == 1 {
@@ -175,6 +180,32 @@ fn configure_parent_death_signal() -> Result<()> {
 
 #[cfg(not(target_os = "linux"))]
 fn configure_parent_death_signal() -> Result<()> {
+    Ok(())
+}
+
+/// Process group of the command the worker is currently running, or 0.
+#[cfg(unix)]
+static ACTIVE_COMMAND_PGID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// Make SIGTERM end the running command: kill its whole process group, then
+/// exit. The session runtime sends SIGTERM when the request that started the
+/// command goes away. Only async-signal-safe calls are made in the handler.
+#[cfg(unix)]
+fn install_cancel_handler() -> Result<()> {
+    extern "C" fn on_term(_: libc::c_int) {
+        let pgid = ACTIVE_COMMAND_PGID.load(std::sync::atomic::Ordering::SeqCst);
+        unsafe {
+            if pgid > 1 {
+                libc::killpg(pgid, libc::SIGKILL);
+            }
+            libc::_exit(143);
+        }
+    }
+    // SAFETY: the handler only performs async-signal-safe operations.
+    let previous = unsafe { libc::signal(libc::SIGTERM, on_term as libc::sighandler_t) };
+    if previous == libc::SIG_ERR {
+        return Err(std::io::Error::last_os_error().into());
+    }
     Ok(())
 }
 
@@ -208,10 +239,17 @@ fn run_exec(root: &Path, runtime: &Path, exec: &WorkerExec) -> Result<WorkerExec
         cmd.env(key, value);
     }
 
+    // The command gets its own process group. On SIGTERM the worker kills that
+    // group (grandchildren included) and exits; see `install_cancel_handler`.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+
     let start = now_ms();
     let mut child = cmd
         .spawn()
         .map_err(|error| Error::Backend(format!("exec spawn failed: {error}")))?;
+    #[cfg(unix)]
+    ACTIVE_COMMAND_PGID.store(child.id() as i32, std::sync::atomic::Ordering::SeqCst);
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
     let err_thread = std::thread::spawn(move || read_capped(stderr));
@@ -219,15 +257,12 @@ fn run_exec(root: &Path, runtime: &Path, exec: &WorkerExec) -> Result<WorkerExec
     let (err_text, err_trunc) = err_thread
         .join()
         .map_err(|_| Error::Backend("output thread join failed".into()))?;
-    let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| Error::Backend(format!("exec wait failed: {error}")))?
-        {
-            break status;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    };
+    let status = child
+        .wait()
+        .map_err(|error| Error::Backend(format!("exec wait failed: {error}")));
+    #[cfg(unix)]
+    ACTIVE_COMMAND_PGID.store(0, std::sync::atomic::Ordering::SeqCst);
+    let status = status?;
     Ok(WorkerExecResult {
         exit_code: status.code(),
         stdout: out_text,

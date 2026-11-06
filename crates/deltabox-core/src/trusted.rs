@@ -11,12 +11,10 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use uuid::Uuid;
-
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Clone, Copy)]
 enum OutputStream {
@@ -42,11 +40,17 @@ pub(crate) struct PersistentBash {
 impl PersistentBash {
     fn start() -> Result<Self> {
         let ambient_environment = current_environment();
-        let mut child = Command::new("bash")
+        let mut command = Command::new("bash");
+        command
             .args(["--noprofile", "--norc"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        // A separate process group lets a cancel take down the shell together
+        // with every command it started.
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        let mut child = command
             .spawn()
             .map_err(|error| Error::Backend(format!("persistent bash spawn failed: {error}")))?;
         let stdin = child.stdin.take().expect("bash stdin is piped");
@@ -134,6 +138,13 @@ impl PersistentBash {
         script.push_str(" >&2\n");
 
         let started = Instant::now();
+        // The command's lifetime is bound to this call: a cancel kills the
+        // shell's whole process group, which ends the wait below.
+        #[cfg(unix)]
+        let _cancel = {
+            let pgid = self.child.id() as i32;
+            crate::cancel::register(move || crate::cancel::kill_process_group(pgid))
+        };
         self.stdin
             .write_all(script.as_bytes())
             .and_then(|_| self.stdin.flush())
@@ -142,14 +153,8 @@ impl PersistentBash {
 
         let mut stdout = MarkerCollector::status(stdout_prefix);
         let mut stderr = MarkerCollector::exact(stderr_marker);
-        let deadline = started + COMMAND_TIMEOUT;
         while !stdout.done() || !stderr.done() {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                self.terminate();
-                return Err(Error::Backend("session command timed out".into()));
-            }
-            match self.output.recv_timeout(remaining) {
+            match self.output.recv() {
                 Ok(OutputChunk {
                     stream,
                     bytes: Some(bytes),
@@ -169,11 +174,7 @@ impl PersistentBash {
                         "persistent bash closed {name} before command completion"
                     )));
                 }
-                Err(RecvTimeoutError::Timeout) => {
-                    self.terminate();
-                    return Err(Error::Backend("session command timed out".into()));
-                }
-                Err(RecvTimeoutError::Disconnected) => {
+                Err(_) => {
                     return Err(Error::Backend("persistent bash output closed".into()));
                 }
             }
@@ -393,30 +394,37 @@ pub fn exec(request: ExecRequest) -> Result<ExecResult> {
         command.envs(environment);
     }
 
+    // Run the command in its own process group so a cancel reaches its
+    // children, not just the direct child.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+
     let started = Instant::now();
     let mut child = command
         .spawn()
         .map_err(|error| Error::Backend(format!("exec spawn failed: {error}")))?;
+    #[cfg(unix)]
+    let _cancel = {
+        let pgid = child.id() as i32;
+        crate::cancel::register(move || crate::cancel::kill_process_group(pgid))
+    };
+    // Windows has no process groups; a job object plays the same role. If the
+    // job cannot be created the command still runs, it just cannot be
+    // cancelled as a tree.
+    #[cfg(windows)]
+    let _cancel = job::Job::containing(&child)
+        .map(std::sync::Arc::new)
+        .map(|job| crate::cancel::register(move || job.terminate()));
     let stdout = child.stdout.take().expect("stdout is piped");
     let stderr = child.stderr.take().expect("stderr is piped");
     let stdout_reader = thread::spawn(move || read_capped(stdout));
     let stderr_reader = thread::spawn(move || read_capped(stderr));
 
-    let deadline = started + COMMAND_TIMEOUT;
-    let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| Error::Backend(format!("exec wait failed: {error}")))?
-        {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(Error::Backend("session command timed out".into()));
-        }
-        thread::sleep(Duration::from_millis(1));
-    };
+    // The command lives exactly as long as this call; there is no wall-clock
+    // limit here. Callers end it through their cancel scope.
+    let status = child
+        .wait()
+        .map_err(|error| Error::Backend(format!("exec wait failed: {error}")))?;
 
     let (stdout, stdout_truncated) = stdout_reader
         .join()
@@ -434,9 +442,75 @@ pub fn exec(request: ExecRequest) -> Result<ExecResult> {
     })
 }
 
+/// A Windows job object that holds a command and its descendants so they can
+/// be terminated together.
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    pub struct Job(HANDLE);
+
+    // SAFETY: a job handle may be used from any thread.
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    impl Job {
+        /// Create a job that kills its processes when closed and put `child` in it.
+        pub fn containing(child: &std::process::Child) -> Option<Job> {
+            // SAFETY: plain Win32 calls with valid arguments; the handle is
+            // owned by the returned `Job` and closed exactly once in `Drop`.
+            unsafe {
+                let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if handle.is_null() {
+                    return None;
+                }
+                let job = Job(handle);
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                if SetInformationJobObject(
+                    job.0,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const core::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                ) == 0
+                {
+                    return None;
+                }
+                if AssignProcessToJobObject(job.0, child.as_raw_handle() as HANDLE) == 0 {
+                    return None;
+                }
+                Some(job)
+            }
+        }
+
+        pub fn terminate(&self) {
+            // SAFETY: `self.0` is a live job handle.
+            unsafe {
+                TerminateJobObject(self.0, 1);
+            }
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY: closes the handle this job owns, once.
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+}
+
 #[cfg(all(test, not(windows)))]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn inherits_process_environment_and_applies_overrides() {
@@ -496,5 +570,125 @@ mod tests {
         assert_eq!(first_pid, second_pid);
         assert_eq!(first_value, "first value");
         assert_eq!(second_value, "unset");
+    }
+
+    #[cfg(unix)]
+    fn process_is_alive(pid: i32) -> bool {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            // A zombie has already been killed; it only awaits reaping.
+            Ok(stat) => stat
+                .rsplit(')')
+                .next()
+                .and_then(|rest| rest.split_whitespace().next())
+                .is_some_and(|state| state != "Z"),
+            Err(_) => unsafe { libc::kill(pid, 0) == 0 },
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancel_kills_the_command_and_its_children_without_a_timeout() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("child.pid");
+        let (_scope, handle) = crate::cancel::scope();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            handle.cancel();
+        });
+        let started = Instant::now();
+        let result = exec(ExecRequest {
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                format!("sleep 60 & echo $! > '{}'; wait", pid_file.display()),
+            ],
+            cwd: None,
+            env: None,
+        })
+        .unwrap();
+        canceller.join().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(30));
+        assert_eq!(
+            result.exit_code, None,
+            "killed by signal, not a normal exit"
+        );
+        let child: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process_is_alive(child) {
+            assert!(Instant::now() < deadline, "grandchild survived the cancel");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancel_kills_a_running_persistent_bash_command() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("child.pid");
+        let mut bash = PersistentBash::start().unwrap();
+        let (_scope, handle) = crate::cancel::scope();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            handle.cancel();
+        });
+        let result = bash.execute(&ExecRequest {
+            argv: vec![
+                "bash".into(),
+                "-c".into(),
+                format!("sleep 60 & echo $! > '{}'; wait", pid_file.display()),
+            ],
+            cwd: Some(directory.path().to_path_buf()),
+            env: None,
+        });
+        canceller.join().unwrap();
+        assert!(result.is_err(), "the shell was killed with the command");
+        let child: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process_is_alive(child) {
+            assert!(Instant::now() < deadline, "grandchild survived the cancel");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn cancel_kills_the_command_tree_without_a_timeout() {
+        let (_scope, handle) = crate::cancel::scope();
+        let canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(500));
+            handle.cancel();
+        });
+        let started = Instant::now();
+        // `ping` is a grandchild that would hold the output pipes open for a
+        // minute; `exec` only returns promptly if the whole job was killed.
+        let result = exec(ExecRequest {
+            argv: vec![
+                "cmd".into(),
+                "/c".into(),
+                "ping -n 60 127.0.0.1 >nul".into(),
+            ],
+            cwd: None,
+            env: None,
+        })
+        .unwrap();
+        canceller.join().unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "cancel did not end the command tree"
+        );
+        assert_ne!(result.exit_code, Some(0));
     }
 }

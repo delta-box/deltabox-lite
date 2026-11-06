@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const EXEC_TIMEOUT: Duration = Duration::from_secs(615);
 const START_TIMEOUT: Duration = Duration::from_secs(15);
+const DISCONNECT_POLL: Duration = Duration::from_millis(50);
 const STOP_TIMEOUT: Duration = Duration::from_secs(15);
 const LISTENER_POLL_TIMEOUT_MS: libc::c_int = 100;
 const RUNTIME_ENVIRONMENT_KEYS: &[&str] = &["HOME", "PATH", "RUSTUP_HOME", "SDKROOT"];
@@ -539,13 +540,32 @@ fn handle_connection<B: CommandBackend>(
             if !read_start_confirmation(&mut stream)? {
                 return Ok(());
             }
+            // The command lives exactly as long as this connection. If the
+            // client goes away (Ctrl-C, crash, closed terminal), the watcher
+            // cancels the scope and the backend kills the command's process
+            // tree. The operation lock is released only after the command is
+            // gone, so nothing can race with a dying process.
+            let (cancel_scope, cancel) = crate::cancel::scope();
+            let watcher = DisconnectWatcher::start(&stream, cancel.clone())?;
             let result = executor
                 .lock()
-                .map_err(|_| Error::Backend("command executor lock poisoned".into()))?
-                .exec(&session_id, generation, &spec, request)
+                .map_err(|_| Error::Backend("command executor lock poisoned".into()))
+                .and_then(|mut executor| executor.exec(&session_id, generation, &spec, request))
                 .map(ResultValue::Exec);
-            let retire = result.is_err();
+            // Stop watching before anything else: the watcher holds a clone of
+            // the socket, which must be released so the client sees the reply.
+            drop(watcher);
+            drop(cancel_scope);
+            let cancelled = cancel.is_cancelled();
+            // A cancelled command may have left the warm runtime half torn
+            // down, so retire it like a failed one.
+            let retire = result.is_err() || cancelled;
             drop(operation);
+            if cancelled {
+                // Nobody is left to read the response.
+                running.store(false, Ordering::Release);
+                return Ok(());
+            }
             if retire {
                 // A backend error can include a failed runtime cleanup. Retire
                 // the process as well as its ActiveSession so a successful
@@ -590,9 +610,33 @@ fn handle_connection<B: CommandBackend>(
 
 fn request(endpoint: &Endpoint, command: Command) -> Result<ResultValue> {
     let token = fs::read_to_string(&endpoint.token_file)?;
-    let mut stream = UnixStream::connect(&endpoint.socket)?;
+    let stream = UnixStream::connect(&endpoint.socket)?;
+    // A running exec is bound to this connection: cancelling the caller's
+    // scope closes the socket, the helper sees the hangup and kills the
+    // command's process tree. Other commands are short and not cancellable.
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let _cancel = if matches!(&command, Command::Exec { .. }) {
+        let peer = stream.try_clone()?;
+        let flag = Arc::clone(&cancelled);
+        Some(crate::cancel::register(move || {
+            flag.store(true, Ordering::Release);
+            let _ = peer.shutdown(std::net::Shutdown::Both);
+        }))
+    } else {
+        None
+    };
+    match request_on(stream, &token, command) {
+        Err(_) if cancelled.load(Ordering::Acquire) => {
+            Err(Error::Backend("command cancelled".into()))
+        }
+        other => other,
+    }
+}
+
+fn request_on(mut stream: UnixStream, token: &str, command: Command) -> Result<ResultValue> {
     let expects_start = matches!(&command, Command::Exec { .. });
-    let needs_network = matches!(&command, Command::Exec { spec, .. } if spec.policy.network.allow_approval);
+    let needs_network =
+        matches!(&command, Command::Exec { spec, .. } if spec.policy.network.allow_approval);
     let initial_timeout = match &command {
         // Only the post-Started response may legitimately take as long as the
         // command. A stalled helper must fail its initial handshake quickly.
@@ -628,13 +672,71 @@ fn request(endpoint: &Endpoint, command: Command) -> Result<ResultValue> {
         }
         // Once Started has crossed the wire the helper may observe command
         // side effects, so failures below this point must never be retried.
-        reader.get_mut().set_read_timeout(Some(EXEC_TIMEOUT))?;
+        // A running command has no wall-clock limit; it ends when it exits or
+        // when this connection is closed.
+        reader.get_mut().set_read_timeout(None)?;
         serde_json::to_writer(reader.get_mut(), &StartConfirmation { start: true })?;
         reader.get_mut().write_all(b"\n")?;
         reader.get_mut().flush()?;
         return read_result(&mut reader);
     }
     Ok(result)
+}
+
+/// Watches the client end of an exec connection. When the client hangs up
+/// before the command finishes, it cancels the command. The client sends
+/// nothing after the start confirmation, so any bytes that do arrive are
+/// ignored. Dropping the watcher stops and joins its thread on every exit
+/// path, including a backend panic, so it never keeps the socket open.
+struct DisconnectWatcher {
+    finished: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl DisconnectWatcher {
+    fn start(stream: &UnixStream, cancel: crate::cancel::CancelHandle) -> Result<Self> {
+        let mut peer = stream.try_clone()?;
+        peer.set_read_timeout(Some(DISCONNECT_POLL))?;
+        let finished = Arc::new(AtomicBool::new(false));
+        let watching = Arc::clone(&finished);
+        let thread = thread::spawn(move || {
+            use std::io::Read as _;
+            let mut byte = [0_u8; 1];
+            while !watching.load(Ordering::Acquire) {
+                match peer.read(&mut byte) {
+                    Ok(0) => {
+                        cancel.cancel();
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock
+                                | std::io::ErrorKind::TimedOut
+                                | std::io::ErrorKind::Interrupted
+                        ) => {}
+                    Err(_) => {
+                        cancel.cancel();
+                        return;
+                    }
+                }
+            }
+        });
+        Ok(Self {
+            finished,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for DisconnectWatcher {
+    fn drop(&mut self) {
+        self.finished.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 fn read_start_confirmation(stream: &mut UnixStream) -> Result<bool> {
@@ -956,6 +1058,7 @@ mod tests {
         panic_next: AtomicBool,
         block_exec: AtomicBool,
         exec_entered: AtomicBool,
+        cancelled: AtomicBool,
     }
 
     struct FakeBackend {
@@ -975,8 +1078,14 @@ mod tests {
 
         fn exec(&mut self, _session_id: &str, request: ExecRequest) -> Result<ExecResult> {
             self.counts.execs.fetch_add(1, Ordering::Relaxed);
+            let cancelled = Arc::clone(&self.counts);
+            let _cancel = crate::cancel::register(move || {
+                cancelled.cancelled.store(true, Ordering::Release);
+            });
             self.counts.exec_entered.store(true, Ordering::Release);
-            while self.counts.block_exec.load(Ordering::Acquire) {
+            while self.counts.block_exec.load(Ordering::Acquire)
+                && !self.counts.cancelled.load(Ordering::Acquire)
+            {
                 thread::sleep(Duration::from_millis(1));
             }
             if self.counts.panic_next.swap(false, Ordering::Relaxed) {
@@ -1039,11 +1148,17 @@ mod tests {
     fn network_approval_runtime_is_closed_after_each_exec() {
         let directory = tempfile::tempdir().unwrap();
         let counts = Arc::new(Counts::default());
-        let mut executor = PersistentExecutor::new(FakeBackend { counts: Arc::clone(&counts) });
+        let mut executor = PersistentExecutor::new(FakeBackend {
+            counts: Arc::clone(&counts),
+        });
         let mut spec = spec(directory.path());
         spec.policy.network.mode = crate::policy::NetworkMode::Allowlist;
         spec.policy.network.allow_approval = true;
-        for _ in 0..2 { executor.exec("session", 1, &spec, exec_request("one")).unwrap(); }
+        for _ in 0..2 {
+            executor
+                .exec("session", 1, &spec, exec_request("one"))
+                .unwrap();
+        }
         assert_eq!(counts.starts.load(Ordering::Relaxed), 2);
         assert_eq!(counts.stops.load(Ordering::Relaxed), 2);
         assert!(executor.active.is_none());
@@ -1189,17 +1304,30 @@ mod tests {
         let listener = UnixListener::bind(&endpoint.socket).unwrap();
         let server = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
             let mut reader = BufReader::new(stream);
             let mut line = String::new();
             reader.read_line(&mut line).unwrap();
             write_response(reader.get_mut(), Response::ok(ResultValue::Started)).unwrap();
             line.clear();
-            assert_eq!(reader.read_line(&mut line).unwrap(), 0, "must close without authorizing execution");
+            assert_eq!(
+                reader.read_line(&mut line).unwrap(),
+                0,
+                "must close without authorizing execution"
+            );
         });
         let mut network_spec = spec(directory.path());
         network_spec.policy.network.allow_approval = true;
-        assert!(exec(&endpoint, "session", 1, network_spec, exec_request("must-not-run")).is_err());
+        assert!(exec(
+            &endpoint,
+            "session",
+            1,
+            network_spec,
+            exec_request("must-not-run")
+        )
+        .is_err());
         server.join().unwrap();
     }
 
@@ -1405,6 +1533,151 @@ mod tests {
         acquired_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         waiter.join().unwrap();
         shutdown(&endpoint).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn client_disconnect_cancels_the_running_command_and_retires_the_helper() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::new(
+            directory.path().join("executor.sock"),
+            directory.path().join("token"),
+            directory.path().join("ready"),
+        );
+        fs::write(&endpoint.token_file, "test-token\n").unwrap();
+        let counts = Arc::new(Counts::default());
+        // The fake command runs until it is cancelled.
+        counts.block_exec.store(true, Ordering::Relaxed);
+        let server_counts = Arc::clone(&counts);
+        let server_endpoint = endpoint.clone();
+        let server = thread::spawn(move || {
+            run_with_backend(
+                Config {
+                    endpoint: server_endpoint,
+                    worker_bin: PathBuf::from("unused"),
+                },
+                FakeBackend {
+                    counts: server_counts,
+                },
+            )
+            .unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !matches!(request(&endpoint, Command::Ping), Ok(ResultValue::Pong)) {
+            assert!(Instant::now() < deadline, "server did not become ready");
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        // Speak the protocol by hand so the test can hang up mid-command.
+        let mut stream = UnixStream::connect(&endpoint.socket).unwrap();
+        serde_json::to_writer(
+            &mut stream,
+            &Request {
+                token: "test-token".into(),
+                command: Command::Exec {
+                    session_id: "session".into(),
+                    generation: 1,
+                    spec: spec(directory.path()),
+                    request: exec_request("forever"),
+                },
+            },
+        )
+        .unwrap();
+        stream.write_all(b"\n").unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        assert!(matches!(
+            read_result(&mut reader).unwrap(),
+            ResultValue::Started
+        ));
+        serde_json::to_writer(&mut stream, &StartConfirmation { start: true }).unwrap();
+        stream.write_all(b"\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !counts.exec_entered.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "exec did not reach backend");
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!counts.cancelled.load(Ordering::Acquire));
+
+        drop(reader);
+        drop(stream);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !counts.cancelled.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "disconnect did not cancel the command"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        // The cancelled helper retires itself and releases the operation lock.
+        server.join().unwrap();
+        drop(lock_operations(&endpoint).unwrap());
+    }
+
+    #[test]
+    fn cancelling_the_caller_ends_the_exec_and_the_helpers_command() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::new(
+            directory.path().join("executor.sock"),
+            directory.path().join("token"),
+            directory.path().join("ready"),
+        );
+        fs::write(&endpoint.token_file, "test-token\n").unwrap();
+        let counts = Arc::new(Counts::default());
+        // The fake command runs until the helper cancels it.
+        counts.block_exec.store(true, Ordering::Relaxed);
+        let server_counts = Arc::clone(&counts);
+        let server_endpoint = endpoint.clone();
+        let server = thread::spawn(move || {
+            run_with_backend(
+                Config {
+                    endpoint: server_endpoint,
+                    worker_bin: PathBuf::from("unused"),
+                },
+                FakeBackend {
+                    counts: server_counts,
+                },
+            )
+            .unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !matches!(request(&endpoint, Command::Ping), Ok(ResultValue::Pong)) {
+            assert!(Instant::now() < deadline, "server did not become ready");
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        // The caller opens its scope on the thread that runs the exec and
+        // hands the handle to whoever may need to cancel it.
+        let (handle_tx, handle_rx) = std::sync::mpsc::channel();
+        let client_endpoint = endpoint.clone();
+        let root = directory.path().to_path_buf();
+        let client = thread::spawn(move || {
+            let (_scope, handle) = crate::cancel::scope();
+            handle_tx.send(handle).unwrap();
+            exec(
+                &client_endpoint,
+                "session",
+                1,
+                spec(&root),
+                exec_request("forever"),
+            )
+        });
+        let handle = handle_rx.recv().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !counts.exec_entered.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "exec did not reach backend");
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        handle.cancel();
+
+        let error = client.join().unwrap().unwrap_err().to_string();
+        assert!(error.contains("command cancelled"), "{error}");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !counts.cancelled.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "helper did not cancel its command");
+            thread::sleep(Duration::from_millis(5));
+        }
         server.join().unwrap();
     }
 }

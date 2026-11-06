@@ -455,7 +455,6 @@ dependencies = [
  "tokio",
  "toml",
  "uuid",
- "wait-timeout",
  "walkdir",
  "windows-sys 0.61.2",
  "wxc_common",
