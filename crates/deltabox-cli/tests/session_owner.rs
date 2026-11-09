@@ -1,6 +1,14 @@
-//! Session ownership: an attached owner killed with SIGKILL leaves an orphan
-//! that keeps its changes and its project lease until a new owner adopts it.
-#![cfg(any(target_os = "linux", target_os = "macos"))]
+//! Session ownership, end to end, on every platform.
+//!
+//! An attached owner (the Node addon's role) that dies without stopping —
+//! SIGKILL on Unix, TerminateProcess on Windows: `Child::kill` is both — leaves
+//! an orphan. The orphan keeps its pending changes and its project lease until
+//! a new owner adopts it and the user commits or aborts.
+//!
+//! The owner is this test binary re-executed as a child (`owner_child_process`).
+//! On Windows the coordinator uses trusted execution (`isolation: "none"`), so
+//! these tests need WinFsp but not MXC PSEC and run on hosted CI.
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
 use deltabox_core::coordinator::{CoordinatorOptions, SessionCoordinator};
 use deltabox_core::protocol::{AbortParams, CommitParams, FilesystemMode};
@@ -8,21 +16,41 @@ use deltabox_core::Error;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
+use std::{fs, thread};
 
-const CHILD_PROJECT: &str = "DELTABOX_OWNER_CHILD_PROJECT";
+const CHILD_ROOT: &str = "DELTABOX_OWNER_CHILD_ROOT";
 const CHILD_MODE: &str = "DELTABOX_OWNER_CHILD_MODE";
-const CHILD_READY: &str = "DELTABOX_OWNER_CHILD_READY";
 
-fn coordinator(project: &Path, attach: bool) -> SessionCoordinator {
+/// A coordinator over `<root>/project`. Attached coordinators own the
+/// sessions they start or adopt; detached ones behave like the CLI.
+fn coordinator(root: &Path, attach: bool) -> SessionCoordinator {
+    #[cfg(windows)]
+    let options = CoordinatorOptions {
+        command_execution: deltabox_core::coordinator::CommandExecutionMode::Trusted,
+        // Windows requires state and runtime outside the project.
+        state_dir: Some(root.join("state")),
+        runtime_dir: Some(root.join("runtime")),
+        ..CoordinatorOptions::default()
+    };
+    #[cfg(not(windows))]
+    let options = CoordinatorOptions::default();
     SessionCoordinator::new_with_options(
-        project,
+        &root.join("project"),
         CoordinatorOptions {
             helper_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_deltabox"))),
             attach_sessions: attach,
-            ..CoordinatorOptions::default()
+            ..options
         },
     )
     .unwrap()
+}
+
+/// CB-CoW needs FUSE on Linux; macOS and Windows (WinFsp in CI) always have it.
+fn cbcow_available() -> bool {
+    #[cfg(target_os = "linux")]
+    return deltafs_fuse::doctor::inspect().mount_ready;
+    #[cfg(not(target_os = "linux"))]
+    return true;
 }
 
 fn mode_name(mode: FilesystemMode) -> &'static str {
@@ -33,75 +61,91 @@ fn mode_name(mode: FilesystemMode) -> &'static str {
     }
 }
 
-fn cbcow_available() -> bool {
-    #[cfg(target_os = "linux")]
-    return deltafs_fuse::doctor::inspect().mount_ready;
-    #[cfg(target_os = "macos")]
-    return true;
-}
-
-/// Child half: run only when re-executed by `spawn_owner`. Attaches a
-/// session, leaves one pending change, reports the id, then waits to be killed.
-#[test]
-fn owner_child_process() {
-    let Some(project) = std::env::var_os(CHILD_PROJECT) else {
-        return;
-    };
-    let mode = match std::env::var(CHILD_MODE).unwrap().as_str() {
+fn parse_mode(name: &str) -> FilesystemMode {
+    match name {
         "cbcow-through" => FilesystemMode::CbcowThrough,
         "cbcow-private" => FilesystemMode::CbcowPrivate,
         _ => FilesystemMode::CopyPrivate,
+    }
+}
+
+fn project() -> tempfile::TempDir {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("project")).unwrap();
+    fs::write(root.path().join("project").join("tracked.txt"), "accepted").unwrap();
+    root
+}
+
+/// Child half: runs only when re-executed by `spawn_owner`. Attaches a
+/// session, leaves one pending change, reports the id, then waits to be killed.
+#[test]
+fn owner_child_process() {
+    let Some(root) = std::env::var_os(CHILD_ROOT) else {
+        return;
     };
-    let coordinator = coordinator(Path::new(&project), true);
+    let root = PathBuf::from(root);
+    let coordinator = coordinator(&root, true);
+    let mode = parse_mode(&std::env::var(CHILD_MODE).unwrap());
     let info = coordinator.start(None, Some(mode), true).unwrap();
     coordinator
         .write_file(&info.session_id, Path::new("agent.txt"), b"work in progress".to_vec())
         .unwrap();
-    let ready = PathBuf::from(std::env::var_os(CHILD_READY).unwrap());
-    std::fs::write(ready.with_extension("tmp"), &info.session_id).unwrap();
-    std::fs::rename(ready.with_extension("tmp"), &ready).unwrap();
+    fs::write(root.join("owner-ready.tmp"), &info.session_id).unwrap();
+    fs::rename(root.join("owner-ready.tmp"), root.join("owner-ready")).unwrap();
     loop {
-        std::thread::sleep(Duration::from_secs(60));
+        thread::sleep(Duration::from_secs(60));
     }
 }
 
-fn spawn_owner(project: &Path, mode: FilesystemMode) -> (Child, String) {
-    let ready = project.parent().unwrap().join("owner-ready");
-    let child = Command::new(std::env::current_exe().unwrap())
+fn spawn_owner(root: &Path, mode: FilesystemMode) -> (Child, String) {
+    let ready = root.join("owner-ready");
+    let mut child = Command::new(std::env::current_exe().unwrap())
         .args(["owner_child_process", "--exact", "--nocapture", "--test-threads=1"])
-        .env(CHILD_PROJECT, project)
+        .env(CHILD_ROOT, root)
         .env(CHILD_MODE, mode_name(mode))
-        .env(CHILD_READY, &ready)
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_secs(120);
     while !ready.exists() {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("owner child exited before it was ready: {status}");
+        }
         assert!(Instant::now() < deadline, "owner child never became ready");
-        std::thread::sleep(Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(20));
     }
-    let id = std::fs::read_to_string(&ready).unwrap();
-    std::fs::remove_file(&ready).unwrap();
+    let id = fs::read_to_string(&ready).unwrap();
+    fs::remove_file(&ready).unwrap();
     (child, id)
 }
 
-fn sigkill(mut child: Child) {
-    unsafe { libc::kill(child.id() as i32, libc::SIGKILL) };
+/// SIGKILL on Unix, TerminateProcess on Windows: no destructor, no stop.
+fn kill(mut child: Child) {
+    child.kill().unwrap();
     child.wait().unwrap();
 }
 
-fn cli_start(project: &Path, mode: FilesystemMode) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_deltabox"))
-        .args(["session", "start", project.to_str().unwrap(), "--fs-mode", mode_name(mode), "--require-fs-mode"])
-        .output()
-        .unwrap()
+/// Stops whatever sessions a test leaves running, even when it panics, so no
+/// filesystem helper outlives the test or keeps its temporary directory open.
+struct Cleanup<'a>(&'a SessionCoordinator, Vec<String>);
+
+impl Drop for Cleanup<'_> {
+    fn drop(&mut self) {
+        for id in &self.1 {
+            let _ = self.0.adopt(id);
+            let _ = self.0.abort(AbortParams { session_id: id.clone(), checkpoint: None });
+            let _ = self.0.stop(id);
+        }
+    }
 }
 
-fn project() -> (tempfile::TempDir, PathBuf) {
-    let root = tempfile::tempdir().unwrap();
-    let project = root.path().join("project");
-    std::fs::create_dir(&project).unwrap();
-    std::fs::write(project.join("tracked.txt"), "accepted").unwrap();
-    (root, project.canonicalize().unwrap())
+/// The mode for scenarios that only need *a* session. Windows trusted
+/// execution has no copy-private, and Unix copy-private needs no FUSE.
+fn any_mode() -> FilesystemMode {
+    if cfg!(windows) {
+        FilesystemMode::CbcowPrivate
+    } else {
+        FilesystemMode::CopyPrivate
+    }
 }
 
 #[test]
@@ -110,69 +154,115 @@ fn killed_through_owner_leaves_an_adoptable_orphan_that_blocks_admission() {
         eprintln!("skipping: CB-CoW filesystem unavailable");
         return;
     }
-    let (_root, project) = project();
-    let (child, id) = spawn_owner(&project, FilesystemMode::CbcowThrough);
+    let root = project();
+    let project = root.path().join("project");
+    let (child, id) = spawn_owner(root.path(), FilesystemMode::CbcowThrough);
+    let adopter = coordinator(root.path(), true);
+    let _cleanup = Cleanup(&adopter, vec![id.clone()]);
+    // Through mode writes the host at once.
+    assert_eq!(fs::read(project.join("agent.txt")).unwrap(), b"work in progress");
 
     // While the owner lives: plain busy, and nobody can adopt.
-    let output = cli_start(&project, FilesystemMode::CbcowThrough);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("session busy"));
-    let adopter = coordinator(&project, true);
+    let error = adopter.start(None, Some(FilesystemMode::CbcowThrough), true).unwrap_err();
+    assert!(matches!(error, Error::SessionBusy(_)), "{error}");
     assert!(matches!(adopter.adopt(&id), Err(Error::SessionBusy(_))));
     assert!(adopter.orphaned_sessions().unwrap().is_empty());
 
-    sigkill(child);
+    kill(child);
 
-    // After SIGKILL: admission names the orphan instead of a stale "busy".
-    let output = cli_start(&project, FilesystemMode::CbcowThrough);
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("session orphaned") && stderr.contains(&id), "{stderr}");
+    // After the kill: every new start names the orphan, whatever its mode,
+    // instead of a stale "busy".
+    for requested in [FilesystemMode::CbcowThrough, FilesystemMode::CbcowPrivate] {
+        let error = coordinator(root.path(), false).start(None, Some(requested), true).unwrap_err();
+        assert!(
+            matches!(&error, Error::SessionOrphaned(orphan) if *orphan == id),
+            "{requested:?}: {error}"
+        );
+        assert!(error.to_string().starts_with("session orphaned:"), "{error}");
+    }
+    // The CLI reports it the same way. (Windows CLI sessions are sandboxed
+    // and need MXC PSEC before they even reach admission.)
+    #[cfg(unix)]
+    {
+        let output = Command::new(env!("CARGO_BIN_EXE_deltabox"))
+            .args(["session", "start", project.to_str().unwrap(), "--fs-mode", "cbcow-through", "--require-fs-mode"])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success());
+        assert!(stderr.contains("session orphaned") && stderr.contains(&id), "{stderr}");
+    }
     assert_eq!(adopter.orphaned_sessions().unwrap(), vec![id.clone()]);
 
-    // Adopt keeps the dead owner's work; the new owner decides.
+    // Adopt keeps the dead owner's work; a second adopter is refused.
     let info = adopter.adopt(&id).unwrap();
     assert!(info.pending_changes >= 1, "{info:?}");
     assert!(adopter.orphaned_sessions().unwrap().is_empty());
-    assert!(matches!(coordinator(&project, true).adopt(&id), Err(Error::SessionBusy(_))));
+    assert!(matches!(coordinator(root.path(), true).adopt(&id), Err(Error::SessionBusy(_))));
 
-    adopter
-        .abort(AbortParams { session_id: id.clone(), checkpoint: None })
-        .unwrap();
+    // The user chose abort: the host rolls back and the lease is released.
+    adopter.abort(AbortParams { session_id: id.clone(), checkpoint: None }).unwrap();
     adopter.stop(&id).unwrap();
     assert!(!project.join("agent.txt").exists(), "abort rolled the host back");
-
-    // The lease is released: the project admits a new through session.
     let fresh = adopter.start(None, Some(FilesystemMode::CbcowThrough), true).unwrap();
     adopter.stop(&fresh.session_id).unwrap();
 }
 
 #[test]
-fn adopted_orphan_can_commit_the_dead_owners_work() {
-    let (_root, project) = project();
-    let (child, id) = spawn_owner(&project, FilesystemMode::CopyPrivate);
-    sigkill(child);
+fn killed_private_owner_is_adopted_and_its_work_committed() {
+    if !cbcow_available() {
+        eprintln!("skipping: CB-CoW filesystem unavailable");
+        return;
+    }
+    let root = project();
+    let project = root.path().join("project");
+    let (child, id) = spawn_owner(root.path(), FilesystemMode::CbcowPrivate);
+    let adopter = coordinator(root.path(), true);
+    let _cleanup = Cleanup(&adopter, vec![id.clone()]);
+    assert!(!project.join("agent.txt").exists(), "private work stays off the host");
 
-    let adopter = coordinator(&project, true);
+    kill(child);
+
+    // An orphaned private session does not block a private sibling...
+    let sibling = adopter.start(None, Some(FilesystemMode::CbcowPrivate), true).unwrap();
+    adopter.stop(&sibling.session_id).unwrap();
+    // ...but it is listed, so its work is not silently forgotten.
     assert_eq!(adopter.orphaned_sessions().unwrap(), vec![id.clone()]);
-    let info = adopter.adopt(&id).unwrap();
-    assert_eq!(info.pending_changes, 1);
-    adopter
-        .commit(CommitParams { session_id: id.clone(), checkpoint: None, ours: false })
-        .unwrap();
+
+    // The user chose commit: the dead owner's work reaches the host.
+    assert!(adopter.adopt(&id).unwrap().pending_changes >= 1);
+    adopter.commit(CommitParams { session_id: id.clone(), checkpoint: None, ours: false }).unwrap();
     adopter.stop(&id).unwrap();
-    assert_eq!(std::fs::read_to_string(project.join("agent.txt")).unwrap(), "work in progress");
+    assert_eq!(fs::read(project.join("agent.txt")).unwrap(), b"work in progress");
     assert!(adopter.orphaned_sessions().unwrap().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn killed_copy_private_owner_is_adopted_and_its_work_committed() {
+    let root = project();
+    let project = root.path().join("project");
+    let (child, id) = spawn_owner(root.path(), FilesystemMode::CopyPrivate);
+    kill(child);
+
+    let adopter = coordinator(root.path(), true);
+    let _cleanup = Cleanup(&adopter, vec![id.clone()]);
+    assert_eq!(adopter.orphaned_sessions().unwrap(), vec![id.clone()]);
+    assert_eq!(adopter.adopt(&id).unwrap().pending_changes, 1);
+    adopter.commit(CommitParams { session_id: id.clone(), checkpoint: None, ours: false }).unwrap();
+    adopter.stop(&id).unwrap();
+    assert_eq!(fs::read(project.join("agent.txt")).unwrap(), b"work in progress");
 }
 
 #[test]
 fn detached_sessions_are_not_orphans_and_cannot_be_adopted() {
-    let (_root, project) = project();
-    let detached = coordinator(&project, false);
-    let info = detached.start(None, Some(FilesystemMode::CopyPrivate), true).unwrap();
+    let root = project();
+    let detached = coordinator(root.path(), false);
+    let info = detached.start(None, Some(any_mode()), true).unwrap();
     drop(detached); // the CLI exits right after start: still a live session
 
-    let adopter = coordinator(&project, true);
+    let adopter = coordinator(root.path(), true);
+    let _cleanup = Cleanup(&adopter, vec![info.session_id.clone()]);
     assert!(adopter.orphaned_sessions().unwrap().is_empty());
     assert!(matches!(adopter.adopt(&info.session_id), Err(Error::SessionBusy(_))));
     adopter.stop(&info.session_id).unwrap();
@@ -180,14 +270,15 @@ fn detached_sessions_are_not_orphans_and_cannot_be_adopted() {
 
 #[test]
 fn clean_drop_of_an_attached_coordinator_orphans_its_sessions() {
-    let (_root, project) = project();
-    let owner = coordinator(&project, true);
-    let info = owner.start(None, Some(FilesystemMode::CopyPrivate), true).unwrap();
+    let root = project();
+    let owner = coordinator(root.path(), true);
+    let info = owner.start(None, Some(any_mode()), true).unwrap();
     // Adopting a session this coordinator already owns is a no-op.
     assert_eq!(owner.adopt(&info.session_id).unwrap().session_id, info.session_id);
     drop(owner);
 
-    let adopter = coordinator(&project, true);
+    let adopter = coordinator(root.path(), true);
+    let _cleanup = Cleanup(&adopter, vec![info.session_id.clone()]);
     assert_eq!(adopter.orphaned_sessions().unwrap(), vec![info.session_id.clone()]);
     adopter.adopt(&info.session_id).unwrap();
     adopter.stop(&info.session_id).unwrap();
