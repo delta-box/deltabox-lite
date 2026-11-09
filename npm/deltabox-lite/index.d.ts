@@ -122,6 +122,13 @@ export interface NativeDeltaboxInstance {
     requireFilesystemMode?: boolean,
   ): Promise<NativeSessionInfo>
   stopSession(sessionId: string): Promise<NativeSessionInfo>
+  /**
+   * Take ownership of a session whose owner process died (an orphan). Its
+   * pending changes are kept; commit or abort them, then stop the session.
+   */
+  adoptSession(sessionId: string): Promise<NativeSessionInfo>
+  /** Running sessions of this project whose owner process died. */
+  orphanedSessions(): Promise<string[]>
   sessionStatus(sessionId: string): Promise<NativeSessionInfo>
   exec(
     sessionId: string,

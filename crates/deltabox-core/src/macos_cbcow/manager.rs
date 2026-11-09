@@ -159,8 +159,10 @@ impl Manager {
                 mode_for_lease(mode),
                 &session_id,
                 |sid| {
-                    self.load_meta(sid)
-                        .is_ok_and(|meta| meta.status == SessionStatus::Running)
+                    let running = self
+                        .load_meta(sid)
+                        .is_ok_and(|meta| meta.status == SessionStatus::Running);
+                    crate::project_lease::judge(running, &self.store(sid))
                 },
             )?;
             fs::create_dir_all(&store)?;

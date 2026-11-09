@@ -9,6 +9,27 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+### Added
+
+- Session ownership for embedded hosts. Sessions started through the Node
+  addon (`CoordinatorOptions::attach_sessions`) are now *attached*: the host
+  process holds an OS lock (`owner.lock`) for the session's life, and the
+  kernel releases it however the process dies, including on SIGKILL. CLI
+  sessions stay *detached* and behave as before.
+- Node API: `adoptSession(sessionId)` takes over a session whose owner died
+  and keeps its pending changes, so the user can commit or abort them later.
+  `orphanedSessions()` lists those sessions. The Rust equivalents are
+  `SessionCoordinator::adopt` and `orphaned_sessions`.
+
+### Fixed
+
+- A through session whose host was killed (SIGKILL, crash, OOM) no longer
+  holds the project lease indistinguishably from a live one. Admission now
+  reports `session orphaned: <id> lost its owner process; adopt it ...`
+  instead of `session busy ... stop or recover it first`. The orphan keeps
+  its lease and its changes until it is adopted and stopped; it is never
+  reclaimed or rolled back implicitly. This covers Linux, macOS and Windows.
+
 ## [0.2.0] - 2026-11-06
 
 ### Added

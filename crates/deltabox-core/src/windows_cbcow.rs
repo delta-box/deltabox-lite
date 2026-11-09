@@ -32,7 +32,9 @@ impl Manager {
         let state=base.join("projects").join(&key[..32]);created_state_dirs.extend(crate::windows::durability::missing_directories(&state));fs::create_dir_all(&state)?;
         Ok(Self { project,state,runtime,helper_bin:options.helper_bin.unwrap_or(std::env::current_exe()?),command_execution:options.command_execution,created_state_dirs })
     }
-    fn store(&self,id:&str)->Result<PathBuf> {
+    /// Directory holding every session store of this project.
+    pub(crate) fn sessions_root(&self)->&Path {&self.state}
+    pub(crate) fn store(&self,id:&str)->Result<PathBuf> {
         uuid::Uuid::parse_str(id).map_err(|_|Error::SessionNotFound(id.into()))?;
         Ok(self.state.join(id))
     }
@@ -84,6 +86,9 @@ impl Manager {
                     }
                 }
                 if m.status != SessionStatus::Stopped {
+                    if matches!(crate::owner::probe(&entry.path()), crate::owner::Ownership::Orphaned { .. }) {
+                        return Err(Error::SessionOrphaned(m.session_id));
+                    }
                     return Err(Error::SessionBusy(format!("session {} owns this project; stop it first", m.session_id)));
                 }
             }
@@ -117,6 +122,9 @@ impl Manager {
         if active.exists() {
             let id:String=serde_json::from_slice(&fs::read(&active)?)?;
             if self.manifest(&id)?.status==SessionStatus::Stopped {fs::remove_file(&active)?;}
+            // The owner died without stopping: the session keeps its changes
+            // and its claim until a new owner adopts it and commits or aborts.
+            else if matches!(crate::owner::probe(&self.store(&id)?), crate::owner::Ownership::Orphaned { .. }) {return Err(Error::SessionOrphaned(id));}
             else {return Err(Error::SessionBusy(format!("through session {id} owns this project; stop or recover it first")));}
         }
         Ok(())

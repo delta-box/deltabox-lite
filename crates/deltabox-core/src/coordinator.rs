@@ -16,7 +16,7 @@ use std::collections::HashMap;
 #[cfg(not(windows))]
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 
 /// Command execution behavior selected once when a coordinator is embedded.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -39,12 +39,24 @@ pub struct CoordinatorOptions {
     pub runtime_dir: Option<PathBuf>,
     /// Keep routing and backend session state resident for an in-process host.
     pub embedded_fast: bool,
+    /// Attach this process as the owner of every session it starts or adopts.
+    ///
+    /// For long-lived hosts (the Node addon). The owner holds an OS lock for
+    /// the session's life; if the process dies without stopping, the session
+    /// becomes *orphaned* — it keeps its changes and its project lease, and a
+    /// later owner can `adopt` it to commit or abort. Without this flag
+    /// sessions are detached (CLI): they outlive their starting process by
+    /// design, so a running one is always treated as live.
+    pub attach_sessions: bool,
 }
 
 pub struct SessionCoordinator {
     #[cfg(not(windows))]
     project: PathBuf,
     routes: RwLock<HashMap<String, FilesystemMode>>,
+    attach_sessions: bool,
+    /// Owner locks for the sessions this process is attached to.
+    owners: Mutex<HashMap<String, crate::owner::OwnerGuard>>,
     #[cfg(not(windows))]
     copy_private: DurableSessionManager,
     #[cfg(windows)]
@@ -68,6 +80,7 @@ impl SessionCoordinator {
 
     pub fn new_with_options(project: &Path, options: CoordinatorOptions) -> Result<Self> {
         let project = project.canonicalize()?;
+        let attach_sessions = options.attach_sessions;
         let helper_bin = options
             .helper_bin
             .clone()
@@ -107,6 +120,8 @@ impl SessionCoordinator {
             #[cfg(not(windows))]
             project,
             routes: RwLock::new(HashMap::new()),
+            attach_sessions,
+            owners: Mutex::new(HashMap::new()),
             #[cfg(not(windows))]
             copy_private,
             #[cfg(windows)]
@@ -183,7 +198,129 @@ impl SessionCoordinator {
             .write()
             .expect("coordinator route cache poisoned")
             .insert(info.session_id.clone(), info.filesystem.resolved_fs_mode);
+        if self.attach_sessions {
+            // Until this attach lands the session reads as detached, which
+            // admission treats as live, so no sibling can see it as orphaned.
+            let attached = self.session_store(&info.session_id).and_then(|store| {
+                crate::owner::try_attach(&store)?.ok_or_else(|| {
+                    Error::SessionBusy(format!("{}: owner lock already held", info.session_id))
+                })
+            });
+            match attached {
+                Ok(guard) => {
+                    self.owners_map().insert(info.session_id.clone(), guard);
+                }
+                Err(error) => {
+                    // An unowned session must not outlive a start that failed.
+                    let _ = self.stop(&info.session_id);
+                    return Err(error);
+                }
+            }
+        }
         Ok(info)
+    }
+
+    /// Takes ownership of an orphaned session: one that was attached to a
+    /// process which died before stopping it. The session keeps every pending
+    /// change, so the caller then decides to commit or abort.
+    ///
+    /// Refused for detached sessions (they have no owner to replace) and for
+    /// sessions whose owner is still alive. Adopting a session this
+    /// coordinator already owns just reports its status.
+    pub fn adopt(&self, session_id: &str) -> Result<SessionInfo> {
+        if !self.attach_sessions {
+            return Err(Error::Unsupported(
+                "adopting a session requires a coordinator with attach_sessions".into(),
+            ));
+        }
+        if self.owners_map().contains_key(session_id) {
+            return self.status(session_id);
+        }
+        let store = self.session_store(session_id)?;
+        if !self.is_running(session_id)? {
+            return Err(Error::SessionStopped(session_id.into()));
+        }
+        match crate::owner::probe(&store) {
+            crate::owner::Ownership::Detached => {
+                return Err(Error::SessionBusy(format!(
+                    "{session_id} is a detached session; manage it with the CLI"
+                )))
+            }
+            crate::owner::Ownership::Attached { pid } => {
+                return Err(Error::SessionBusy(format!(
+                    "{session_id} is owned by live process {}",
+                    pid.map_or_else(|| "(unknown pid)".into(), |pid| pid.to_string())
+                )))
+            }
+            crate::owner::Ownership::Orphaned { .. } => {}
+        }
+        let guard = crate::owner::try_attach(&store)?.ok_or_else(|| {
+            Error::SessionBusy(format!("{session_id} was adopted by another process"))
+        })?;
+        self.owners_map().insert(session_id.into(), guard);
+        // Status also restarts a dead filesystem helper, so the adopted
+        // session is usable right away.
+        self.status(session_id)
+    }
+
+    /// Running sessions of this project whose attached owner died. Each one
+    /// can be passed to `adopt`.
+    pub fn orphaned_sessions(&self) -> Result<Vec<String>> {
+        let mut orphans = Vec::new();
+        let root = self.sessions_root()?;
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            return Ok(orphans);
+        };
+        for entry in entries.flatten() {
+            let store = entry.path();
+            let Some(id) = store.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if uuid::Uuid::parse_str(id).is_err() || !self.is_running(id).unwrap_or(false) {
+                continue;
+            }
+            if matches!(
+                crate::owner::probe(&store),
+                crate::owner::Ownership::Orphaned { .. }
+            ) {
+                orphans.push(id.to_string());
+            }
+        }
+        orphans.sort();
+        Ok(orphans)
+    }
+
+    fn owners_map(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, crate::owner::OwnerGuard>> {
+        self.owners.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn sessions_root(&self) -> Result<PathBuf> {
+        #[cfg(windows)]
+        return Ok(self.windows_cbcow.sessions_root().to_path_buf());
+        #[cfg(not(windows))]
+        state_root(&self.project)
+    }
+
+    fn session_store(&self, session_id: &str) -> Result<PathBuf> {
+        uuid::Uuid::parse_str(session_id)
+            .map_err(|_| Error::SessionNotFound(session_id.into()))?;
+        Ok(self.sessions_root()?.join(session_id))
+    }
+
+    /// Reads the durable status without starting a helper.
+    fn is_running(&self, session_id: &str) -> Result<bool> {
+        let path = self.session_store(session_id)?.join("session.json");
+        let raw = std::fs::read(&path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Error::SessionNotFound(session_id.into())
+            } else {
+                Error::Io(error)
+            }
+        })?;
+        let record: serde_json::Value = serde_json::from_slice(&raw)?;
+        Ok(record.get("status").and_then(|s| s.as_str()) == Some("running"))
     }
 
     pub fn status(&self, session_id: &str) -> Result<SessionInfo> {
@@ -212,6 +349,9 @@ impl SessionCoordinator {
             .write()
             .expect("coordinator route cache poisoned")
             .remove(session_id);
+        // Released only after the stop recorded itself, so no observer ever
+        // sees a free owner lock on a session that is still running.
+        self.owners_map().remove(session_id);
         Ok(info)
     }
 
