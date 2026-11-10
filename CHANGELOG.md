@@ -9,6 +9,8 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-10
+
 ### Added
 
 - Session ownership for embedded hosts. Sessions started through the Node
