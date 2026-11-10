@@ -285,6 +285,10 @@ impl NativeDeltabox {
                 state_dir: options.state_dir,
                 runtime_dir: options.runtime_dir,
                 embedded_fast: true,
+                // The Node host is a long-lived agent process: it owns the
+                // sessions it starts, so a crash leaves adoptable orphans
+                // instead of leases nobody can tell apart from live ones.
+                attach_sessions: true,
             },
         )
         .map_err(native_error)?;
@@ -341,6 +345,28 @@ impl NativeDeltabox {
                 .map_err(native_error)
         })
         .await
+    }
+
+    /// Take ownership of a session whose previous owner process died, keeping
+    /// its pending changes so the caller can commit or abort them.
+    #[napi]
+    pub async fn adopt_session(&self, session_id: String) -> napi::Result<NativeSessionInfo> {
+        let coordinator = Arc::clone(&self.coordinator);
+        let isolation = self.isolation;
+        run_blocking(move || {
+            coordinator
+                .adopt(&session_id)
+                .map(|value| session_info(value, isolation))
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    /// Running sessions of this project whose owner process died.
+    #[napi]
+    pub async fn orphaned_sessions(&self) -> napi::Result<Vec<String>> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || coordinator.orphaned_sessions().map_err(native_error)).await
     }
 
     #[napi]

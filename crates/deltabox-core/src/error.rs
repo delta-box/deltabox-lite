@@ -18,6 +18,10 @@ pub enum Error {
     SessionStopped(String),
     #[error("session busy: {0}")]
     SessionBusy(String),
+    /// A session whose attached owner process died. It still holds its
+    /// project lease and its pending changes; adopt it to commit or abort.
+    #[error("session orphaned: {0} lost its owner process; adopt it to commit or abort its changes, or stop it")]
+    SessionOrphaned(String),
     #[error("project changed outside deltabox: {0}")]
     ProjectConflict(ConflictReport),
     #[error("checkpoint not found: {0}")]

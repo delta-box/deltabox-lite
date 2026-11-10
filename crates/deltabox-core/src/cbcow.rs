@@ -146,10 +146,11 @@ impl Manager {
                 &session_id,
                 |sid| {
                     let path = self.root.join(sid).join(SESSION_META);
-                    fs::read(path)
+                    let running = fs::read(path)
                         .ok()
                         .and_then(|raw| serde_json::from_slice::<SessionMeta>(&raw).ok())
-                        .is_some_and(|meta| meta.status == SessionStatus::Running)
+                        .is_some_and(|meta| meta.status == SessionStatus::Running);
+                    crate::project_lease::judge(running, &self.root.join(sid))
                 },
             )?;
             // The liveness witness must exist before the admission lock
