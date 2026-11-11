@@ -93,6 +93,11 @@ Rules:
     case-insensitively, so `C:\Users\me\.SSH` is still denied. Standing extra
     write roots in the policy file stay reserved on Windows; a per-command rwx
     grant is the explicit, non-rollback-able exception, as on the other platforms.
+    PSEC grants a directory with an inheritable ACE, which never reaches files
+    whose ACL does not inherit, so the existing entries under an rwx grant are
+    granted explicitly too (deny-pattern names are skipped). A grant over a tree
+    with more than 10,000 existing entries is rejected; grant a narrower
+    directory.
     The end-to-end tests need PSEC and WinFsp, so they are ignored by default
     and run in CI on windows-11-arm.
   - `crates/deltabox-cli/tests/fs_grants.rs` checks the same cases on every
