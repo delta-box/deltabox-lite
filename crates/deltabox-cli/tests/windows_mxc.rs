@@ -339,22 +339,33 @@ fn fs_grants_open_only_the_named_paths() {
             s.action(&["exec"], &extra)
         };
         let code = |value: &Value| value["exit_code"].as_i64().unwrap_or(-1);
-        let read = format!("type \"{}\"", readable.join("sdk.txt").display());
+        // A denial must be an access error, so a malformed command cannot pass as one.
+        let denied = |value: &Value, what: &str| {
+            assert_ne!(code(value), 0, "{mode}: {what}: {value}");
+            assert!(value["stderr"].as_str().unwrap_or("").to_lowercase().contains("denied"), "{mode}: {what}: {value}");
+        };
+        // Paths go to cmd unquoted: argv quoting would turn embedded quotes into `\"`,
+        // which cmd rejects. The temporary directories contain no spaces.
+        for dir in [&readable, &writable, &ungranted] {
+            assert!(!dir.to_string_lossy().contains(' '), "{}", dir.display());
+        }
+        let read = format!("type {}", readable.join("sdk.txt").display());
 
-        assert_ne!(code(&exec(&[], &read)), 0, "{mode}: ungranted read must fail");
+        denied(&exec(&[], &read), "ungranted read must fail");
         let granted = exec(&[("--fs-read-allow", &readable)], &read);
         assert_eq!(code(&granted), 0, "{mode}: rx grant must read: {granted}");
         assert!(granted["stdout"].as_str().unwrap().contains("sdk"), "{mode}");
-        let write_rx = format!("echo x>\"{}\"", readable.join("w.txt").display());
-        assert_ne!(code(&exec(&[("--fs-read-allow", &readable)], &write_rx)), 0, "{mode}: rx grant must not write");
+        let write_rx = format!("echo x>{}", readable.join("w.txt").display());
+        denied(&exec(&[("--fs-read-allow", &readable)], &write_rx), "rx grant must not write");
         assert!(!readable.join("w.txt").exists(), "{mode}");
 
-        let write = format!("echo ok>\"{}\"", writable.join("out.txt").display());
-        assert_eq!(code(&exec(&[("--fs-write-allow", &writable)], &write)), 0, "{mode}: rwx grant must write");
+        let write = format!("echo ok>{}", writable.join("out.txt").display());
+        let wrote = exec(&[("--fs-write-allow", &writable)], &write);
+        assert_eq!(code(&wrote), 0, "{mode}: rwx grant must write: {wrote}");
         assert!(fs::read_to_string(writable.join("out.txt")).unwrap().starts_with("ok"), "{mode}");
 
-        let other = format!("type \"{}\"", ungranted.join("other.txt").display());
-        assert_ne!(code(&exec(&[("--fs-read-allow", &readable)], &other)), 0, "{mode}: sibling must stay blocked");
-        assert_ne!(code(&exec(&[], &read)), 0, "{mode}: a grant must not persist");
+        let other = format!("type {}", ungranted.join("other.txt").display());
+        denied(&exec(&[("--fs-read-allow", &readable)], &other), "sibling must stay blocked");
+        denied(&exec(&[], &read), "a grant must not persist");
     }
 }
