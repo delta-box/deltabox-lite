@@ -9,6 +9,8 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-11
+
 ### Changed
 
 - `filesystem.allow_approval` now defaults to `true`, so execution-scoped
