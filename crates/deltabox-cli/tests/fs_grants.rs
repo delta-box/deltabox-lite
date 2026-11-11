@@ -99,7 +99,13 @@ struct Server {
 
 impl Server {
     fn spawn() -> Self {
-        let root = tempfile::tempdir().unwrap();
+        // FSEvents reports canonical paths, so on macOS the session must not
+        // live under the `/var/folders` alias of the system temp directory.
+        let root = if cfg!(target_os = "macos") {
+            tempfile::tempdir_in("/private/tmp").unwrap()
+        } else {
+            tempfile::tempdir().unwrap()
+        };
         let project = root.path().join("project");
         std::fs::create_dir(&project).unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_deltabox"))
@@ -173,6 +179,21 @@ impl Drop for Server {
     }
 }
 
+/// Host ACLs for a failure message; Windows only.
+fn acls(paths: &[&Path]) -> String {
+    if !cfg!(windows) {
+        return String::new();
+    }
+    paths
+        .iter()
+        .map(|path| {
+            let out = Command::new("icacls").arg(path).output();
+            out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_else(|e| e.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn code(response: &Value) -> i64 {
     response["result"]["exit_code"].as_i64().unwrap_or(-1)
 }
@@ -242,11 +263,14 @@ fn write_grants_can_create_rename_and_delete_files() {
         ok(&r, "mkdir and create inside it");
         assert_eq!(read(&sub.join("b.txt")), "x", "{mode}");
 
-        // 5. Atomic replace through a temporary sibling, granted on the file.
+        // 5. Atomic replace through a temporary sibling, granted on the file:
+        //    the write and the rename are separate execs so a failure says which.
         let existing = out.join("existing.txt");
         let tmp = out.join("existing.tmp");
-        let r = server.exec(&sid, &[], &[&existing], &Sh::and(&Sh::write("new", &tmp), &Sh::rename(&tmp, &existing)));
-        ok(&r, "atomic replace of a granted file");
+        let r = server.exec(&sid, &[], &[&existing], &Sh::write("new", &tmp));
+        ok(&r, "write a temporary sibling of a granted file");
+        let r = server.exec(&sid, &[], &[&existing], &Sh::rename(&tmp, &existing));
+        assert_eq!(code(&r), 0, "{mode}: rename over a granted file: {r}\n{}", acls(&[&out, &existing, &tmp]));
         assert_eq!(read(&existing), "new", "{mode}");
         assert!(!tmp.exists(), "{mode}");
 
