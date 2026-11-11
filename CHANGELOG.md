@@ -9,6 +9,17 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+### Fixed
+
+- Write grants (`fs_write_allow`) can create files. A write grant is now a
+  directory tree: an existing directory is granted as is, and an existing file
+  or a new path grants its directory, which is created (with missing parents)
+  after every grant in the request is accepted. Before, a grant on a new file
+  did nothing on Linux, and grants on single files broke atomic writes and
+  renames on every platform.
+- Write grants on the root, a top-level directory or the home directory itself
+  are rejected as too broad.
+
 ## [0.4.1] - 2026-11-11
 
 ### Changed

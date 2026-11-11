@@ -267,80 +267,129 @@ impl Policy {
         }
         let read = read
             .iter()
-            .map(|p| self.checked_grant(p, false))
+            .map(|p| self.checked_read_grant(p))
             .collect::<Result<Vec<_>>>()?;
         let write = write
             .iter()
-            .map(|p| self.checked_grant(p, true))
+            .map(|p| self.resolve_write_grant(p))
             .collect::<Result<Vec<_>>>()?;
+        // Every grant is checked before anything is created, so a rejected
+        // request leaves no trace on the host.
+        for grant in &write {
+            if grant.create {
+                std::fs::create_dir_all(&grant.dir).map_err(|e| {
+                    Error::InvalidPolicy(format!(
+                        "filesystem grant {}: cannot create the directory: {e}",
+                        grant.dir.display()
+                    ))
+                })?;
+            }
+        }
         for path in read {
             if !self.filesystem.read.contains(&path) {
                 self.filesystem.read.push(path);
             }
         }
-        for path in write {
+        for grant in write {
             // rwx implies rx.
-            if !self.filesystem.read.contains(&path) {
-                self.filesystem.read.push(path.clone());
+            if !self.filesystem.read.contains(&grant.dir) {
+                self.filesystem.read.push(grant.dir.clone());
             }
-            if !self.filesystem.write.contains(&path) {
-                self.filesystem.write.push(path);
+            if !self.filesystem.write.contains(&grant.dir) {
+                self.filesystem.write.push(grant.dir);
             }
         }
         Ok(())
     }
 
-    fn checked_grant(&self, path: &Path, allow_missing_leaf: bool) -> Result<PathBuf> {
-        let bad = |why: &str| Error::InvalidPolicy(format!("filesystem grant {}: {why}", path.display()));
-        let text = path.to_string_lossy();
-        if text.is_empty() || text.chars().any(|c| c.is_control()) {
-            return Err(bad("must be a non-empty path without control characters"));
-        }
-        if !path.is_absolute() {
-            return Err(bad("must be absolute"));
-        }
-        if path
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-        {
-            return Err(bad("must not contain `..`"));
-        }
-        if text.contains('*') || text.contains('?') {
-            return Err(bad("wildcards are not allowed; grant an exact path"));
-        }
-        // Resolve symlinks so a grant names the real target. For a write grant
-        // the final components may not exist yet (a fresh cache directory):
-        // resolve the deepest existing ancestor and keep the remainder.
-        let mut existing = path.to_path_buf();
-        let mut rest: Vec<std::ffi::OsString> = Vec::new();
-        let resolved = loop {
-            match std::fs::canonicalize(&existing) {
-                Ok(real) => break real,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound && allow_missing_leaf => {
-                    let Some(name) = existing.file_name().map(|n| n.to_os_string()) else {
-                        return Err(bad("does not exist"));
-                    };
-                    rest.push(name);
-                    if !existing.pop() {
-                        return Err(bad("does not exist"));
-                    }
+    /// Resolve an rwx request to the directory that is actually granted.
+    ///
+    /// A write grant is always a directory tree: creating, renaming or
+    /// deleting a file changes its directory, and an atomic replace writes a
+    /// sibling temporary file, so a grant on a single file cannot work on any
+    /// backend. An existing directory is granted as is; an existing file or a
+    /// path that does not exist yet grants its parent directory, which is
+    /// created (with any missing ancestors) once every grant has been checked.
+    pub fn resolve_write_grant(&self, path: &Path) -> Result<WriteGrant> {
+        let bad = grant_error(path);
+        check_grant_syntax(path)?;
+        let (existing, rest) = deepest_existing(path)?;
+        let real = std::fs::canonicalize(&existing).map_err(|e| bad(&e.to_string()))?;
+        let (dir, create) = match rest.split_last() {
+            None if real.is_dir() => (real, false),
+            None => match real.parent() {
+                Some(parent) => (parent.to_path_buf(), false),
+                None => return Err(bad("has no parent directory")),
+            },
+            Some((_leaf, folders)) => {
+                if !real.is_dir() {
+                    return Err(bad("a parent component is not a directory"));
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    return Err(bad("does not exist"));
-                }
-                Err(e) => return Err(bad(&e.to_string())),
+                let dir = folders.iter().fold(real, |acc, part| acc.join(part));
+                let create = !folders.is_empty();
+                (dir, create)
             }
         };
-        let resolved = rest.iter().rev().fold(resolved, |acc, part| acc.join(part));
+        self.check_grant_scope(path, &dir)?;
+        Ok(WriteGrant { dir, create })
+    }
+
+    fn checked_read_grant(&self, path: &Path) -> Result<PathBuf> {
+        let bad = grant_error(path);
+        check_grant_syntax(path)?;
+        let resolved = std::fs::canonicalize(path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => bad("does not exist"),
+            _ => bad(&e.to_string()),
+        })?;
         if resolved.parent().is_none() {
-            return Err(bad("the filesystem root cannot be granted; use the read-write execution profile"));
+            return Err(bad(
+                "the filesystem root cannot be granted; use the read-write execution profile",
+            ));
         }
-        if [&resolved, path].iter().any(|candidate| {
+        if [resolved.as_path(), path].iter().any(|candidate| {
             grant_is_denied(&self.filesystem.deny, &candidate.to_string_lossy(), cfg!(windows))
         }) {
             return Err(bad("matches a protected deny pattern"));
         }
         Ok(resolved)
+    }
+
+    /// A write grant opens a whole directory, so refuse the ones that would
+    /// open far more than a tool needs: the root, a top-level directory
+    /// (`/home`, `/etc`, `C:\Users`) and the user's home directory itself.
+    fn check_grant_scope(&self, path: &Path, dir: &Path) -> Result<()> {
+        let bad = grant_error(path);
+        let depth = dir
+            .components()
+            .filter(|c| matches!(c, std::path::Component::Normal(_)))
+            .count();
+        if depth == 0 {
+            return Err(bad(
+                "the filesystem root cannot be granted; use the read-write execution profile",
+            ));
+        }
+        if depth == 1 {
+            return Err(bad(&format!(
+                "{} is too broad to grant for writing; grant a directory inside it",
+                dir.display()
+            )));
+        }
+        let home = ["HOME", "USERPROFILE"]
+            .iter()
+            .filter_map(std::env::var_os)
+            .filter_map(|h| std::fs::canonicalize(h).ok());
+        if home.into_iter().any(|h| h == dir) {
+            return Err(bad(&format!(
+                "{} is the home directory and too broad to grant for writing; grant a directory inside it",
+                dir.display()
+            )));
+        }
+        if [dir, path].iter().any(|candidate| {
+            grant_is_denied(&self.filesystem.deny, &candidate.to_string_lossy(), cfg!(windows))
+        }) {
+            return Err(bad("matches a protected deny pattern"));
+        }
+        Ok(())
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -399,6 +448,64 @@ impl Policy {
 /// Deny check for a filesystem grant. The matcher splits on `/`, so Windows
 /// paths (`C:\Users\me\.ssh`, or `\\?\C:\...` from `canonicalize`) are compared
 /// with `/` separators, and case-insensitively where the filesystem is.
+/// The directory an rwx grant opens, and whether it must be created first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteGrant {
+    pub dir: PathBuf,
+    pub create: bool,
+}
+
+fn grant_error(path: &Path) -> impl Fn(&str) -> Error + '_ {
+    move |why: &str| Error::InvalidPolicy(format!("filesystem grant {}: {why}", path.display()))
+}
+
+fn check_grant_syntax(path: &Path) -> Result<()> {
+    let bad = grant_error(path);
+    let text = path.to_string_lossy();
+    if text.is_empty() || text.chars().any(|c| c.is_control()) {
+        return Err(bad("must be a non-empty path without control characters"));
+    }
+    if !path.is_absolute() {
+        return Err(bad("must be absolute"));
+    }
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(bad("must not contain `..`"));
+    }
+    if text.contains('*') || text.contains('?') {
+        return Err(bad("wildcards are not allowed; grant an exact path"));
+    }
+    Ok(())
+}
+
+/// The deepest ancestor of `path` that exists (possibly `path` itself) and
+/// the missing components below it, outermost first.
+fn deepest_existing(path: &Path) -> Result<(PathBuf, Vec<std::ffi::OsString>)> {
+    let bad = grant_error(path);
+    let mut existing = path.to_path_buf();
+    let mut rest = Vec::new();
+    loop {
+        match std::fs::symlink_metadata(&existing) {
+            Ok(_) => {
+                rest.reverse();
+                return Ok((existing, rest));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let Some(name) = existing.file_name().map(|n| n.to_os_string()) else {
+                    return Err(bad("does not exist"));
+                };
+                rest.push(name);
+                if !existing.pop() {
+                    return Err(bad("does not exist"));
+                }
+            }
+            Err(e) => return Err(bad(&e.to_string())),
+        }
+    }
+}
+
 fn grant_is_denied(deny: &[String], path: &str, fold_case: bool) -> bool {
     let normalize = |value: &str| {
         let value = value.replace('\\', "/");
@@ -507,23 +614,96 @@ mod tests {
         assert!(policy.apply_fs_grants(&[], &[]).is_ok());
     }
 
+    /// A scratch tree outside the project; temporary directories rather than
+    /// `/usr/bin`, so the tests also run on Windows and macOS.
+    fn scratch(name: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("dbx-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sdk")).unwrap();
+        std::fs::create_dir_all(dir.join("out")).unwrap();
+        std::fs::write(dir.join("out").join("existing.txt"), "old").unwrap();
+        let real = std::fs::canonicalize(&dir).unwrap();
+        (dir, real)
+    }
+
     #[test]
     fn fs_grants_add_exact_paths_and_write_implies_read() {
-        // Temporary directories rather than `/usr/bin`, so the test also runs on Windows.
-        let dir = std::env::temp_dir().join(format!("dbx-grant-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join("sdk")).unwrap();
-        let real = std::fs::canonicalize(&dir).unwrap();
+        let (dir, real) = scratch("grant");
         let mut policy = approving();
         policy
-            .apply_fs_grants(&[dir.join("sdk")], &[dir.join("cache").join("new")])
+            .apply_fs_grants(&[dir.join("sdk")], &[dir.join("out")])
             .unwrap();
         assert!(policy.filesystem.read.contains(&real.join("sdk")));
-        let want = real.join("cache").join("new");
-        assert!(policy.filesystem.write.contains(&want));
-        assert!(policy.filesystem.read.contains(&want));
-        // Only the requested paths were added.
+        assert!(policy.filesystem.write.contains(&real.join("out")));
+        assert!(policy.filesystem.read.contains(&real.join("out")));
+        assert!(!policy.filesystem.write.contains(&real.join("sdk")));
         assert!(!policy.filesystem.write.contains(&PathBuf::from("/")));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn write_grants_resolve_to_a_directory() {
+        let (dir, real) = scratch("resolve");
+        let policy = approving();
+        let grant = |path: PathBuf| policy.resolve_write_grant(&path).unwrap();
+        let out = real.join("out");
+        // An existing directory is granted as is.
+        assert_eq!(grant(dir.join("out")), WriteGrant { dir: out.clone(), create: false });
+        // An existing file and a new file both grant their directory, so the
+        // command can create, rename and atomically replace files there.
+        assert_eq!(grant(dir.join("out").join("existing.txt")), WriteGrant { dir: out.clone(), create: false });
+        assert_eq!(grant(dir.join("out").join("new.txt")), WriteGrant { dir: out, create: false });
+        // Missing directories above a new file are created, not widened past.
+        let fresh = dir.join("fresh").join("cache");
+        assert_eq!(
+            grant(fresh.join("a.txt")),
+            WriteGrant { dir: real.join("fresh").join("cache"), create: true }
+        );
+        assert!(!fresh.exists(), "resolving alone creates nothing");
+        // A file cannot be the parent of a new path.
+        assert!(policy
+            .resolve_write_grant(&dir.join("out").join("existing.txt").join("x"))
+            .is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn write_grants_create_missing_directories_only_when_approved() {
+        let (dir, real) = scratch("create");
+        let fresh = dir.join("fresh").join("cache");
+        let mut refused = approving();
+        refused.filesystem.allow_approval = false;
+        assert!(refused.apply_fs_grants(&[], &[fresh.join("a.txt")]).is_err());
+        assert!(!dir.join("fresh").exists(), "a refused grant leaves no trace");
+        // One bad grant in the batch also creates nothing.
+        let mut policy = approving();
+        assert!(policy
+            .apply_fs_grants(&[], &[fresh.join("a.txt"), PathBuf::from("/")])
+            .is_err());
+        assert!(!dir.join("fresh").exists());
+        policy.apply_fs_grants(&[], &[fresh.join("a.txt")]).unwrap();
+        assert!(fresh.is_dir());
+        assert!(policy.filesystem.write.contains(&real.join("fresh").join("cache")));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn write_grants_refuse_broad_directories() {
+        let policy = approving();
+        let home = ["HOME", "USERPROFILE"].iter().find_map(std::env::var_os).map(PathBuf::from);
+        let mut broad: Vec<PathBuf> = if cfg!(windows) {
+            [r"C:\", r"C:\Users", r"C:\new.txt"].map(PathBuf::from).to_vec()
+        } else {
+            ["/", "/etc", "/new.txt"].map(PathBuf::from).to_vec()
+        };
+        if let Some(home) = home {
+            broad.push(home.clone());
+            // A new file directly in the home directory would open all of it.
+            broad.push(home.join("dbx-definitely-new.txt"));
+        }
+        for path in broad {
+            assert!(policy.resolve_write_grant(&path).is_err(), "{}", path.display());
+        }
     }
 
     #[test]

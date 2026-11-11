@@ -149,8 +149,10 @@ export interface NativeDeltaboxInstance {
      */
     fsReadAllow?: string[],
     /**
-     * Exact absolute paths this command may read, write and execute (rwx).
-     * Writes outside the workspace cannot be rolled back.
+     * Absolute paths whose directory this command may read, write and execute
+     * (rwx): it can create, rename and delete files there. A file or a new path
+     * grants its directory, created if missing. Writes outside the workspace
+     * cannot be rolled back.
      */
     fsWriteAllow?: string[],
   ): Promise<NativeExecResult>

@@ -179,8 +179,9 @@ struct ExecArgs {
     /// Rejected when the session policy sets `filesystem.allow_approval = false`.
     #[arg(long = "fs-read-allow")]
     fs_read_allow: Vec<PathBuf>,
-    /// Exact absolute path this command may read, write and execute
-    /// (repeatable). Writes outside the workspace cannot be rolled back.
+    /// Absolute path whose directory this command may read, write and execute
+    /// (repeatable): a file or a new path grants its directory, created if
+    /// missing. Writes outside the workspace cannot be rolled back.
     #[arg(long = "fs-write-allow")]
     fs_write_allow: Vec<PathBuf>,
     #[arg(long)]

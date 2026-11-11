@@ -102,8 +102,10 @@ pub struct ExecParams {
     /// `filesystem.allow_approval = false`. Never persisted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fs_read_allow: Vec<PathBuf>,
-    /// Exact absolute paths this command may read, write and execute (rwx).
-    /// Writes outside the workspace cannot be rolled back.
+    /// Absolute paths whose directory this command may read, write and
+    /// execute (rwx): it can create, rename and delete files there. A file or
+    /// a new path grants its directory, created if missing. Writes outside the
+    /// workspace cannot be rolled back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fs_write_allow: Vec<PathBuf>,
 }

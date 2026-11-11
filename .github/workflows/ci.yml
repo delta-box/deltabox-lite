@@ -67,6 +67,7 @@ jobs:
           --test copy_private_windows
           --test cbcow_windows
           --test network_approvals
+          --test fs_grants
           --test session_owner
           -- --test-threads=1 ${{ matrix.ignored_tests }}
       - if: runner.os == 'Windows'
