@@ -36,7 +36,23 @@ allow_approval = false
 | Field | Access | Rollback |
 |---|---|---|
 | `fs_read_allow` | read and execute (rx) of one exact path | nothing is written |
-| `fs_write_allow` | read, write and execute (rwx) of one exact path | **not rollback-able**: it is outside the workspace |
+| `fs_write_allow` | read, write and execute (rwx) of a **directory tree**: create, write, rename and delete files and directories in it | **not rollback-able**: it is outside the workspace |
+
+An rwx grant is always a directory, because creating, renaming or deleting a
+file changes its directory, and atomic writes (a temporary sibling renamed over
+the target, as `sed -i`, editors and package managers do) need that too.
+Landlock and Windows ACLs cannot grant "only this name" in a directory. The
+requested path is resolved like this:
+
+| `fs_write_allow` names | Granted directory |
+|---|---|
+| an existing directory `/home/me/out` | `/home/me/out` |
+| an existing file `/home/me/out/config.json` | `/home/me/out` |
+| a new file `/home/me/out/new.txt` | `/home/me/out` |
+| a path under missing directories `/home/me/.cache/hvigor/x.bin` | `/home/me/.cache/hvigor`, created (with missing parents) once every grant in the request is accepted |
+
+The last component is always treated as the file to create, so to grant a new
+directory itself, name a path inside it (`.../hvigor/x`).
 
 The CLI flags are `--fs-read-allow PATH` and `--fs-write-allow PATH`
 (repeatable); `session.exec` takes `fs_read_allow` and `fs_write_allow`; the
@@ -47,12 +63,19 @@ Rules:
 - **Exact, absolute paths.** Relative paths, `..`, wildcards, and the
   filesystem root are rejected (use the `read-write` execution profile for
   full host access). At most 32 grants per execution.
+- **Not too broad.** A write grant whose directory is the root, a top-level
+  directory (`/home`, `/etc`, `C:\Users`) or the user's home directory itself
+  is rejected; grant a directory inside it.
 - **Resolved before use.** Symlinks are resolved and the grant names the real
-  target. A write grant may name a path that does not exist yet (a fresh cache
-  directory) when an ancestor exists.
-- **Deny wins.** A path matching a `filesystem.deny` pattern is rejected, and
-  the protected deny set (engine state, the backing project, helper endpoints)
-  still wins at the backend even under a grant.
+  target. A read grant must exist.
+- **Nothing is created on refusal.** Missing directories for write grants are
+  created only after every grant in the request passes every check.
+- **Deny wins.** A grant whose path or granted directory matches a
+  `filesystem.deny` pattern is rejected, and the protected deny set (engine
+  state, the backing project, helper endpoints) still wins at the backend even
+  under a grant. Deny patterns are matched against the grant, not against each
+  file a command later creates inside a granted directory: the backends enforce
+  name-based denies only inside the project.
 - **No persistence.** Grants apply to a cloned policy for that one command.
 - **Write implies read.** An rwx grant also adds the path to the read list.
 - **Read includes execute.** The backends' `read` list already carries
@@ -61,19 +84,27 @@ Rules:
 - **On by default.** With `allow_approval = false` any grant is rejected.
 - **Backend support.** The same rx/rwx semantics on every platform:
   - **Linux** (FUSE `cbcow-*` modes and the durable copy mode): grants become
-    Sandlock read/write rules. Covered by end-to-end tests.
-  - **macOS** (`cbcow-through`, `cbcow-private`, Seatbelt): grants become
-    `file-read*` / `file-write*` rules for the exact, symlink-resolved path (so
-    `/tmp/x` is granted as `/private/tmp/x`). Compile-checked, not yet run on a Mac.
+    Sandlock read/write rules.
+  - **macOS** (Seatbelt): grants become `file-read*` / `file-write*` rules for
+    the symlink-resolved path (so `/tmp/x` is granted as `/private/tmp/x`).
   - **Windows** (MXC PSEC, all modes): rx grants become `readonly_paths` and rwx
     grants `readwrite_paths`, as resolved host paths (the `\\?\` prefix from
     `canonicalize` is stripped). Deny patterns are matched with `/` separators and
     case-insensitively, so `C:\Users\me\.SSH` is still denied. Standing extra
     write roots in the policy file stay reserved on Windows; a per-command rwx
     grant is the explicit, non-rollback-able exception, as on the other platforms.
-    Compile-checked, with an ignored end-to-end test
-    (`cargo test -p deltabox --test windows_mxc -- --ignored`) to run on a host
-    with PSEC and WinFsp.
+    **Limit:** PSEC grants write access without the DELETE right, so under an
+    rwx grant a command can create, write, append, overwrite (`copy /y`) and
+    create or remove empty directories, but cannot delete, rename or move a
+    file, including one it created. Tools that replace files by renaming a
+    temporary file over them fail there. This is PSEC's file policy, not
+    something deltabox-lite can widen; the Windows tests assert it.
+    The end-to-end tests need PSEC and WinFsp, so they are ignored by default
+    and run in CI on windows-11-arm.
+  - `crates/deltabox-cli/tests/fs_grants.rs` checks the same cases on every
+    platform and session mode: create, mkdir, atomic replace, rename and delete
+    under a write grant; siblings, read-only grants, secret and too-broad
+    directories, refused sessions and the next exec stay closed.
   - Unsandboxed (`trusted`/`none`) execution rejects grants on every platform.
 
 The Linux backend always lets commands read `/tmp`, so a read grant under `/tmp`
