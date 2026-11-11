@@ -9,6 +9,8 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-11
+
 ### Added
 
 - Execution-scoped filesystem grants: `fs_read_allow` (read and execute) and
