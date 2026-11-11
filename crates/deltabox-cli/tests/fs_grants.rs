@@ -187,8 +187,13 @@ fn acls(paths: &[&Path]) -> String {
     paths
         .iter()
         .map(|path| {
-            let out = Command::new("icacls").arg(path).output();
-            out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_else(|e| e.to_string())
+            let script = format!(
+                "icacls '{0}'; 'protected: ' + (Get-Acl '{0}').AreAccessRulesProtected",
+                path.display()
+            );
+            let out = Command::new("powershell").args(["-NoProfile", "-Command", &script]).output();
+            out.map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+                .unwrap_or_else(|e| e.to_string())
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -269,7 +274,13 @@ fn write_grants_can_create_rename_and_delete_files() {
         let tmp = out.join("existing.tmp");
         let r = server.exec(&sid, &[], &[&existing], &Sh::write("new", &tmp));
         ok(&r, "write a temporary sibling of a granted file");
-        let r = server.exec(&sid, &[], &[&existing], &Sh::rename(&tmp, &existing));
+        let rename = if cfg!(windows) {
+            // Diagnostic: the ACLs as the sandboxed process sees them, then the rename.
+            format!("icacls {} & icacls {} & {}", existing.display(), tmp.display(), Sh::rename(&tmp, &existing))
+        } else {
+            Sh::rename(&tmp, &existing)
+        };
+        let r = server.exec(&sid, &[], &[&existing], &rename);
         assert_eq!(code(&r), 0, "{mode}: rename over a granted file: {r}\n{}", acls(&[&out, &existing, &tmp]));
         assert_eq!(read(&existing), "new", "{mode}");
         assert!(!tmp.exists(), "{mode}");
