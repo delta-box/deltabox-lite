@@ -489,15 +489,16 @@ mod tests {
 
     #[test]
     fn fs_grants_add_exact_paths_and_write_implies_read() {
+        // Temporary directories rather than `/usr/bin`, so the test also runs on Windows.
         let dir = std::env::temp_dir().join(format!("dbx-grant-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("sdk")).unwrap();
         let real = std::fs::canonicalize(&dir).unwrap();
         let mut policy = approving();
         policy
-            .apply_fs_grants(&[PathBuf::from("/usr/bin")], &[dir.join("cache/new")])
+            .apply_fs_grants(&[dir.join("sdk")], &[dir.join("cache").join("new")])
             .unwrap();
-        assert!(policy.filesystem.read.contains(&PathBuf::from("/usr/bin")));
-        let want = real.join("cache/new");
+        assert!(policy.filesystem.read.contains(&real.join("sdk")));
+        let want = real.join("cache").join("new");
         assert!(policy.filesystem.write.contains(&want));
         assert!(policy.filesystem.read.contains(&want));
         // Only the requested paths were added.
