@@ -1172,3 +1172,118 @@ fn read_write_profile_widens_host_access_but_keeps_protected_denies() {
         .unwrap();
     assert_ok(&stop);
 }
+
+/// Per-command filesystem grants through the real Linux FUSE route (the default
+/// `auto` mode): an rx grant reads, an rwx grant writes, an ungranted sibling
+/// stays blocked, and a session that did not opt in rejects grants.
+#[test]
+fn fs_grants_open_only_the_named_paths_through_the_cli() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let runtime = tempfile::tempdir().unwrap();
+    // The Linux backend always lets commands read `/tmp`, so the directories
+    // under test live under the build directory instead.
+    let base = std::fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"))
+        .unwrap()
+        .join("fs-grant-cli-tests");
+    std::fs::create_dir_all(&base).unwrap();
+    let readable = tempfile::tempdir_in(&base).unwrap();
+    let writable = tempfile::tempdir_in(&base).unwrap();
+    let ungranted = tempfile::tempdir_in(&base).unwrap();
+    std::fs::write(readable.path().join("sdk.txt"), "sdk\n").unwrap();
+    std::fs::write(ungranted.path().join("other.txt"), "other\n").unwrap();
+
+    let policy = |name: &str, approval: bool| {
+        let file = state.path().join(name);
+        std::fs::write(
+            &file,
+            format!(
+                "[filesystem]\nread = [\".\", \"/usr\", \"/bin\", \"/lib\", \"/lib64\", \"/etc\", \"/run\"]\nwrite = [\".\"]\ndeny = [\".env\", \".ssh\"]\nallow_approval = {approval}\n"
+            ),
+        )
+        .unwrap();
+        file
+    };
+    let start = |policy: &Path| -> String {
+        let output = Command::new(env!("CARGO_BIN_EXE_deltabox"))
+            .args(["session", "start", project.path().to_str().unwrap()])
+            .args(["--fs-mode", "cbcow-through", "--require-fs-mode", "--policy"])
+            .arg(policy)
+            .current_dir(project.path())
+            .env("DELTABOX_STATE_DIR", state.path())
+            .env("XDG_RUNTIME_DIR", runtime.path())
+            .output()
+            .unwrap();
+        assert_ok(&output);
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    };
+    let exec = |session: &str, flags: &[(&str, &Path)], script: &str| -> Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_deltabox"));
+        command
+            .args(["exec", session, "--project"])
+            .arg(project.path());
+        for (flag, path) in flags {
+            command.arg(flag).arg(path);
+        }
+        command
+            .args(["--", "sh", "-c", script])
+            .current_dir(project.path())
+            .env("DELTABOX_STATE_DIR", state.path())
+            .env("XDG_RUNTIME_DIR", runtime.path())
+            .output()
+            .unwrap()
+    };
+    let stop = |session: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_deltabox"))
+            .args(["session", "stop", session, "--project"])
+            .arg(project.path())
+            .current_dir(project.path())
+            .env("DELTABOX_STATE_DIR", state.path())
+            .env("XDG_RUNTIME_DIR", runtime.path())
+            .output()
+            .unwrap();
+        assert_ok(&output);
+    };
+    let code = |output: &Output| -> i64 {
+        serde_json::from_slice::<Value>(&output.stdout).map_or(-1, |v| v["exit_code"].as_i64().unwrap_or(-1))
+    };
+
+    // A session that did not opt in rejects grants.
+    let closed = start(&policy("closed.toml", false));
+    let rejected = exec(
+        &closed,
+        &[("--fs-read-allow", readable.path())],
+        "true",
+    );
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("disabled by session policy"));
+    stop(&closed);
+
+    let session = start(&policy("open.toml", true));
+    let sdk = readable.path().join("sdk.txt");
+    let cat = format!("cat '{}'", sdk.display());
+    assert_ne!(code(&exec(&session, &[], &cat)), 0, "an ungranted path must be blocked");
+    let read = exec(&session, &[("--fs-read-allow", readable.path())], &cat);
+    assert_eq!(code(&read), 0, "an rx grant must be readable: {}", String::from_utf8_lossy(&read.stdout));
+    let write_rx = format!("printf x > '{}'", readable.path().join("w.txt").display());
+    assert_ne!(
+        code(&exec(&session, &[("--fs-read-allow", readable.path())], &write_rx)),
+        0,
+        "an rx grant must not be writable"
+    );
+    let write = format!("printf ok > '{}'", writable.path().join("out.txt").display());
+    assert_eq!(code(&exec(&session, &[("--fs-write-allow", writable.path())], &write)), 0);
+    assert_eq!(std::fs::read_to_string(writable.path().join("out.txt")).unwrap(), "ok");
+    let other = format!("cat '{}'", ungranted.path().join("other.txt").display());
+    assert_ne!(
+        code(&exec(&session, &[("--fs-read-allow", readable.path())], &other)),
+        0,
+        "an ungranted sibling must stay blocked"
+    );
+    // A grant never persists: without the flag the path is blocked again.
+    assert_ne!(code(&exec(&session, &[], &cat)), 0);
+    stop(&session);
+}

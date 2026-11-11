@@ -58,9 +58,19 @@ Rules:
   executable system paths (`/usr`, `/bin`), so an rx grant lets a command run
   binaries under it.
 - **Opt-in.** Without `allow_approval = true` any grant is rejected.
-- **Backend support.** Enforced on Linux. macOS (`cbcow-*`, Seatbelt) and
-  Windows reject grants with `unsupported` until they are implemented, and
-  unsandboxed (`trusted`/`none`) execution rejects them too.
+- **Backend support.**
+  - **Linux** (FUSE `cbcow-*` modes and the durable copy mode): enforced and
+    covered by end-to-end tests.
+  - **macOS** (`cbcow-through`, `cbcow-private`, Seatbelt): the grants become
+    Seatbelt `file-read*` / `file-write*` rules for the exact, symlink-resolved
+    path (so `/tmp/x` is granted as `/private/tmp/x`). Compile-checked for
+    `aarch64-apple-darwin` but **not yet run on a Mac**.
+  - **Windows** (MXC): rejected with `unsupported`. Write grants are reserved on
+    purpose, because a write root outside the project view would escape the undo
+    engine; read grants additionally need Windows path normalization (grants are
+    resolved with `canonicalize`, which yields `\\?\` paths) and testing against
+    the PSEC rules on a Windows host.
+  - Unsandboxed (`trusted`/`none`) execution rejects grants on every platform.
 
 The Linux backend always lets commands read `/tmp`, so a read grant under `/tmp`
 adds nothing there.
