@@ -4,7 +4,9 @@
 //!
 //! An rwx grant is a directory tree: a command can create, write, rename and
 //! delete files under it, including the atomic "write a temporary sibling and
-//! rename it over the target" pattern. A grant on a file, or on a path that
+//! rename it over the target" pattern. Exception: on Windows, PSEC grants write
+//! access without DELETE, so files can be created and overwritten but not
+//! deleted, renamed or moved; the tests assert that so a change is noticed. A grant on a file, or on a path that
 //! does not exist yet, opens its directory (created first if missing).
 //!
 //! Every check looks at the real host disk, not just the exit code.
@@ -264,25 +266,37 @@ fn write_grants_can_create_rename_and_delete_files() {
         ok(&r, "mkdir and create inside it");
         assert_eq!(read(&sub.join("b.txt")), "x", "{mode}");
 
-        // 5. Atomic replace through a temporary sibling, granted on the file:
-        //    the write and the rename are separate execs so a failure says which.
+        // 5. Atomic replace through a temporary sibling, granted on the file.
         let existing = out.join("existing.txt");
         let tmp = out.join("existing.tmp");
         let r = server.exec(&sid, &[], &[&existing], &Sh::write("new", &tmp));
         ok(&r, "write a temporary sibling of a granted file");
-        // On Windows both files already exist, so this needs the backend to
-        // grant existing entries, not just the directory.
         let r = server.exec(&sid, &[], &[&existing], &Sh::rename(&tmp, &existing));
-        assert_eq!(code(&r), 0, "{mode}: rename over a granted file: {r}\n{}", acls(&[&out, &existing, &tmp]));
-        assert_eq!(read(&existing), "new", "{mode}");
-        assert!(!tmp.exists(), "{mode}");
-
-        // 6. Delete and rename.
         let renamed = out.join("renamed.txt");
-        let r = server.exec(&sid, &[], &[&out], &Sh::and(&Sh::remove(&out.join("new.txt")), &Sh::rename(&existing, &renamed)));
-        ok(&r, "delete and rename");
-        assert!(!out.join("new.txt").exists(), "{mode}");
-        assert_eq!(read(&renamed), "new", "{mode}");
+        if cfg!(windows) {
+            // PSEC grants write access without DELETE, so a file cannot be
+            // deleted, renamed or moved under a grant; overwriting in place
+            // works. Assert today's behavior so a change is noticed.
+            assert_ne!(code(&r), 0, "{mode}: PSEC now allows rename; update docs and this test: {r}");
+            assert_eq!(read(&existing), "old", "{mode}");
+            let r = server.exec(&sid, &[], &[&out], &format!("copy /y {} {}", tmp.display(), existing.display()));
+            ok(&r, "overwrite a host file in place");
+            assert_eq!(read(&existing), "new", "{mode}");
+            let r = server.exec(&sid, &[], &[&out], &Sh::remove(&out.join("new.txt")));
+            assert_ne!(code(&r), 0, "{mode}: PSEC now allows delete; update docs and this test: {r}");
+            assert!(out.join("new.txt").exists(), "{mode}");
+            std::fs::rename(&existing, &renamed).unwrap();
+        } else {
+            ok(&r, "atomic replace of a granted file");
+            assert_eq!(read(&existing), "new", "{mode}");
+            assert!(!tmp.exists(), "{mode}");
+
+            // 6. Delete and rename.
+            let r = server.exec(&sid, &[], &[&out], &Sh::and(&Sh::remove(&out.join("new.txt")), &Sh::rename(&existing, &renamed)));
+            ok(&r, "delete and rename");
+            assert!(!out.join("new.txt").exists(), "{mode}");
+            assert_eq!(read(&renamed), "new", "{mode}");
+        }
 
         // 7. Read grant.
         let r = server.exec(&sid, &[&out], &[], &Sh::read(&renamed));
@@ -362,37 +376,3 @@ fn write_grants_stay_inside_their_directory() {
     server.finish();
 }
 
-/// Temporary probe: which file operations PSEC allows under a write grant.
-#[cfg(windows)]
-#[test]
-#[ignore = "requires native MXC PSEC; run explicitly on a supported Windows host"]
-fn zz_probe_windows_write_grant_operations() {
-    let mut server = Server::spawn();
-    let base = scratch("probe", "copy-private");
-    let out = base.join("out");
-    for name in ["host-a.txt", "host-b.txt", "host-c.txt", "host-d.txt", "host-e.txt"] {
-        std::fs::write(out.join(name), "host").unwrap();
-    }
-    let sid = server.start("copy-private", true);
-    let p = |name: &str| out.join(name).display().to_string();
-    let probes = [
-        ("append to host file", format!("echo x>>{}", p("host-a.txt"))),
-        ("overwrite host file", format!("echo x>{}", p("host-b.txt"))),
-        ("del host file", format!("del {}", p("host-c.txt"))),
-        ("ren host file", format!("ren {} renamed-d.txt", p("host-d.txt"))),
-        ("new then move over new", format!("echo 1>{} && echo 2>{} && move /y {} {}", p("n1.txt"), p("n2.txt"), p("n1.txt"), p("n2.txt"))),
-        ("new then move to fresh name", format!("echo 1>{} && move /y {} {}", p("n3.txt"), p("n3.txt"), p("n4.txt"))),
-        ("new then move over host", format!("echo 1>{} && move /y {} {}", p("n5.txt"), p("n5.txt"), p("host-e.txt"))),
-        ("new then copy over host", format!("echo 1>{} && copy /y {} {}", p("n6.txt"), p("n6.txt"), p("host-e.txt"))),
-        ("del sandbox file from earlier exec", format!("del {}", p("n2.txt"))),
-        ("mkdir", format!("mkdir {}", p("d1"))),
-        ("rmdir empty", format!("rmdir {}", p("d1"))),
-    ];
-    let mut report = Vec::new();
-    for (what, line) in probes {
-        let r = server.exec(&sid, &[], &[&out], &line);
-        report.push(format!("{what}: exit={} stderr={:?}", code(&r), r["result"]["stderr"]));
-    }
-    server.stop(&sid);
-    panic!("PROBE REPORT\n{}", report.join("\n"));
-}

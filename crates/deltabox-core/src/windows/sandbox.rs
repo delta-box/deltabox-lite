@@ -274,41 +274,6 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
     for path in &granted_write {
         writable_roots.push(unicode(path)?);
     }
-    // PSEC adds an inheritable ACE to each granted directory and relies on
-    // automatic propagation, which never reaches a child whose DACL does not
-    // inherit (seen on hosted runners, where every file carries explicit ACEs).
-    // The command could then create files but not change, rename or delete any
-    // that already exist. Grant existing entries explicitly as well, skipping
-    // names that match a deny pattern, and refuse trees too large to list.
-    const MAX_GRANTED_ENTRIES: usize = 10_000;
-    let deny: Vec<String> = policy
-        .filesystem
-        .deny
-        .iter()
-        .map(|pattern| pattern.replace('\\', "/").to_lowercase())
-        .collect();
-    let mut granted_entries = 0usize;
-    for root in &granted_write {
-        let entries = walkdir::WalkDir::new(root)
-            .min_depth(1)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|entry| {
-                let normalized = entry.path().to_string_lossy().replace('\\', "/").to_lowercase();
-                !deny.iter().any(|pattern| crate::policy::deny_matches(pattern, &normalized))
-            });
-        for entry in entries {
-            let entry = entry.map_err(|e| Error::Backend(e.to_string()))?;
-            granted_entries += 1;
-            if granted_entries > MAX_GRANTED_ENTRIES {
-                return Err(Error::InvalidPolicy(format!(
-                    "filesystem grant {}: more than {MAX_GRANTED_ENTRIES} existing entries to grant on Windows; grant a narrower directory",
-                    root.display()
-                )));
-            }
-            writable_roots.push(unicode(entry.path())?);
-        }
-    }
     // PSEC's root grant on a WinFsp network volume does not propagate to
     // directories that already exist. New directories inherit it, so grant
     // each existing view directory before launch, without exposing backing paths.

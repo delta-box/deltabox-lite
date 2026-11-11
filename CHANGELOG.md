@@ -19,9 +19,9 @@ Unreleased section below into the new version's section.
   renames on every platform.
 - Write grants on the root, a top-level directory or the home directory itself
   are rejected as too broad.
-- Windows: existing files under a write grant can be changed, renamed and
-  deleted. PSEC's inherited ACE never reached files whose ACL does not
-  inherit, so existing entries are now granted explicitly (up to 10,000).
+- Documented a Windows limit: PSEC grants write access without DELETE, so
+  under a write grant files can be created and overwritten but not deleted,
+  renamed or moved.
 - macOS: `/etc`, `/var` and `/tmp` (aliases into `/private`) are refused as
   top-level directories for write grants.
 

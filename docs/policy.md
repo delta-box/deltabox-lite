@@ -93,11 +93,12 @@ Rules:
     case-insensitively, so `C:\Users\me\.SSH` is still denied. Standing extra
     write roots in the policy file stay reserved on Windows; a per-command rwx
     grant is the explicit, non-rollback-able exception, as on the other platforms.
-    PSEC grants a directory with an inheritable ACE, which never reaches files
-    whose ACL does not inherit, so the existing entries under an rwx grant are
-    granted explicitly too (deny-pattern names are skipped). A grant over a tree
-    with more than 10,000 existing entries is rejected; grant a narrower
-    directory.
+    **Limit:** PSEC grants write access without the DELETE right, so under an
+    rwx grant a command can create, write, append, overwrite (`copy /y`) and
+    create or remove empty directories, but cannot delete, rename or move a
+    file, including one it created. Tools that replace files by renaming a
+    temporary file over them fail there. This is PSEC's file policy, not
+    something deltabox-lite can widen; the Windows tests assert it.
     The end-to-end tests need PSEC and WinFsp, so they are ignored by default
     and run in CI on windows-11-arm.
   - `crates/deltabox-cli/tests/fs_grants.rs` checks the same cases on every
