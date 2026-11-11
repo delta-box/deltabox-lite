@@ -92,7 +92,7 @@ struct Server {
     root: tempfile::TempDir,
     project: PathBuf,
     child: Child,
-    input: ChildStdin,
+    input: Option<ChildStdin>,
     output: BufReader<ChildStdout>,
     next_id: u64,
 }
@@ -114,13 +114,14 @@ impl Server {
             .unwrap();
         let input = child.stdin.take().unwrap();
         let output = BufReader::new(child.stdout.take().unwrap());
-        Self { root, project, child, input, output, next_id: 0 }
+        Self { root, project, child, input: Some(input), output, next_id: 0 }
     }
 
     fn call(&mut self, method: &str, params: Value) -> Value {
         self.next_id += 1;
-        writeln!(self.input, "{}", json!({"id": self.next_id, "method": method, "params": params})).unwrap();
-        self.input.flush().unwrap();
+        let input = self.input.as_mut().unwrap();
+        writeln!(input, "{}", json!({"id": self.next_id, "method": method, "params": params})).unwrap();
+        input.flush().unwrap();
         let mut line = String::new();
         self.output.read_line(&mut line).unwrap();
         serde_json::from_str(&line).unwrap_or_else(|e| panic!("invalid RPC response {line:?}: {e}"))
@@ -155,10 +156,20 @@ impl Server {
         self.call("session.exec", params)
     }
 
-    fn finish(self) {
-        let Server { input, mut child, .. } = self;
-        drop(input);
-        assert!(child.wait().unwrap().success());
+    fn finish(mut self) {
+        drop(self.input.take());
+        assert!(self.child.wait().unwrap().success());
+    }
+}
+
+/// A failed assertion must not leave `deltabox serve` and its sessions running:
+/// on macOS a leftover cbcow session stalls the next one's FSEvents start.
+impl Drop for Server {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
     }
 }
 

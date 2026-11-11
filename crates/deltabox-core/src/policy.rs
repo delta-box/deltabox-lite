@@ -359,16 +359,22 @@ impl Policy {
     /// (`/home`, `/etc`, `C:\Users`) and the user's home directory itself.
     fn check_grant_scope(&self, path: &Path, dir: &Path) -> Result<()> {
         let bad = grant_error(path);
-        let depth = dir
+        let parts: Vec<_> = dir
             .components()
-            .filter(|c| matches!(c, std::path::Component::Normal(_)))
-            .count();
-        if depth == 0 {
+            .filter_map(|c| match c {
+                std::path::Component::Normal(part) => Some(part),
+                _ => None,
+            })
+            .collect();
+        if parts.is_empty() {
             return Err(bad(
                 "the filesystem root cannot be granted; use the read-write execution profile",
             ));
         }
-        if depth == 1 {
+        // On macOS `/etc`, `/var` and `/tmp` are symlinks into `/private`, so
+        // the resolved `/private/etc` is still a top-level directory.
+        let aliased = cfg!(target_os = "macos") && parts[0] == "private";
+        if parts.len() - usize::from(aliased) <= 1 {
             return Err(bad(&format!(
                 "{} is too broad to grant for writing; grant a directory inside it",
                 dir.display()
