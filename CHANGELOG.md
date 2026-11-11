@@ -15,9 +15,12 @@ Unreleased section below into the new version's section.
   `fs_write_allow` (read, write, execute) on `session.exec`, `--fs-read-allow` /
   `--fs-write-allow` on `deltabox exec`, and `fsReadAllow` / `fsWriteAllow` in
   the Node binding. Exact absolute paths only, opt-in with
-  `filesystem.allow_approval = true`, never persisted. Same semantics on Linux,
-  macOS (Seatbelt) and Windows (MXC PSEC); macOS and Windows are compile-checked
-  and not yet run on those hosts.
+  `filesystem.allow_approval = true`, never persisted. Same semantics on Linux
+  (Sandlock), macOS (Seatbelt) and Windows (MXC PSEC: rx grants become
+  `readonly_paths`, rwx grants `readwrite_paths`), covered by end-to-end tests
+  on each platform. Grants are symlink-resolved and rejected when they match a
+  deny pattern, including Windows spellings such as `C:\Users\me\.SSH`. Writes
+  under an rwx grant are outside the workspace and cannot be rolled back.
 
 ## [0.3.0] - 2026-11-10
 
