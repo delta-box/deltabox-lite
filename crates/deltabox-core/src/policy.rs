@@ -26,15 +26,27 @@ pub struct Policy {
     pub limits: LimitsPolicy,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FilesystemPolicy {
     pub read: Vec<PathBuf>,
     pub write: Vec<PathBuf>,
     pub deny: Vec<String>,
     /// Permit a trusted orchestrator to add exact external paths for one exec
-    /// (`fs_read_allow` / `fs_write_allow`). Default: false.
+    /// (`fs_read_allow` / `fs_write_allow`). Default: true; set false to forbid
+    /// any per-exec widening.
     pub allow_approval: bool,
+}
+
+impl Default for FilesystemPolicy {
+    fn default() -> Self {
+        Self {
+            read: Vec::new(),
+            write: Vec::new(),
+            deny: Vec::new(),
+            allow_approval: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -177,7 +189,7 @@ impl Policy {
                     .iter()
                     .map(|s| s.to_string())
                     .collect(),
-                allow_approval: false,
+                allow_approval: true,
             },
             network: NetworkPolicy {
                 mode: NetworkMode::AllowAudit,
@@ -472,14 +484,22 @@ mod tests {
     }
 
     fn approving() -> Policy {
-        let mut policy = Policy::default_agent();
-        policy.filesystem.allow_approval = true;
-        policy
+        Policy::default_agent()
     }
 
     #[test]
-    fn fs_grants_require_session_opt_in() {
+    fn fs_grants_are_allowed_by_default() {
+        assert!(Policy::default_agent().filesystem.allow_approval);
+        let parsed: Policy = toml::from_str("[filesystem]\nread = [\".\"]\n").unwrap();
+        assert!(parsed.filesystem.allow_approval);
+        let empty: Policy = toml::from_str("").unwrap();
+        assert!(empty.filesystem.allow_approval);
+    }
+
+    #[test]
+    fn fs_grants_can_be_disabled_by_session_policy() {
         let mut policy = Policy::default_agent();
+        policy.filesystem.allow_approval = false;
         let err = policy
             .apply_fs_grants(&[PathBuf::from("/usr")], &[])
             .unwrap_err();

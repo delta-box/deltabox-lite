@@ -24,12 +24,13 @@ dereferences such a link and therefore cannot expose its target bytes.
 
 ### Execution-scoped filesystem grants
 
-Like network grants, a command can request exact extra paths without changing
-the session. The session must opt in:
+A command can request exact extra paths without changing the session. This is
+on by default; a session that must never widen beyond its standing policy opts
+out:
 
 ```toml
 [filesystem]
-allow_approval = true
+allow_approval = false
 ```
 
 | Field | Access | Rollback |
@@ -57,7 +58,7 @@ Rules:
 - **Read includes execute.** The backends' `read` list already carries
   executable system paths (`/usr`, `/bin`), so an rx grant lets a command run
   binaries under it.
-- **Opt-in.** Without `allow_approval = true` any grant is rejected.
+- **On by default.** With `allow_approval = false` any grant is rejected.
 - **Backend support.** The same rx/rwx semantics on every platform:
   - **Linux** (FUSE `cbcow-*` modes and the durable copy mode): grants become
     Sandlock read/write rules. Covered by end-to-end tests.

@@ -9,6 +9,13 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+### Changed
+
+- `filesystem.allow_approval` now defaults to `true`, so execution-scoped
+  filesystem grants work without a policy file. Set it to `false` to reject
+  every grant. The caller still decides which paths to request; grants keep
+  their exact-path, deny-pattern and no-persistence rules.
+
 ## [0.4.0] - 2026-11-11
 
 ### Added

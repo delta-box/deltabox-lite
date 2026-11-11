@@ -394,8 +394,8 @@ deltabox exec "$SESSION" --project /abs/path/my-project \
 
 For narrower access, a command can request exact paths instead of the whole
 host: `--fs-read-allow` (read and execute) and `--fs-write-allow` (read, write,
-execute; not rollback-able), once the session policy sets
-`filesystem.allow_approval = true`. See the [policy reference](docs/policy.md).
+execute; not rollback-able). Set `filesystem.allow_approval = false` in the
+session policy to forbid them. See the [policy reference](docs/policy.md).
 
 Workspace changes stay visible to diff, commit, and abort under either profile.
 Linux FUSE and private-workspace modes deny direct access to the backing project;
