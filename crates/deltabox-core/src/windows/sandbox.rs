@@ -94,6 +94,11 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
             "Windows read-write execution profiles are reserved; use workspace-write".into(),
         ));
     }
+    if !(params.fs_read_allow.is_empty() && params.fs_write_allow.is_empty()) {
+        return Err(Error::Unsupported(
+            "filesystem grants are not supported on this backend yet".into()
+        ));
+    }
     // Network: this command's grants, then the proxy where one is needed. The
     // policy it leaves behind names only what PSEC rules can express.
     let mut policy = manifest.policy.clone();
@@ -512,6 +517,8 @@ pub fn check_network_policy(policy: &Policy) -> Result<()> {
 pub fn execute_trusted(manifest: &Manifest, params: ExecParams) -> Result<ExecResult> {
     if params.execution_profile != ExecutionProfile::WorkspaceWrite
         || !params.network_allow.is_empty()
+        || !params.fs_read_allow.is_empty()
+        || !params.fs_write_allow.is_empty()
     {
         return Err(Error::Unsupported(
             "trusted Windows execution does not support command grants".into(),

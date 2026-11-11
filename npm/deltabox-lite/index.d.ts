@@ -143,6 +143,16 @@ export interface NativeDeltaboxInstance {
      * among executions that are still running.
      */
     execId?: string,
+    /**
+     * Exact absolute paths this command may read and execute (rx). Requires
+     * `filesystem.allow_approval` in the session policy; never persisted.
+     */
+    fsReadAllow?: string[],
+    /**
+     * Exact absolute paths this command may read, write and execute (rwx).
+     * Writes outside the workspace cannot be rolled back.
+     */
+    fsWriteAllow?: string[],
   ): Promise<NativeExecResult>
   /**
    * End the command started by `exec` with this `execId`: its whole process

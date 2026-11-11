@@ -22,6 +22,49 @@ Supervisor-side reads canonicalize the final target. A symlink that escapes the
 working tree, is absolute, or resolves to a denied path is rejected. Diff never
 dereferences such a link and therefore cannot expose its target bytes.
 
+### Execution-scoped filesystem grants
+
+Like network grants, a command can request exact extra paths without changing
+the session. The session must opt in:
+
+```toml
+[filesystem]
+allow_approval = true
+```
+
+| Field | Access | Rollback |
+|---|---|---|
+| `fs_read_allow` | read and execute (rx) of one exact path | nothing is written |
+| `fs_write_allow` | read, write and execute (rwx) of one exact path | **not rollback-able**: it is outside the workspace |
+
+The CLI flags are `--fs-read-allow PATH` and `--fs-write-allow PATH`
+(repeatable); `session.exec` takes `fs_read_allow` and `fs_write_allow`; the
+Node binding takes `fsReadAllow` and `fsWriteAllow` after `execId`.
+
+Rules:
+
+- **Exact, absolute paths.** Relative paths, `..`, wildcards, and the
+  filesystem root are rejected (use the `read-write` execution profile for
+  full host access). At most 32 grants per execution.
+- **Resolved before use.** Symlinks are resolved and the grant names the real
+  target. A write grant may name a path that does not exist yet (a fresh cache
+  directory) when an ancestor exists.
+- **Deny wins.** A path matching a `filesystem.deny` pattern is rejected, and
+  the protected deny set (engine state, the backing project, helper endpoints)
+  still wins at the backend even under a grant.
+- **No persistence.** Grants apply to a cloned policy for that one command.
+- **Write implies read.** An rwx grant also adds the path to the read list.
+- **Read includes execute.** The backends' `read` list already carries
+  executable system paths (`/usr`, `/bin`), so an rx grant lets a command run
+  binaries under it.
+- **Opt-in.** Without `allow_approval = true` any grant is rejected.
+- **Backend support.** Enforced on Linux. macOS (`cbcow-*`, Seatbelt) and
+  Windows reject grants with `unsupported` until they are implemented, and
+  unsandboxed (`trusted`/`none`) execution rejects them too.
+
+The Linux backend always lets commands read `/tmp`, so a read grant under `/tmp`
+adds nothing there.
+
 `/dev/null` is writable. On Linux, `/dev/full` is writable as a device and
 returns `ENOSPC`, preserving the behavior expected by shells and developer
 tools; macOS does not provide `/dev/full`.

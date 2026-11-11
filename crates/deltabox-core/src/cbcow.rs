@@ -482,7 +482,14 @@ impl Manager {
             label,
             execution_profile,
             network_allow,
+            fs_read_allow,
+            fs_write_allow,
         } = params;
+        if !(fs_read_allow.is_empty() && fs_write_allow.is_empty()) {
+            return Err(Error::Unsupported(
+                "filesystem grants are not supported on this backend yet".into()
+            ));
+        }
         if self.execution_mode == CommandExecutionMode::Trusted && !network_allow.is_empty() {
             return Err(Error::Unsupported(
                 "network grants require deltabox isolation".into(),

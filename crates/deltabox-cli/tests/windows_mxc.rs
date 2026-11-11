@@ -207,6 +207,8 @@ fn cancelling_an_exec_kills_the_sandboxed_command_tree() {
         label: None,
         execution_profile: Default::default(),
         network_allow: Vec::new(),
+        fs_read_allow: Vec::new(),
+        fs_write_allow: Vec::new(),
     });
     canceller.join().unwrap();
     assert!(

@@ -32,6 +32,9 @@ pub struct FilesystemPolicy {
     pub read: Vec<PathBuf>,
     pub write: Vec<PathBuf>,
     pub deny: Vec<String>,
+    /// Permit a trusted orchestrator to add exact external paths for one exec
+    /// (`fs_read_allow` / `fs_write_allow`). Default: false.
+    pub allow_approval: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -174,6 +177,7 @@ impl Policy {
                     .iter()
                     .map(|s| s.to_string())
                     .collect(),
+                allow_approval: false,
             },
             network: NetworkPolicy {
                 mode: NetworkMode::AllowAudit,
@@ -228,6 +232,101 @@ impl Policy {
             }
         }
         Ok(())
+    }
+
+    /// Add exact external paths for one command (`fs_read_allow` is rx,
+    /// `fs_write_allow` is rwx). Additive and never persisted: callers apply
+    /// it to a cloned policy. Protected denies (engine state, the backing
+    /// project, helper endpoints) are handed to the backend separately and
+    /// keep winning over these grants.
+    pub fn apply_fs_grants(&mut self, read: &[PathBuf], write: &[PathBuf]) -> Result<()> {
+        if read.is_empty() && write.is_empty() {
+            return Ok(());
+        }
+        if !self.filesystem.allow_approval {
+            return Err(Error::InvalidPolicy(
+                "filesystem approvals are disabled by session policy".into(),
+            ));
+        }
+        if read.len() + write.len() > 32 {
+            return Err(Error::InvalidPolicy(
+                "at most 32 filesystem grants per exec".into(),
+            ));
+        }
+        let read = read
+            .iter()
+            .map(|p| self.checked_grant(p, false))
+            .collect::<Result<Vec<_>>>()?;
+        let write = write
+            .iter()
+            .map(|p| self.checked_grant(p, true))
+            .collect::<Result<Vec<_>>>()?;
+        for path in read {
+            if !self.filesystem.read.contains(&path) {
+                self.filesystem.read.push(path);
+            }
+        }
+        for path in write {
+            // rwx implies rx.
+            if !self.filesystem.read.contains(&path) {
+                self.filesystem.read.push(path.clone());
+            }
+            if !self.filesystem.write.contains(&path) {
+                self.filesystem.write.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    fn checked_grant(&self, path: &Path, allow_missing_leaf: bool) -> Result<PathBuf> {
+        let bad = |why: &str| Error::InvalidPolicy(format!("filesystem grant {}: {why}", path.display()));
+        let text = path.to_string_lossy();
+        if text.is_empty() || text.chars().any(|c| c.is_control()) {
+            return Err(bad("must be a non-empty path without control characters"));
+        }
+        if !path.is_absolute() {
+            return Err(bad("must be absolute"));
+        }
+        if path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(bad("must not contain `..`"));
+        }
+        if text.contains('*') || text.contains('?') {
+            return Err(bad("wildcards are not allowed; grant an exact path"));
+        }
+        // Resolve symlinks so a grant names the real target. For a write grant
+        // the final components may not exist yet (a fresh cache directory):
+        // resolve the deepest existing ancestor and keep the remainder.
+        let mut existing = path.to_path_buf();
+        let mut rest: Vec<std::ffi::OsString> = Vec::new();
+        let resolved = loop {
+            match std::fs::canonicalize(&existing) {
+                Ok(real) => break real,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && allow_missing_leaf => {
+                    let Some(name) = existing.file_name().map(|n| n.to_os_string()) else {
+                        return Err(bad("does not exist"));
+                    };
+                    rest.push(name);
+                    if !existing.pop() {
+                        return Err(bad("does not exist"));
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(bad("does not exist"));
+                }
+                Err(e) => return Err(bad(&e.to_string())),
+            }
+        };
+        let resolved = rest.iter().rev().fold(resolved, |acc, part| acc.join(part));
+        if resolved.parent().is_none() {
+            return Err(bad("the filesystem root cannot be granted; use the read-write execution profile"));
+        }
+        if self.path_is_denied(&resolved) || self.path_is_denied(path) {
+            return Err(bad("matches a protected deny pattern"));
+        }
+        Ok(resolved)
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -351,6 +450,72 @@ mod tests {
         assert!(policy.path_is_denied(Path::new("/Users/me/.ssh/id_rsa")));
         assert!(!policy.path_is_denied(Path::new("/proj/src/main.rs")));
         assert!(!policy.path_is_denied(Path::new("/proj/node_modules/x/index.js")));
+    }
+
+    fn approving() -> Policy {
+        let mut policy = Policy::default_agent();
+        policy.filesystem.allow_approval = true;
+        policy
+    }
+
+    #[test]
+    fn fs_grants_require_session_opt_in() {
+        let mut policy = Policy::default_agent();
+        let err = policy
+            .apply_fs_grants(&[PathBuf::from("/usr")], &[])
+            .unwrap_err();
+        assert!(err.to_string().contains("disabled by session policy"));
+        assert!(policy.apply_fs_grants(&[], &[]).is_ok());
+    }
+
+    #[test]
+    fn fs_grants_add_exact_paths_and_write_implies_read() {
+        let dir = std::env::temp_dir().join(format!("dbx-grant-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = std::fs::canonicalize(&dir).unwrap();
+        let mut policy = approving();
+        policy
+            .apply_fs_grants(&[PathBuf::from("/usr/bin")], &[dir.join("cache/new")])
+            .unwrap();
+        assert!(policy.filesystem.read.contains(&PathBuf::from("/usr/bin")));
+        let want = real.join("cache/new");
+        assert!(policy.filesystem.write.contains(&want));
+        assert!(policy.filesystem.read.contains(&want));
+        // Only the requested paths were added.
+        assert!(!policy.filesystem.write.contains(&PathBuf::from("/")));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn fs_grants_reject_unsafe_paths() {
+        let mut policy = approving();
+        for bad in ["relative/path", "/usr/../etc", "/usr/*", "/"] {
+            assert!(
+                policy.apply_fs_grants(&[PathBuf::from(bad)], &[]).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(policy
+            .apply_fs_grants(&[PathBuf::from("/definitely/missing/path")], &[])
+            .is_err());
+        assert!(policy
+            .apply_fs_grants(&[PathBuf::from("/definitely/missing/path")], &[])
+            .is_err());
+        let many: Vec<PathBuf> = (0..33).map(|_| PathBuf::from("/usr")).collect();
+        assert!(policy.apply_fs_grants(&many, &[]).is_err());
+        // Failures leave the policy unchanged.
+        assert_eq!(policy.filesystem.read, Policy::default_agent().filesystem.read);
+    }
+
+    #[test]
+    fn fs_grants_reject_protected_deny_matches() {
+        let dir = std::env::temp_dir().join(format!("dbx-deny-{}", std::process::id()));
+        let ssh = dir.join(".ssh");
+        std::fs::create_dir_all(&ssh).unwrap();
+        let mut policy = approving();
+        assert!(policy.apply_fs_grants(&[ssh.clone()], &[]).is_err());
+        assert!(policy.apply_fs_grants(&[], &[ssh.join("new")]).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

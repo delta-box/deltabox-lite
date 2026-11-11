@@ -175,6 +175,14 @@ struct ExecArgs {
     /// Filesystem breadth for this command only: workspace-write or read-write.
     #[arg(long, value_parser = parse_execution_profile)]
     execution_profile: Option<ExecutionProfile>,
+    /// Exact absolute path this command may read and execute (repeatable).
+    /// Requires `filesystem.allow_approval` in the session policy.
+    #[arg(long = "fs-read-allow")]
+    fs_read_allow: Vec<PathBuf>,
+    /// Exact absolute path this command may read, write and execute
+    /// (repeatable). Writes outside the workspace cannot be rolled back.
+    #[arg(long = "fs-write-allow")]
+    fs_write_allow: Vec<PathBuf>,
     #[arg(long)]
     env: Vec<String>,
     #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
@@ -439,6 +447,8 @@ fn main() -> anyhow::Result<()> {
                 label: args.label,
                 execution_profile: args.execution_profile.unwrap_or_default(),
                 network_allow: Vec::new(),
+                fs_read_allow: args.fs_read_allow,
+                fs_write_allow: args.fs_write_allow,
             })?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
@@ -809,6 +819,8 @@ fn run_transaction(args: RunArgs) -> anyhow::Result<i32> {
             label: args.label,
             execution_profile: Default::default(),
             network_allow: Vec::new(),
+            fs_read_allow: Vec::new(),
+            fs_write_allow: Vec::new(),
         })?;
         std::io::stdout()
             .lock()

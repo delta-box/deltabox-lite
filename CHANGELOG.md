@@ -9,6 +9,15 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+### Added
+
+- Execution-scoped filesystem grants: `fs_read_allow` (read and execute) and
+  `fs_write_allow` (read, write, execute) on `session.exec`, `--fs-read-allow` /
+  `--fs-write-allow` on `deltabox exec`, and `fsReadAllow` / `fsWriteAllow` in
+  the Node binding. Exact absolute paths only, opt-in with
+  `filesystem.allow_approval = true`, never persisted. Linux only for now;
+  macOS and Windows reject grants as `unsupported`.
+
 ## [0.3.0] - 2026-11-10
 
 ### Added

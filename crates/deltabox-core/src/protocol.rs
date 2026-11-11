@@ -97,6 +97,15 @@ pub struct ExecParams {
     /// Only accepted when the session policy enables allow_approval.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub network_allow: Vec<String>,
+    /// Exact absolute paths this command may read and execute (rx), in
+    /// addition to the session policy. Only accepted when the session policy
+    /// sets `filesystem.allow_approval`. Never persisted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fs_read_allow: Vec<PathBuf>,
+    /// Exact absolute paths this command may read, write and execute (rwx).
+    /// Writes outside the workspace cannot be rolled back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fs_write_allow: Vec<PathBuf>,
 }
 
 /// Filesystem breadth granted to one command execution.
