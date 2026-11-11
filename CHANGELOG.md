@@ -15,9 +15,9 @@ Unreleased section below into the new version's section.
   `fs_write_allow` (read, write, execute) on `session.exec`, `--fs-read-allow` /
   `--fs-write-allow` on `deltabox exec`, and `fsReadAllow` / `fsWriteAllow` in
   the Node binding. Exact absolute paths only, opt-in with
-  `filesystem.allow_approval = true`, never persisted. Enforced on Linux and
-  macOS (macOS compile-checked, not yet run on a Mac); Windows rejects grants as
-  `unsupported`.
+  `filesystem.allow_approval = true`, never persisted. Same semantics on Linux,
+  macOS (Seatbelt) and Windows (MXC PSEC); macOS and Windows are compile-checked
+  and not yet run on those hosts.
 
 ## [0.3.0] - 2026-11-10
 

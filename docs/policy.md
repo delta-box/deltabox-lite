@@ -58,18 +58,21 @@ Rules:
   executable system paths (`/usr`, `/bin`), so an rx grant lets a command run
   binaries under it.
 - **Opt-in.** Without `allow_approval = true` any grant is rejected.
-- **Backend support.**
-  - **Linux** (FUSE `cbcow-*` modes and the durable copy mode): enforced and
-    covered by end-to-end tests.
-  - **macOS** (`cbcow-through`, `cbcow-private`, Seatbelt): the grants become
-    Seatbelt `file-read*` / `file-write*` rules for the exact, symlink-resolved
-    path (so `/tmp/x` is granted as `/private/tmp/x`). Compile-checked for
-    `aarch64-apple-darwin` but **not yet run on a Mac**.
-  - **Windows** (MXC): rejected with `unsupported`. Write grants are reserved on
-    purpose, because a write root outside the project view would escape the undo
-    engine; read grants additionally need Windows path normalization (grants are
-    resolved with `canonicalize`, which yields `\\?\` paths) and testing against
-    the PSEC rules on a Windows host.
+- **Backend support.** The same rx/rwx semantics on every platform:
+  - **Linux** (FUSE `cbcow-*` modes and the durable copy mode): grants become
+    Sandlock read/write rules. Covered by end-to-end tests.
+  - **macOS** (`cbcow-through`, `cbcow-private`, Seatbelt): grants become
+    `file-read*` / `file-write*` rules for the exact, symlink-resolved path (so
+    `/tmp/x` is granted as `/private/tmp/x`). Compile-checked, not yet run on a Mac.
+  - **Windows** (MXC PSEC, all modes): rx grants become `readonly_paths` and rwx
+    grants `readwrite_paths`, as resolved host paths (the `\\?\` prefix from
+    `canonicalize` is stripped). Deny patterns are matched with `/` separators and
+    case-insensitively, so `C:\Users\me\.SSH` is still denied. Standing extra
+    write roots in the policy file stay reserved on Windows; a per-command rwx
+    grant is the explicit, non-rollback-able exception, as on the other platforms.
+    Compile-checked, with an ignored end-to-end test
+    (`cargo test -p deltabox --test windows_mxc -- --ignored`) to run on a host
+    with PSEC and WinFsp.
   - Unsandboxed (`trusted`/`none`) execution rejects grants on every platform.
 
 The Linux backend always lets commands read `/tmp`, so a read grant under `/tmp`

@@ -94,15 +94,16 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
             "Windows read-write execution profiles are reserved; use workspace-write".into(),
         ));
     }
-    if !(params.fs_read_allow.is_empty() && params.fs_write_allow.is_empty()) {
-        return Err(Error::Unsupported(
-            "filesystem grants are not supported on this backend yet".into()
-        ));
-    }
     // Network: this command's grants, then the proxy where one is needed. The
     // policy it leaves behind names only what PSEC rules can express.
     let mut policy = manifest.policy.clone();
     policy.apply_network_allow(&params.network_allow)?;
+    // Filesystem: this command's exact rx/rwx grants, resolved and checked
+    // against the deny patterns. `apply_fs_grants` appends what it adds, so the
+    // grants are the entries past the standing policy's own.
+    policy.apply_fs_grants(&params.fs_read_allow, &params.fs_write_allow)?;
+    let granted_read = policy.filesystem.read[manifest.policy.filesystem.read.len()..].to_vec();
+    let granted_write = policy.filesystem.write[manifest.policy.filesystem.write.len()..].to_vec();
     // PSEC rules express a non-loopback IP literal exactly; hostnames need
     // the proxy, and so do loopback entries, since the loopback exemption is
     // not per port. The proxy keeps them port-exact.
@@ -248,7 +249,16 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
         };
         read.push(unicode(&mapper.map_path(&path))?);
     }
-    // Extra write roots would escape the undo engine. Reserve them until their semantics are implemented.
+    // Read grants are host paths already resolved by `apply_fs_grants`; they
+    // are not mapped into the view. PSEC read access includes execute.
+    // An rwx grant is also listed as read by `apply_fs_grants`; keep it out of
+    // `readonly_paths` so a read-only rule cannot shadow its write access.
+    for path in granted_read.iter().filter(|path| !granted_write.contains(path)) {
+        read.push(unicode(path)?);
+    }
+    // Extra *standing* write roots would escape the undo engine, so they stay
+    // reserved. A per-command rwx grant is the explicit, documented exception:
+    // like on Linux and macOS, writes under it are not rollback-able.
     if manifest
         .policy
         .filesystem
@@ -261,6 +271,9 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
         ));
     }
     let mut writable_roots = vec![unicode(&view)?, unicode(&manifest.scratch)?];
+    for path in &granted_write {
+        writable_roots.push(unicode(path)?);
+    }
     // PSEC's root grant on a WinFsp network volume does not propagate to
     // directories that already exist. New directories inherit it, so grant
     // each existing view directory before launch, without exposing backing paths.

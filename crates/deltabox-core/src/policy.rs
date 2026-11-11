@@ -323,7 +323,9 @@ impl Policy {
         if resolved.parent().is_none() {
             return Err(bad("the filesystem root cannot be granted; use the read-write execution profile"));
         }
-        if self.path_is_denied(&resolved) || self.path_is_denied(path) {
+        if [&resolved, path].iter().any(|candidate| {
+            grant_is_denied(&self.filesystem.deny, &candidate.to_string_lossy(), cfg!(windows))
+        }) {
             return Err(bad("matches a protected deny pattern"));
         }
         Ok(resolved)
@@ -380,6 +382,23 @@ impl Policy {
         let s = path.to_string_lossy();
         self.filesystem.deny.iter().any(|p| deny_matches(p, &s))
     }
+}
+
+/// Deny check for a filesystem grant. The matcher splits on `/`, so Windows
+/// paths (`C:\Users\me\.ssh`, or `\\?\C:\...` from `canonicalize`) are compared
+/// with `/` separators, and case-insensitively where the filesystem is.
+fn grant_is_denied(deny: &[String], path: &str, fold_case: bool) -> bool {
+    let normalize = |value: &str| {
+        let value = value.replace('\\', "/");
+        if fold_case {
+            value.to_lowercase()
+        } else {
+            value
+        }
+    };
+    let path = normalize(path);
+    deny.iter()
+        .any(|pattern| deny_matches(&normalize(pattern), &path))
 }
 
 pub fn deny_matches(pattern: &str, path: &str) -> bool {
@@ -516,6 +535,26 @@ mod tests {
         assert!(policy.apply_fs_grants(&[ssh.clone()], &[]).is_err());
         assert!(policy.apply_fs_grants(&[], &[ssh.join("new")]).is_err());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn grant_deny_check_handles_windows_paths() {
+        let deny = Policy::default_agent().filesystem.deny;
+        for path in [
+            r"C:\Users\me\.ssh",
+            r"C:\Users\me\.ssh\config",
+            r"\\?\C:\Users\me\.SSH\id_ed25519",
+            r"D:\certs\server.PEM",
+            r"\\?\UNC\host\share\.aws",
+        ] {
+            assert!(grant_is_denied(&deny, path, true), "{path}");
+        }
+        for path in [r"C:\Program Files\Huawei\DevEco Studio\sdk", r"\\?\D:\cache\devecocli"] {
+            assert!(!grant_is_denied(&deny, path, true), "{path}");
+        }
+        // Case folding is only for case-insensitive filesystems.
+        assert!(!grant_is_denied(&deny, "/home/me/.SSH", false));
+        assert!(grant_is_denied(&deny, "/home/me/.ssh", false));
     }
 
     #[test]
