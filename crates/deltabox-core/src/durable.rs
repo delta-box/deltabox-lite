@@ -232,6 +232,14 @@ impl DurableSessionManager {
             ));
         }
         policy.apply_network_allow(&params.network_allow)?;
+        if self.execution_mode == CommandExecutionMode::Trusted
+            && !(params.fs_read_allow.is_empty() && params.fs_write_allow.is_empty())
+        {
+            return Err(Error::Unsupported(
+                "filesystem grants require deltabox isolation".into(),
+            ));
+        }
+        policy.apply_fs_grants(&params.fs_read_allow, &params.fs_write_allow)?;
         params
             .execution_profile
             .ensure_backing_project_is_deniable(&working, &self.project)?;

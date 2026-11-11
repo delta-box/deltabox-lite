@@ -482,7 +482,16 @@ impl Manager {
             label,
             execution_profile,
             network_allow,
+            fs_read_allow,
+            fs_write_allow,
         } = params;
+        if self.execution_mode == CommandExecutionMode::Trusted
+            && !(fs_read_allow.is_empty() && fs_write_allow.is_empty())
+        {
+            return Err(Error::Unsupported(
+                "filesystem grants require deltabox isolation".into(),
+            ));
+        }
         if self.execution_mode == CommandExecutionMode::Trusted && !network_allow.is_empty() {
             return Err(Error::Unsupported(
                 "network grants require deltabox isolation".into(),
@@ -548,6 +557,7 @@ impl Manager {
                 let mut policy = self.policy(&meta)?;
                 policy.apply_execution_profile(execution_profile);
                 policy.apply_network_allow(&network_allow)?;
+                policy.apply_fs_grants(&fs_read_allow, &fs_write_allow)?;
                 execution_profile
                     .ensure_backing_project_is_deniable(&record.mountpoint, &self.project)?;
                 let deny_paths: Vec<PathBuf> =

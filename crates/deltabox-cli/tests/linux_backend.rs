@@ -42,6 +42,8 @@ fn exec_sh(manager: &mut SessionManager, session_id: &str, script: &str) -> (i32
             label: None,
             execution_profile: Default::default(),
                 network_allow: Vec::new(),
+                fs_read_allow: Vec::new(),
+                fs_write_allow: Vec::new(),
         })
         .unwrap();
     (result.exit_code.unwrap_or(-1), result.stdout, result.stderr)
@@ -336,6 +338,8 @@ fn exec_cwd_and_env() {
             label: Some("cwd-env".into()),
             execution_profile: Default::default(),
                 network_allow: Vec::new(),
+                fs_read_allow: Vec::new(),
+                fs_write_allow: Vec::new(),
         })
         .unwrap();
     assert_eq!(result.exit_code, Some(0));
@@ -454,4 +458,71 @@ fn rooted_write_grant_cannot_escape_resolved_denies() {
     assert!(secret.stdout.is_empty());
 
     backend.stop_session("rooted").unwrap();
+}
+
+/// Per-command filesystem grants open exactly the named paths: rx for a read
+/// grant, rwx for a write grant, nothing for an ungranted sibling.
+#[cfg(target_os = "linux")]
+#[test]
+fn exec_fs_grants_open_only_the_named_paths() {
+    use deltabox_core::policy::Policy;
+    use deltabox_core::protocol::{ExecRequest, SessionSpec};
+
+    // The Linux backend always lets commands read `/tmp`, so the granted and
+    // ungranted directories live under the build directory instead.
+    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/fs-grant-tests");
+    std::fs::create_dir_all(&base).unwrap();
+    let base = std::fs::canonicalize(base).unwrap();
+    let view = tempfile::tempdir().unwrap();
+    let readable = tempfile::tempdir_in(&base).unwrap();
+    let writable = tempfile::tempdir_in(&base).unwrap();
+    let ungranted = tempfile::tempdir_in(&base).unwrap();
+    std::fs::write(readable.path().join("sdk.txt"), "sdk\n").unwrap();
+    std::fs::write(ungranted.path().join("other.txt"), "other\n").unwrap();
+
+    let mut policy = Policy::default_agent();
+    policy.filesystem.allow_approval = true;
+    policy
+        .apply_fs_grants(&[readable.path().to_path_buf()], &[writable.path().to_path_buf()])
+        .unwrap();
+    let spec = SessionSpec {
+        project: view.path().to_path_buf(),
+        host_project: None,
+        store_dir: view.path().join("store"),
+        policy,
+        resolved_deny_paths: None,
+    };
+
+    let mut backend = native_backend();
+    backend.start_session("grants", &spec).unwrap();
+    let mut run = |script: String| {
+        backend
+            .exec(
+                "grants",
+                ExecRequest {
+                    argv: vec!["sh".into(), "-c".into(), script],
+                    cwd: None,
+                    env: None,
+                },
+            )
+            .unwrap()
+    };
+
+    let read = run(format!("cat '{}'", readable.path().join("sdk.txt").display()));
+    assert_eq!(read.exit_code, Some(0), "an rx grant must be readable");
+    assert_eq!(read.stdout, "sdk\n");
+    let read_write = run(format!("printf x > '{}'", readable.path().join("w.txt").display()));
+    assert_ne!(read_write.exit_code, Some(0), "an rx grant must not be writable");
+
+    let write = run(format!("printf ok > '{}'", writable.path().join("out.txt").display()));
+    assert_eq!(write.exit_code, Some(0), "an rwx grant must be writable");
+    assert_eq!(std::fs::read_to_string(writable.path().join("out.txt")).unwrap(), "ok");
+
+    let other = run(format!("cat '{}'", ungranted.path().join("other.txt").display()));
+    assert_ne!(other.exit_code, Some(0), "an ungranted sibling must stay blocked");
+    let other_write = run(format!("printf x > '{}'", ungranted.path().join("n.txt").display()));
+    assert_ne!(other_write.exit_code, Some(0));
+    assert!(!ungranted.path().join("n.txt").exists());
+
+    backend.stop_session("grants").unwrap();
 }

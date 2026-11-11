@@ -26,6 +26,11 @@ struct Session {
 impl Session {
     /// Start a session in `mode` over a project holding `files`.
     fn start(mode: &str, files: &[(&str, &str)]) -> Self {
+        Self::start_with(mode, files, None)
+    }
+
+    /// Like `start`, with a session policy file holding `policy` (TOML).
+    fn start_with(mode: &str, files: &[(&str, &str)], policy: Option<&str>) -> Self {
         let root = tempfile::tempdir().unwrap();
         let project = root.path().join("project with spaces");
         fs::create_dir(&project).unwrap();
@@ -34,8 +39,17 @@ impl Session {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, contents).unwrap();
         }
+        let policy_file = policy.map(|policy| {
+            let file = root.path().join("policy.toml");
+            fs::write(&file, policy).unwrap();
+            file
+        });
         let mut session = Session { root, project, id: String::new() };
-        let info = session.json(&["session", "start", session.project.to_str().unwrap(), "--fs-mode", mode, "--require-fs-mode", "--json"]);
+        let mut args = vec!["session", "start", session.project.to_str().unwrap(), "--fs-mode", mode, "--require-fs-mode", "--json"];
+        if let Some(file) = &policy_file {
+            args.extend(["--policy", file.to_str().unwrap()]);
+        }
+        let info = session.json(&args);
         session.id = info["session_id"].as_str().unwrap().into();
         session
     }
@@ -207,6 +221,8 @@ fn cancelling_an_exec_kills_the_sandboxed_command_tree() {
         label: None,
         execution_profile: Default::default(),
         network_allow: Vec::new(),
+        fs_read_allow: Vec::new(),
+        fs_write_allow: Vec::new(),
     });
     canceller.join().unwrap();
     assert!(
@@ -283,4 +299,73 @@ fn cbcow_private_sandbox_denies_host_and_backing_tree() {
     s.powershell(&script);
     assert!(!s.project.join("sandbox.txt").exists(), "a private write reached the host project");
     s.action(&["abort"], &[]);
+}
+
+// ---------------------------------------------------------------------------
+// Per-command filesystem grants (aligned with Linux and macOS)
+// ---------------------------------------------------------------------------
+
+/// CAN: read an rx-granted host path and write an rwx-granted one, for that
+/// command only. CANNOT: write an rx grant, reach an ungranted sibling, keep a
+/// grant for the next command, or use grants without `allow_approval`.
+#[test]
+#[ignore = "requires native MXC PSEC and WinFsp for CB-CoW; run explicitly on a supported Windows host"]
+fn fs_grants_open_only_the_named_paths() {
+    let policy = |approval: bool| {
+        format!("[filesystem]\nread = [\".\"]\nwrite = [\".\"]\ndeny = [\".env\", \".ssh\"]\nallow_approval = {approval}\n")
+    };
+    for mode in ["copy-private", "cbcow-through", "cbcow-private"] {
+        let closed = Session::start_with(mode, &[], Some(&policy(false)));
+        let outside = closed.root.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let rejected = closed.raw(&closed.args(&["exec"], &["--fs-read-allow", outside.to_str().unwrap(), "--", "cmd.exe", "/c", "echo x"]));
+        assert!(!rejected.status.success(), "{mode}: grants need allow_approval");
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("disabled by session policy"), "{mode}");
+
+        let s = Session::start_with(mode, &[], Some(&policy(true)));
+        let readable = s.root.path().join("sdk");
+        let writable = s.root.path().join("cache");
+        let ungranted = s.root.path().join("other");
+        for dir in [&readable, &writable, &ungranted] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        fs::write(readable.join("sdk.txt"), "sdk").unwrap();
+        fs::write(ungranted.join("other.txt"), "other").unwrap();
+        let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe");
+        let exec = |flags: &[(&str, &Path)], body: &str| -> Value {
+            let mut extra: Vec<String> = flags.iter().flat_map(|(flag, path)| [flag.to_string(), path.to_str().unwrap().to_string()]).collect();
+            extra.extend(["--".into(), shell.to_str().unwrap().into(), "/c".into(), body.into()]);
+            let extra: Vec<&str> = extra.iter().map(String::as_str).collect();
+            s.action(&["exec"], &extra)
+        };
+        let code = |value: &Value| value["exit_code"].as_i64().unwrap_or(-1);
+        // A denial must be an access error, so a malformed command cannot pass as one.
+        let denied = |value: &Value, what: &str| {
+            assert_ne!(code(value), 0, "{mode}: {what}: {value}");
+            assert!(value["stderr"].as_str().unwrap_or("").to_lowercase().contains("denied"), "{mode}: {what}: {value}");
+        };
+        // Paths go to cmd unquoted: argv quoting would turn embedded quotes into `\"`,
+        // which cmd rejects. The temporary directories contain no spaces.
+        for dir in [&readable, &writable, &ungranted] {
+            assert!(!dir.to_string_lossy().contains(' '), "{}", dir.display());
+        }
+        let read = format!("type {}", readable.join("sdk.txt").display());
+
+        denied(&exec(&[], &read), "ungranted read must fail");
+        let granted = exec(&[("--fs-read-allow", &readable)], &read);
+        assert_eq!(code(&granted), 0, "{mode}: rx grant must read: {granted}");
+        assert!(granted["stdout"].as_str().unwrap().contains("sdk"), "{mode}");
+        let write_rx = format!("echo x>{}", readable.join("w.txt").display());
+        denied(&exec(&[("--fs-read-allow", &readable)], &write_rx), "rx grant must not write");
+        assert!(!readable.join("w.txt").exists(), "{mode}");
+
+        let write = format!("echo ok>{}", writable.join("out.txt").display());
+        let wrote = exec(&[("--fs-write-allow", &writable)], &write);
+        assert_eq!(code(&wrote), 0, "{mode}: rwx grant must write: {wrote}");
+        assert!(fs::read_to_string(writable.join("out.txt")).unwrap().starts_with("ok"), "{mode}");
+
+        let other = format!("type {}", ungranted.join("other.txt").display());
+        denied(&exec(&[("--fs-read-allow", &readable)], &other), "sibling must stay blocked");
+        denied(&exec(&[], &read), "a grant must not persist");
+    }
 }

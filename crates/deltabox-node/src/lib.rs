@@ -405,6 +405,8 @@ impl NativeDeltabox {
         execution_profile: Option<String>,
         network_allow: Option<Vec<String>>,
         exec_id: Option<String>,
+        fs_read_allow: Option<Vec<String>>,
+        fs_write_allow: Option<Vec<String>>,
     ) -> napi::Result<NativeExecResult> {
         let coordinator = Arc::clone(&self.coordinator);
         let execution_profile = parse_execution_profile(execution_profile.as_deref())?;
@@ -430,6 +432,16 @@ impl NativeDeltabox {
                     label,
                     execution_profile,
                     network_allow: network_allow.unwrap_or_default(),
+                    fs_read_allow: fs_read_allow
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(PathBuf::from)
+                        .collect(),
+                    fs_write_allow: fs_write_allow
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(PathBuf::from)
+                        .collect(),
                 })
                 .map(exec_result)
                 .map_err(native_error)
@@ -1046,6 +1058,8 @@ mod tests {
                     None,
                     None,
                     Some("job".into()),
+                    None,
+                    None,
                 )
                 .await;
             canceller.await.unwrap();

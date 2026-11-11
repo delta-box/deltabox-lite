@@ -259,6 +259,11 @@ impl SessionManager {
     }
 
     pub fn exec(&mut self, params: ExecParams) -> Result<ExecResult> {
+        if !(params.fs_read_allow.is_empty() && params.fs_write_allow.is_empty()) {
+            return Err(Error::Unsupported(
+                "filesystem grants require the service-free coordinator".into(),
+            ));
+        }
         if !params.network_allow.is_empty() {
             return Err(Error::Unsupported(
                 "network grants require the service-free coordinator".into(),
@@ -765,6 +770,8 @@ mod tests {
                 label: Some("greeting".into()),
                 execution_profile: Default::default(),
                 network_allow: Vec::new(),
+                fs_read_allow: Vec::new(),
+                fs_write_allow: Vec::new(),
             })
             .unwrap();
         assert_eq!(exec.stdout, "echo hi");
