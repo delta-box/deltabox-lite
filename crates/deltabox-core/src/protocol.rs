@@ -98,8 +98,8 @@ pub struct ExecParams {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub network_allow: Vec<String>,
     /// Exact absolute paths this command may read and execute (rx), in
-    /// addition to the session policy. Only accepted when the session policy
-    /// sets `filesystem.allow_approval`. Never persisted.
+    /// addition to the session policy. Rejected when the session policy sets
+    /// `filesystem.allow_approval = false`. Never persisted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fs_read_allow: Vec<PathBuf>,
     /// Exact absolute paths this command may read, write and execute (rwx).

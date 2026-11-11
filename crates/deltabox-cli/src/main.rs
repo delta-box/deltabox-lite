@@ -176,7 +176,7 @@ struct ExecArgs {
     #[arg(long, value_parser = parse_execution_profile)]
     execution_profile: Option<ExecutionProfile>,
     /// Exact absolute path this command may read and execute (repeatable).
-    /// Requires `filesystem.allow_approval` in the session policy.
+    /// Rejected when the session policy sets `filesystem.allow_approval = false`.
     #[arg(long = "fs-read-allow")]
     fs_read_allow: Vec<PathBuf>,
     /// Exact absolute path this command may read, write and execute

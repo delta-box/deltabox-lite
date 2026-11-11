@@ -144,8 +144,8 @@ export interface NativeDeltaboxInstance {
      */
     execId?: string,
     /**
-     * Exact absolute paths this command may read and execute (rx). Requires
-     * `filesystem.allow_approval` in the session policy; never persisted.
+     * Exact absolute paths this command may read and execute (rx). Rejected when
+     * the session policy sets `filesystem.allow_approval = false`; never persisted.
      */
     fsReadAllow?: string[],
     /**
