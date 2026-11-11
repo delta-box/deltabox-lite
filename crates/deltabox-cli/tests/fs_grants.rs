@@ -361,3 +361,38 @@ fn write_grants_stay_inside_their_directory() {
     }
     server.finish();
 }
+
+/// Temporary probe: which file operations PSEC allows under a write grant.
+#[cfg(windows)]
+#[test]
+#[ignore = "requires native MXC PSEC; run explicitly on a supported Windows host"]
+fn zz_probe_windows_write_grant_operations() {
+    let mut server = Server::spawn();
+    let base = scratch("probe", "copy-private");
+    let out = base.join("out");
+    for name in ["host-a.txt", "host-b.txt", "host-c.txt", "host-d.txt", "host-e.txt"] {
+        std::fs::write(out.join(name), "host").unwrap();
+    }
+    let sid = server.start("copy-private", true);
+    let p = |name: &str| out.join(name).display().to_string();
+    let probes = [
+        ("append to host file", format!("echo x>>{}", p("host-a.txt"))),
+        ("overwrite host file", format!("echo x>{}", p("host-b.txt"))),
+        ("del host file", format!("del {}", p("host-c.txt"))),
+        ("ren host file", format!("ren {} renamed-d.txt", p("host-d.txt"))),
+        ("new then move over new", format!("echo 1>{} && echo 2>{} && move /y {} {}", p("n1.txt"), p("n2.txt"), p("n1.txt"), p("n2.txt"))),
+        ("new then move to fresh name", format!("echo 1>{} && move /y {} {}", p("n3.txt"), p("n3.txt"), p("n4.txt"))),
+        ("new then move over host", format!("echo 1>{} && move /y {} {}", p("n5.txt"), p("n5.txt"), p("host-e.txt"))),
+        ("new then copy over host", format!("echo 1>{} && copy /y {} {}", p("n6.txt"), p("n6.txt"), p("host-e.txt"))),
+        ("del sandbox file from earlier exec", format!("del {}", p("n2.txt"))),
+        ("mkdir", format!("mkdir {}", p("d1"))),
+        ("rmdir empty", format!("rmdir {}", p("d1"))),
+    ];
+    let mut report = Vec::new();
+    for (what, line) in probes {
+        let r = server.exec(&sid, &[], &[&out], &line);
+        report.push(format!("{what}: exit={} stderr={:?}", code(&r), r["result"]["stderr"]));
+    }
+    server.stop(&sid);
+    panic!("PROBE REPORT\n{}", report.join("\n"));
+}
