@@ -19,6 +19,8 @@ pub enum Method {
     SessionStart(SessionStartParams),
     #[serde(rename = "session.stop")]
     SessionStop(SessionStopParams),
+    #[serde(rename = "session.release")]
+    SessionRelease(SessionStopParams),
     #[serde(rename = "session.status")]
     SessionStatus(SessionStatusParams),
     #[serde(rename = "session.exec")]

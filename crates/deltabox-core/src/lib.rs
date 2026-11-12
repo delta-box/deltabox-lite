@@ -40,6 +40,7 @@ pub mod protocol;
 #[cfg(not(windows))]
 pub(crate) mod test_hooks;
 pub mod server;
+pub mod session_catalog;
 #[cfg(not(windows))]
 pub mod session;
 #[cfg(not(windows))]

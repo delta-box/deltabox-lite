@@ -4,6 +4,41 @@ Pass a TOML policy to `deltabox session start <project> --policy <file>`. The
 policy path is persisted in session metadata and reloaded for every independent
 CLI or optional `serve` operation.
 
+## Check and inspect a policy
+
+Use the CLI to catch configuration mistakes before creating a session:
+
+```bash
+deltabox policy check policy.toml
+deltabox policy check policy.toml --json
+deltabox policy show --policy policy.toml
+deltabox policy show --policy policy.toml --json
+```
+
+`check` parses TOML, rejects unknown fields such as `network.allow_aproval`,
+and applies the runtime's policy validation rules. It also accepts the legacy
+`mode = { allowlist = ["example.com:443"] }` form, checking keys inside that
+table. Successful JSON output contains `{"valid": true, "policy": ...}`.
+Invalid input exits nonzero with the cause on stderr. Validation does not start
+a session, create state directories, test network connectivity, or certify that
+every limit is enforced by the current backend.
+
+`show` prints canonical TOML by default, or the policy object with `--json`.
+Omit `--policy` to print `Policy::default_agent()` and create an editable starter:
+
+```bash
+deltabox policy show > policy.toml
+```
+
+An explicit file uses the runtime's deserialization defaults. It is **not
+merged with the default agent policy**: for example, a file containing only
+`[network]` has empty filesystem grants/denies and unset resource limits.
+`show --policy` preserves the runtime's compatibility with ignored unknown
+fields; run `check` to detect those fields. Output expands omitted defaults and
+converts legacy allowlists to the current `mode`/`allow` format. TOML output can
+be read back as an equivalent policy. See [CLI workflows](cli-workflows.md#inspect-and-validate-policy-files)
+for examples.
+
 ## Filesystem
 
 ```toml
@@ -173,11 +208,34 @@ allow_private = false                  # Optional: block LAN / loopback / metada
 When enabled, the platform sandbox blocks direct egress at the kernel level and
 restricts outbound traffic to an execution-scoped authenticated HTTP/CONNECT proxy.
 
-#### Dynamic approvals (API)
+#### Dynamic approvals (CLI and API)
 
 A trusted orchestrator can grant temporary network access for a single command:
+- **CLI**: Repeat `--network-allow HOST:PORT` on `exec` or `run`.
 - **JSON-RPC (`serve`)**: Pass `network_allow: ["example.com:443"]` in `session.exec`.
 - **Node.js binding**: Pass the optional `networkAllow` array to native `exec()`.
+
+For a session started with the approval-enabled policy above:
+
+```bash
+deltabox exec "$SESSION" --network-allow example.com:443 -- \
+  curl --fail --silent --show-error https://example.com/
+
+# Finish the persistent session before starting a temporary one in this project.
+deltabox session stop "$SESSION"
+deltabox run --policy approval-policy.toml --network-allow example.com:443 \
+  --abort -- curl --fail --silent --show-error https://example.com/
+```
+
+Use `--commit` instead of `--abort` when the temporary transaction should retain
+its filesystem changes. Neither flag changes the grant's lifetime: it expires
+after this command. A repeated option adds another exact target, up to 32 per
+command. `--network-allow '[::1]:3000'` is the bracketed IPv6 form; loopback and
+other private/local addresses additionally require `allow_private = true`.
+Standing deny entries still win, and grants require both
+`mode = "allowlist"` and `allow_approval = true`. The default agent policy does
+not opt in. See [temporary network access](cli-workflows.md#grant-network-access-for-one-command)
+for a complete setup.
 
 **Constraints & rules:**
 - **Exact targets**: Destinations must be exact `host:port` (or `[ipv6]:port`). Wildcards (`*`), URLs, and paths are rejected.
@@ -188,7 +246,7 @@ A trusted orchestrator can grant temporary network access for a single command:
 
 #### Enforcement & Security Model
 
-- **Direct egress blocked**: Sandbox backends (Linux Landlock, macOS Seatbelt) permit egress exclusively to the local loopback proxy (`127.0.0.1:<port>`). Direct raw TCP/UDP out to other addresses is denied by the OS kernel.
+- **Direct egress blocked**: Sandbox backends (Linux Landlock, macOS Seatbelt, Windows MXC) permit egress exclusively to the local loopback proxy (`127.0.0.1:<port>`). Direct raw TCP/UDP out to other addresses is denied by the OS kernel.
 - **Proxy environment**: The command helper automatically injects proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and empty `NO_PROXY`) with per-execution random Basic Auth credentials.
 - **Private IP guard (`allow_private = false`)**: The proxy resolves DNS on the host and validates that the resolved IP is public before connecting. Connections use the checked IP directly without a second lookup (preventing DNS rebinding). Requests resolving to private, loopback, link-local, or cloud metadata addresses (e.g. `169.254.169.254`) are blocked.
 - **Lifecycle cleanup**: The helper terminates the confined runtime and tears down all tracked proxy sockets immediately after each command. No connections or credentials survive across commands.
@@ -224,7 +282,7 @@ Probe protocol capability before issuing network grants:
 
 **Platform notes:**
 - **Linux & macOS**: Fully enforced via Landlock/Seatbelt and the internal proxy.
-- **Windows**: MXC PSEC currently enforces filesystem boundaries only; network policy is unenforced and reported as a `degraded_protection` in session status.
+- **Windows**: MXC PSEC enforces the network rules; approval-enabled commands use the authenticated HTTP/CONNECT proxy. Sandboxed execution requires MXC support. Trusted/unsandboxed execution rejects network grants.
 - **Legacy static allowlists**: Policies with `allow_approval = false` retain their previous behavior without token authentication, strict private IP validation, or execution-scoped teardown.
 
 

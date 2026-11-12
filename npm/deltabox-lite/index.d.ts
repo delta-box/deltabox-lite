@@ -122,6 +122,8 @@ export interface NativeDeltaboxInstance {
     requireFilesystemMode?: boolean,
   ): Promise<NativeSessionInfo>
   stopSession(sessionId: string): Promise<NativeSessionInfo>
+  /** Close an idle macOS through session, preserving external workspace edits. */
+  releaseSession(sessionId: string): Promise<NativeSessionInfo>
   /**
    * Take ownership of a session whose owner process died (an orphan). Its
    * pending changes are kept; commit or abort them, then stop the session.

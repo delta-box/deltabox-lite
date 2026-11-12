@@ -360,6 +360,15 @@ impl Manager {
     }
 
     pub fn stop(&self, session_id: &str) -> Result<SessionInfo> {
+        self.stop_internal(session_id, false)
+    }
+
+    /// Close an idle through session without aborting external workspace edits.
+    pub fn release(&self, session_id: &str) -> Result<SessionInfo> {
+        self.stop_internal(session_id, true)
+    }
+
+    fn stop_internal(&self, session_id: &str, preserve_current: bool) -> Result<SessionInfo> {
         if !self.store(session_id).join(RECORD_FILE).exists() {
             let mut meta = self.running_meta(session_id)?;
             // No engine record: the start is either still scanning or died
@@ -393,7 +402,14 @@ impl Manager {
             let info = {
                 let mut session = fast.lock().expect("embedded session poisoned");
                 self.require_fast_running(&session)?;
-                if session.state.status().pending != 0 {
+                if preserve_current
+                    && (session.review.is_some() || session.state.status().mode != Mode::Through)
+                {
+                    return Err(Error::SessionBusy(
+                        "release requires a through session with no active review".into(),
+                    ));
+                }
+                if !preserve_current && session.state.status().pending != 0 {
                     session.state.abort(None)?;
                     session.append(session_id, JournalKind::Abort, None)?;
                 }
@@ -408,11 +424,11 @@ impl Manager {
                     session.record.durability,
                 );
                 self.save_meta(&session.meta)?;
-                if fs::read_to_string(self.root.join(PROJECT_LEASE))
-                    .is_ok_and(|value| value.trim() == session_id)
-                {
-                    fs::remove_file(self.root.join(PROJECT_LEASE))?;
-                }
+                crate::project_lease::release(
+                    &crate::state_layout::leases_dir(&self.project)?,
+                    &self.root.join(PROJECT_LEASE),
+                    session_id,
+                );
                 session.append(session_id, JournalKind::SessionStop, None)?;
                 info_from_stopped(session.meta.clone())
             };
@@ -434,7 +450,14 @@ impl Manager {
         let record = self.record(session_id)?;
         let mut state = self.open_state(&record)?;
         self.reconcile_history(&mut state)?;
-        if state.status().pending != 0 {
+        if preserve_current
+            && (self.review(session_id)?.is_some() || state.status().mode != Mode::Through)
+        {
+            return Err(Error::SessionBusy(
+                "release requires a through session with no active review".into(),
+            ));
+        }
+        if !preserve_current && state.status().pending != 0 {
             self.mutate_live(&mut state, |state| state.abort(None).map(|_| ()))?;
             self.append(&record, session_id, JournalKind::Abort, None)?;
         }

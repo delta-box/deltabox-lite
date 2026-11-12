@@ -9,6 +9,21 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+### Added
+
+- `deltabox session list` (`SessionCoordinator::list_sessions`) with
+  project/status filters and JSON output for discovering recorded sessions
+  without probing helper liveness.
+- `deltabox session release` (`session.release` / `releaseSession`) for ending
+  a macOS `cbcow-through` session while preserving current project edits;
+  active review scopes and private modes are rejected.
+- Repeatable `--path` filters and `--stat` / `--name-only` output for `diff`
+  and `review diff`.
+- `deltabox policy check` for TOML, policy-constraint, and unknown-field
+  validation, and `policy show` for resolved TOML or JSON policy output.
+- Repeatable `--network-allow HOST:PORT` on `exec` and `run`, exposing
+  execution-scoped network grants for approval-enabled allowlist policies.
+
 ## [0.4.2] - 2026-11-12
 
 ### Fixed

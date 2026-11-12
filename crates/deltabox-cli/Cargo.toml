@@ -16,6 +16,8 @@ deltabox-core = { path = "../deltabox-core" }
 clap.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
+toml.workspace = true
+uuid.workspace = true
 base64 = "0.22"
 
 [target.'cfg(unix)'.dependencies]
