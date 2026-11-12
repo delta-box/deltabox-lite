@@ -9,6 +9,8 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-12
+
 ### Fixed
 
 - Write grants (`fs_write_allow`) can create files. A write grant is now a
