@@ -4,7 +4,8 @@ use deltabox_core::backend::DefaultBackend;
 use deltabox_core::coordinator::SessionCoordinator;
 use deltabox_core::protocol::{
     AbortParams, CheckpointParams, CommitParams, DiffParams, DurabilityMode, ExecParams,
-    ExecutionProfile, FilesystemMode, Request, ReviewBeginParams, ReviewKind,
+    ExecutionProfile, FilesystemMode, HistoryCaptureParams, HistoryDiffParams,
+    HistoryRestoreParams, Request, ReviewBeginParams, ReviewKind,
 };
 use deltabox_core::server::Server;
 use std::io::{BufRead, IsTerminal, Write};
@@ -57,6 +58,11 @@ enum Command {
     Review {
         #[command(subcommand)]
         cmd: ReviewCmd,
+    },
+    /// Save, inspect, and restore durable project-file versions (macOS cbcow-through).
+    History {
+        #[command(subcommand)]
+        cmd: HistoryCmd,
     },
     /// Check policy files or print a reusable policy without starting a session.
     Policy {
@@ -131,6 +137,74 @@ enum ReviewCmd {
     Abort(SessionProjectArgs),
     /// Keep changes pending and preserve the original rollback point.
     Skip(SessionProjectArgs),
+}
+
+#[derive(Subcommand)]
+enum HistoryCmd {
+    /// Print JSON describing history support for a session.
+    Capabilities(SessionProjectArgs),
+    /// Save project files and print the version ID; does not commit pending changes.
+    Capture(HistoryCaptureArgs),
+    /// List this project's versions using a running session, oldest first.
+    List(HistoryListArgs),
+    /// Show the changes from current project files to a version using a running session.
+    Diff(HistoryDiffArgs),
+    /// Preview current project files becoming a version without starting a session.
+    Preview(HistoryPreviewArgs),
+    /// Restore a version and print JSON including the pre-restore backup ID.
+    /// Requires an idle session with no active review and matching expected files.
+    Restore(HistoryRestoreArgs),
+}
+
+#[derive(clap::Args)]
+struct HistoryCaptureArgs {
+    #[command(flatten)]
+    target: SessionProjectArgs,
+    #[arg(long)]
+    label: Option<String>,
+    /// Print the complete version record instead of only its ID.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(clap::Args)]
+struct HistoryListArgs {
+    #[command(flatten)]
+    target: SessionProjectArgs,
+    /// Print version records as a JSON array instead of a table.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(clap::Args)]
+struct HistoryDiffArgs {
+    #[command(flatten)]
+    target: SessionProjectArgs,
+    /// Version to compare the current project against (current -> version).
+    version: String,
+    #[command(flatten)]
+    output: diff_output::DiffOutputArgs,
+}
+
+#[derive(clap::Args)]
+struct HistoryPreviewArgs {
+    /// Version to compare the idle project against (current -> version).
+    version: String,
+    #[arg(long, default_value = ".")]
+    project: PathBuf,
+    #[command(flatten)]
+    output: diff_output::DiffOutputArgs,
+}
+
+#[derive(clap::Args)]
+struct HistoryRestoreArgs {
+    #[command(flatten)]
+    target: SessionProjectArgs,
+    /// Version whose project files should be restored.
+    version: String,
+    /// Captured version that current files must still match before restoring.
+    #[arg(long, value_name = "VERSION")]
+    expected_version: String,
 }
 
 #[derive(clap::Args)]
@@ -695,6 +769,7 @@ fn main() -> anyhow::Result<()> {
                 );
             }
         },
+        Command::History { cmd } => run_history(cmd)?,
         Command::Policy { cmd } => policy_command::run(cmd)?,
         Command::Worker(args) => {
             deltabox_core::worker::run_worker(&args.root, &args.runtime)?;
@@ -769,6 +844,92 @@ fn main() -> anyhow::Result<()> {
                 writeln!(out, "{}", serde_json::to_string(&response)?)?;
                 out.flush()?;
             }
+        }
+    }
+    Ok(())
+}
+
+fn run_history(cmd: HistoryCmd) -> anyhow::Result<()> {
+    match cmd {
+        HistoryCmd::Capabilities(args) => {
+            let manager = SessionCoordinator::new(&args.project, None)?;
+            let capabilities = manager.history_capabilities(&args.session)?;
+            println!("{}", serde_json::to_string_pretty(&capabilities)?);
+        }
+        HistoryCmd::Capture(args) => {
+            let manager = SessionCoordinator::new(&args.target.project, None)?;
+            let version = manager.history_capture(HistoryCaptureParams {
+                session_id: args.target.session,
+                label: args.label,
+            })?;
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&version)?);
+            } else {
+                println!("{}", version.id);
+            }
+        }
+        HistoryCmd::List(args) => {
+            let manager = SessionCoordinator::new(&args.target.project, None)?;
+            let versions = manager.history_list(&args.target.session)?;
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&versions)?);
+            } else if versions.is_empty() {
+                println!("No history versions.");
+            } else {
+                println!(
+                    "{:<36} {:>13} {:>8} {:>13} LABEL",
+                    "VERSION", "CREATED_AT_MS", "ENTRIES", "LOGICAL_BYTES"
+                );
+                for version in versions {
+                    let label = version
+                        .label
+                        .as_deref()
+                        .map(serde_json::to_string)
+                        .transpose()?;
+                    println!(
+                        "{:<36} {:>13} {:>8} {:>13} {}",
+                        version.id,
+                        version.created_at_ms,
+                        version.entry_count,
+                        version.logical_bytes,
+                        label.as_deref().unwrap_or("-")
+                    );
+                }
+            }
+        }
+        HistoryCmd::Diff(args) => {
+            let manager = SessionCoordinator::new(&args.target.project, None)?;
+            let diff = manager.history_diff(HistoryDiffParams {
+                session_id: args.target.session,
+                version_id: args.version,
+            })?;
+            print!("{}", diff_output::render(diff, &args.output)?);
+        }
+        HistoryCmd::Preview(args) => {
+            let manager = SessionCoordinator::new(&args.project, None)?;
+            let diff = manager.history_preview(&args.version)?;
+            print!("{}", diff_output::render(diff, &args.output)?);
+        }
+        HistoryCmd::Restore(args) => {
+            let manager = SessionCoordinator::new(&args.target.project, None)?;
+            let restored = manager
+                .history_restore(HistoryRestoreParams {
+                    session_id: args.target.session,
+                    version_id: args.version,
+                    expected_version_id: args.expected_version,
+                })
+                .map_err(|error| {
+                    if let deltabox_core::error::Error::ProjectConflict(report) = &error {
+                        for conflict in &report.conflicts {
+                            eprintln!("deltabox: conflicting path: {:?}", conflict.path);
+                        }
+                        if report.truncated {
+                            eprintln!("deltabox: conflict path list truncated");
+                        }
+                    }
+                    error
+                })?;
+            println!("{}", serde_json::to_string_pretty(&restored)?);
         }
     }
     Ok(())

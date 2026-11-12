@@ -52,6 +52,18 @@ impl Server {
     fn dispatch(&mut self, method: Method) -> CoreResult<Value> {
         let value = match method {
             Method::NetworkCapabilities {} => serde_json::json!({"version": 1}),
+            Method::HistoryCapabilities(p) => {
+                serde_json::to_value(self.manager.history_capabilities(&p.session_id)?)?
+            }
+            Method::HistoryCapture(p) => serde_json::to_value(self.manager.history_capture(p)?)?,
+            Method::HistoryList(p) => {
+                serde_json::to_value(self.manager.history_list(&p.session_id)?)?
+            }
+            Method::HistoryDiff(p) => serde_json::to_value(self.manager.history_diff(p)?)?,
+            Method::HistoryPreview(p) => {
+                serde_json::to_value(self.manager.history_preview(&p.version_id)?)?
+            }
+            Method::HistoryRestore(p) => serde_json::to_value(self.manager.history_restore(p)?)?,
             Method::SessionStart(p) => {
                 // serve is bound to one project at startup; silently ignoring
                 // the request's project misled adapters for a long time.

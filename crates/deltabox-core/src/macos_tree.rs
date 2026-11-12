@@ -205,6 +205,22 @@ pub(crate) fn replace_path(
         if links.get(&identity) == Some(&temporary) {
             links.insert(identity, destination.to_path_buf());
         }
+    } else if metadata.is_dir() {
+        // A directory replacement also moves recorded descendant hard-link
+        // targets. Update only identities in this subtree, avoiding a scan of
+        // every previously copied entry for each top-level replacement.
+        for entry in walkdir::WalkDir::new(source).follow_links(false) {
+            let entry = entry.map_err(|error| Error::Io(std::io::Error::other(error)))?;
+            let metadata = fs::symlink_metadata(entry.path())?;
+            if !metadata.is_file() {
+                continue;
+            }
+            if let Some(linked_path) = links.get_mut(&(metadata.dev(), metadata.ino())) {
+                if let Ok(relative) = linked_path.strip_prefix(&temporary) {
+                    *linked_path = destination.join(relative);
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -215,9 +231,15 @@ pub(crate) fn copy_metadata(source: &Path, destination: &Path) -> Result<()> {
     set_flags(destination, 0, symlink)?;
     set_owner(destination, metadata.uid(), metadata.gid(), symlink)?;
     if !symlink {
-        fs::set_permissions(destination, fs::Permissions::from_mode(metadata.mode()))?;
+        let current_mode = fs::metadata(destination)?.mode();
+        // Restore attributes while the owned destination is writable; applying
+        // a read-only source mode first prevents xattr restoration on macOS.
+        let access = if metadata.is_dir() { 0o700 } else { 0o200 };
+        fs::set_permissions(
+            destination,
+            fs::Permissions::from_mode(current_mode | access),
+        )?;
     }
-    copy_acl(source, destination)?;
     let source_xattrs = xattr::list(source)?.collect::<Vec<_>>();
     for name in xattr::list(destination)? {
         if tracked_xattr(&name) && !source_xattrs.contains(&name) {
@@ -237,6 +259,10 @@ pub(crate) fn copy_metadata(source: &Path, destination: &Path) -> Result<()> {
         timestamp_ns(metadata.mtime(), metadata.mtime_nsec()),
         symlink,
     )?;
+    if !symlink {
+        fs::set_permissions(destination, fs::Permissions::from_mode(metadata.mode()))?;
+    }
+    copy_acl(source, destination)?;
     set_flags(destination, metadata.st_flags(), symlink)
 }
 
@@ -268,10 +294,35 @@ pub(crate) fn read_acl(path: &Path) -> Result<Vec<u8>> {
 
 pub(crate) fn remove_path(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path)?,
+        Ok(metadata) if metadata.is_dir() => {
+            if let Err(error) = fs::remove_dir_all(path) {
+                if error.kind() != std::io::ErrorKind::PermissionDenied {
+                    return Err(error.into());
+                }
+                // Removed snapshots can retain read-only directory modes.
+                // Only relax directories being deleted, never linked file
+                // metadata or symlink targets outside the removed tree.
+                writable_directories_for_removal(path)?;
+                fs::remove_dir_all(path)?;
+            }
+        }
         Ok(_) => fs::remove_file(path)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
+fn writable_directories_for_removal(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+    if metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o700 != 0o700 {
+        fs::set_permissions(path, fs::Permissions::from_mode(metadata.mode() | 0o700))?;
+    }
+    for entry in fs::read_dir(path)? {
+        writable_directories_for_removal(&entry?.path())?;
     }
     Ok(())
 }
@@ -331,6 +382,13 @@ fn set_times(path: &Path, atime_ns: i64, mtime_ns: i64, symlink: bool) -> Result
 }
 
 pub(crate) fn copy_acl(source: &Path, destination: &Path) -> Result<()> {
+    // clonefile(CLONE_ACL) already preserved the ACL for regular files, and
+    // most new directories have the same empty ACL. copyfile opens both files
+    // even for an ACL-only no-op; that dominates large-tree clones on macOS.
+    // Compare link ACLs so different/inherited ACLs are still copied exactly.
+    if read_acl(source)? == read_acl(destination)? {
+        return Ok(());
+    }
     let source = c_path(source)?;
     let destination = c_path(destination)?;
     let flags = libc::COPYFILE_ACL | libc::COPYFILE_NOFOLLOW;
@@ -393,5 +451,44 @@ fn rename_swap(left: &Path, right: &Path) -> Result<()> {
         Ok(())
     } else {
         Err(std::io::Error::last_os_error().into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    #[test]
+    fn acl_copy_preserves_equal_acls_and_replaces_different_acls() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("destination");
+        fs::write(&source, "source").unwrap();
+        fs::write(&destination, "destination").unwrap();
+        let empty = read_acl(&source).unwrap();
+        copy_acl(&source, &destination).unwrap();
+        assert_eq!(read_acl(&destination).unwrap(), empty);
+        assert!(Command::new("/bin/chmod")
+            .args(["+a", "everyone allow read"])
+            .arg(&source)
+            .status()
+            .unwrap()
+            .success());
+        let granted = read_acl(&source).unwrap();
+        assert_ne!(granted, empty);
+        copy_acl(&source, &destination).unwrap();
+        assert_eq!(read_acl(&destination).unwrap(), granted);
+        copy_acl(&source, &destination).unwrap();
+        assert_eq!(read_acl(&destination).unwrap(), granted);
+        assert!(Command::new("/bin/chmod")
+            .arg("-N")
+            .arg(&source)
+            .status()
+            .unwrap()
+            .success());
+        copy_acl(&source, &destination).unwrap();
+        assert_eq!(read_acl(&destination).unwrap(), empty);
+        assert_eq!(fs::read_to_string(&destination).unwrap(), "destination");
     }
 }

@@ -117,9 +117,31 @@ struct SnapshotEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Transaction {
+    /// History restores use either complete trees or the versioned file plan.
+    #[serde(default)]
+    history_restore: bool,
     id: String,
-    mode: Mode,
+    mode: TransactionMode,
     paths: BTreeSet<String>,
+}
+
+/// A distinct serialized mode makes older runtimes reject a file transaction
+/// instead of mistaking its selective backups for complete directory trees.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum TransactionMode {
+    Through,
+    Private,
+    HistoryFilesV1,
+}
+
+impl From<Mode> for TransactionMode {
+    fn from(mode: Mode) -> Self {
+        match mode {
+            Mode::Through => Self::Through,
+            Mode::Private => Self::Private,
+        }
+    }
 }
 
 pub(crate) struct State {
@@ -195,6 +217,8 @@ impl State {
     }
 
     pub fn open(project: &Path, root: &Path) -> Result<Self> {
+        let recovered_history = root.join(TRANSACTION_FILE).exists()
+            && read_json::<Transaction>(&root.join(TRANSACTION_FILE))?.history_restore;
         recover_transaction(project, root)?;
         let mut manifest: Manifest = read_json(&root.join(MANIFEST_FILE))?;
         if manifest.version != LEGACY_FORMAT_VERSION && manifest.version != FORMAT_VERSION {
@@ -205,12 +229,16 @@ impl State {
         }
         let migrated = manifest.version == LEGACY_FORMAT_VERSION;
         manifest.version = FORMAT_VERSION;
-        let state = Self {
+        let mut state = Self {
             project: project.to_path_buf(),
             root: root.to_path_buf(),
             manifest,
             index: None,
         };
+        if recovered_history {
+            state.index = Some(TreeIndex::scan(&state.live())?);
+            state.save_with_index_durable(true)?;
+        }
         if migrated {
             state.save_manifest()?;
         }
@@ -383,6 +411,21 @@ impl State {
             self.save_index_delta(&paths)?;
         }
         Ok(paths.len())
+    }
+
+    /// Trusted shell commands have no synchronous write journal. FSEvents can
+    /// deliver their notifications after command exit, so scan at completion
+    /// before exposing a review/abort boundary, even if the event batch is empty.
+    pub(crate) fn reconcile_command_completion(&mut self, device_uuid: String) -> Result<usize> {
+        self.reconcile(
+            &EventBatch {
+                must_scan: true,
+                latest_id: deltafs_fuse::macos::current_event_id(),
+                ..EventBatch::default()
+            },
+            false,
+            device_uuid,
+        )
     }
 
     /// Record exact paths changed by a trusted embedded writer without waiting
@@ -589,8 +632,9 @@ impl State {
         save_json(
             &self.root.join(TRANSACTION_FILE),
             &Transaction {
+                history_restore: false,
                 id: id.clone(),
-                mode: self.manifest.mode,
+                mode: self.manifest.mode.into(),
                 paths: paths.clone(),
             },
             self.manifest.durable,
@@ -627,6 +671,189 @@ impl State {
         remove_path(&transaction_root)?;
         self.cleanup_orphans()?;
         Ok((checkpoint_id, published))
+    }
+
+    /// Full-tree restore with a durable undo transaction even for fast sessions.
+    /// The manager holds the operation and publication locks and has saved a
+    /// persistent history backup before entering. On failure, reload/recover
+    /// the transaction before allowing another operation on a resident State.
+    #[cfg(test)]
+    pub fn restore_history(
+        &mut self,
+        target: &Path,
+        verify_live: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
+        self.restore_history_scoped(target, None, verify_live)
+    }
+
+    pub fn restore_history_scoped(
+        &mut self,
+        target: &Path,
+        scope: Option<&crate::history_scope::SourceScope>,
+        verify_live: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
+        if self.manifest.mode != Mode::Through {
+            return Err(Error::Unsupported(
+                "history v1 requires macOS cbcow-through".into(),
+            ));
+        }
+        let result = self.restore_history_inner(target, scope, verify_live);
+        if result.is_err() {
+            *self = Self::open(&self.project, &self.root)?;
+        }
+        result
+    }
+
+    fn restore_history_inner(
+        &mut self,
+        target: &Path,
+        scope: Option<&crate::history_scope::SourceScope>,
+        verify_live: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
+        let mut timings = crate::history::RestoreTimings::new();
+        let force_full = cfg!(debug_assertions)
+            && std::env::var("DELTABOX_TEST_HISTORY_FULL_RESTORE").as_deref() == Ok("1");
+        if let Some(scope) = scope.filter(|_| !force_full) {
+            let plan = crate::history::incremental::FileRestorePlan::plan(
+                &self.project,
+                &self.root.join(BASE_DIR),
+                target,
+                scope,
+                &self.root.join(TRANSACTIONS_DIR),
+            )?;
+            timings.mark(if plan.is_some() {
+                "files.plan"
+            } else {
+                "full.eligibility_fallback"
+            });
+            if let Some(plan) = plan {
+                return self.restore_history_files(target, plan, verify_live);
+            }
+        }
+        let id = Uuid::new_v4().to_string();
+        let transaction_root = self.root.join(TRANSACTIONS_DIR).join(&id);
+        fs::create_dir(&transaction_root)?;
+        crate::history::clone_tree(&self.project, &transaction_root.join("host-backup"))?;
+        timings.mark("full.host_backup_clone_and_sync");
+        if let Some(scope) = scope {
+            crate::history::clone_tree(
+                &transaction_root.join("host-backup"),
+                &transaction_root.join("staged"),
+            )?;
+            crate::history::apply_source_tree(target, &transaction_root.join("staged"), scope)?;
+            crate::macos_tree::sync_tree(&transaction_root.join("staged"))?;
+        } else {
+            crate::history::clone_tree(target, &transaction_root.join("staged"))?;
+        }
+        timings.mark("full.stage_clone_merge_and_sync");
+        crate::history::clone_tree(
+            &self.root.join(BASE_DIR),
+            &transaction_root.join("base-backup"),
+        )?;
+        sync_dir(&transaction_root)?;
+        sync_dir(&self.root.join(TRANSACTIONS_DIR))?;
+        timings.mark("full.base_backup_clone_and_sync");
+        // Protect excluded files too while preparing the full durable transaction.
+        if scope.is_some() {
+            crate::history::verify_recovery_live(
+                &self.project,
+                &transaction_root.join("host-backup"),
+                &transaction_root.join("host-backup"),
+            )?;
+        }
+        // Recheck after the potentially slow clones, immediately before writing.
+        verify_live()?;
+        timings.mark("full.verify_before_publication");
+        save_json(
+            &self.root.join(TRANSACTION_FILE),
+            &Transaction {
+                history_restore: true,
+                id: id.clone(),
+                mode: TransactionMode::Through,
+                paths: BTreeSet::new(),
+            },
+            true,
+        )?;
+        maybe_crash("macos_history_prepared");
+        crate::history::apply_tree(&transaction_root.join("staged"), &self.project)?;
+        timings.mark("full.publish_host_and_sync");
+        maybe_crash("macos_history_host_applied");
+        crate::history::apply_tree(&transaction_root.join("staged"), &self.root.join(BASE_DIR))?;
+        timings.mark("full.publish_base_and_sync");
+        maybe_crash("macos_history_base_applied");
+        self.index = Some(TreeIndex::scan(&self.project)?);
+        self.manifest.event_id = deltafs_fuse::macos::current_event_id();
+        self.manifest.accepted_id = self.manifest.next_id;
+        self.manifest.next_id += 1;
+        self.manifest.checkpoints.clear();
+        self.manifest.pending_paths.clear();
+        self.manifest.epoch_paths.clear();
+        self.manifest.tainted = false;
+        self.manifest.last_transaction = Some(id);
+        self.save_with_index_durable(true)?;
+        timings.mark("full.index_and_commit");
+        maybe_crash("macos_history_state_updated");
+        remove_path(&self.root.join(TRANSACTION_FILE))?;
+        sync_dir(&self.root)?;
+        remove_path(&transaction_root)?;
+        self.cleanup_orphans()?;
+        timings.mark("full.cleanup");
+        Ok(())
+    }
+
+    fn restore_history_files(
+        &mut self,
+        target: &Path,
+        plan: crate::history::incremental::FileRestorePlan,
+        verify_live: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
+        use crate::history::incremental::fault;
+        let mut timings = crate::history::RestoreTimings::new();
+        let id = Uuid::new_v4().to_string();
+        let tx = self.root.join(TRANSACTIONS_DIR).join(&id);
+        fs::create_dir(&tx)?;
+        plan.prepare(&self.project, &self.root.join(BASE_DIR), target, &tx)?;
+        timings.mark("files.backups_flush_and_full_verification");
+        fault("macos_history_files_before_marker")?;
+        verify_live()?;
+        save_json(
+            &self.root.join(TRANSACTION_FILE),
+            &Transaction {
+                history_restore: true,
+                id: id.clone(),
+                mode: TransactionMode::HistoryFilesV1,
+                paths: BTreeSet::new(),
+            },
+            true,
+        )?;
+        maybe_crash("macos_history_prepared");
+        plan.publish_host(&self.project, &tx)?;
+        timings.mark("files.publish_host");
+        maybe_crash("macos_history_host_applied");
+        plan.publish_base(&self.root.join(BASE_DIR), &tx)?;
+        timings.mark("files.publish_base");
+        maybe_crash("macos_history_base_applied");
+        plan.verify_after(&self.project, &self.root.join(BASE_DIR))?;
+        timings.mark("files.verify_after");
+        fault("macos_history_files_before_commit")?;
+        self.index = Some(TreeIndex::scan(&self.project)?);
+        self.manifest.event_id = deltafs_fuse::macos::current_event_id();
+        self.manifest.accepted_id = self.manifest.next_id;
+        self.manifest.next_id += 1;
+        self.manifest.checkpoints.clear();
+        self.manifest.pending_paths.clear();
+        self.manifest.epoch_paths.clear();
+        self.manifest.tainted = false;
+        self.manifest.last_transaction = Some(id);
+        self.save_with_index_durable(true)?;
+        timings.mark("files.index_and_commit");
+        maybe_crash("macos_history_state_updated");
+        remove_path(&self.root.join(TRANSACTION_FILE))?;
+        sync_dir(&self.root)?;
+        remove_path(&tx)?;
+        self.cleanup_orphans()?;
+        timings.mark("files.cleanup");
+        Ok(())
     }
 
     fn require_checkpoint(&self, id: u64) -> Result<()> {
@@ -691,6 +918,10 @@ impl State {
     }
 
     fn save_with_index(&mut self) -> Result<()> {
+        self.save_with_index_durable(self.manifest.durable)
+    }
+
+    fn save_with_index_durable(&mut self, durable: bool) -> Result<()> {
         let Some(index) = &self.index else {
             return self.save_manifest();
         };
@@ -703,12 +934,12 @@ impl State {
                 .join(INDEXES_DIR)
                 .join(format!("{generation}.bin")),
             index,
-            self.manifest.durable,
+            durable,
         )?;
         self.manifest.version = FORMAT_VERSION;
         self.manifest.index_generation = generation;
         self.manifest.index_deltas.clear();
-        self.save_manifest()?;
+        save_json(&self.root.join(MANIFEST_FILE), &self.manifest, durable)?;
         if !old.is_empty() {
             remove_path(&self.root.join(INDEXES_DIR).join(format!("{old}.bin")))?;
         }
@@ -1220,13 +1451,38 @@ fn recover_transaction(project: &Path, root: &Path) -> Result<()> {
     let transaction: Transaction = read_json(&path)?;
     let state: Manifest = read_json(&root.join(MANIFEST_FILE))?;
     let transaction_root = root.join(TRANSACTIONS_DIR).join(&transaction.id);
+    if transaction.history_restore {
+        if state.last_transaction.as_deref() != Some(&transaction.id) {
+            if transaction.mode == TransactionMode::HistoryFilesV1 {
+                crate::history::incremental::FileRestorePlan::recover(
+                    project,
+                    &root.join(BASE_DIR),
+                    &transaction_root,
+                )?;
+            } else {
+                crate::history::verify_recovery_live(
+                    project,
+                    &transaction_root.join("host-backup"),
+                    &transaction_root.join("staged"),
+                )?;
+                crate::history::apply_tree(
+                    &transaction_root.join("base-backup"),
+                    &root.join(BASE_DIR),
+                )?;
+                crate::history::apply_tree(&transaction_root.join("host-backup"), project)?;
+            }
+        }
+        remove_path(&path)?;
+        sync_dir(root)?;
+        return remove_path(&transaction_root);
+    }
     if state.last_transaction.as_deref() != Some(&transaction.id) {
         apply_snapshot(
             &transaction_root.join("base-backup"),
             &root.join(BASE_DIR),
             state.durable,
         )?;
-        if transaction.mode == Mode::Private {
+        if transaction.mode == TransactionMode::Private {
             apply_snapshot(
                 &transaction_root.join("host-backup"),
                 project,
@@ -1754,6 +2010,839 @@ mod tests {
     fn command(program: &str, args: &[&str], path: &Path) {
         let status = Command::new(program).args(args).arg(path).status().unwrap();
         assert!(status.success(), "{program} failed for {}", path.display());
+    }
+
+    #[test]
+    #[ignore = "manual restore benchmark; uses a disposable project"]
+    fn history_restore_profile() {
+        let project = tempfile::tempdir().unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let count = std::env::var("DELTABOX_HISTORY_PROFILE_FILES")
+            .unwrap_or_else(|_| "512".into())
+            .parse::<usize>()
+            .unwrap();
+        fs::write(project.path().join("a.txt"), "original source\n").unwrap();
+        fs::write(project.path().join(".gitignore"), "target/\n").unwrap();
+        fs::create_dir(project.path().join("target")).unwrap();
+        for i in 0..count {
+            fs::write(
+                project.path().join(format!("target/{i}.o")),
+                vec![i as u8; 32 * 1024],
+            )
+            .unwrap();
+        }
+        fs::write(
+            project.path().join("target/large"),
+            vec![42; 64 * 1024 * 1024],
+        )
+        .unwrap();
+        let root = project.path().join(".deltabox/profile/engine");
+        let mut state =
+            State::create(project.path(), &root, Mode::Through, false, 0, "device".into()).unwrap();
+        let history =
+            crate::history::HistoryStore::open_with_durability(storage.path(), project.path(), false)
+                .unwrap();
+        let v1 = history.capture("profile", None).unwrap();
+        fs::write(project.path().join("a.txt"), "changed source\n").unwrap();
+        state.mark_paths(["a.txt".into()]).unwrap();
+        state.commit(None, 0).unwrap();
+        let v2 = history.capture("profile", None).unwrap();
+        let start = std::time::Instant::now();
+        state
+            .restore_history_scoped(
+                &history.tree(&v1.id).unwrap(),
+                Some(&history.scope(&v1.id).unwrap()),
+                || history.verify_expected(&v2.id),
+            )
+            .unwrap();
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "restore_profile": true,
+                "generated_files": count + 1,
+                "generated_bytes": count * 32 * 1024 + 64 * 1024 * 1024,
+                "restore_ms": start.elapsed().as_secs_f64() * 1000.0
+            })
+        );
+        history.verify_expected(&v1.id).unwrap();
+        assert_eq!(
+            fs::metadata(project.path().join("target/large"))
+                .unwrap()
+                .len(),
+            64 * 1024 * 1024
+        );
+    }
+
+    fn file_history_fixture() -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        State,
+        crate::history::HistoryStore,
+        crate::protocol::HistoryVersion,
+        crate::protocol::HistoryVersion,
+    ) {
+        let project = tempfile::tempdir().unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        fs::create_dir(project.path().join("src")).unwrap();
+        fs::create_dir(project.path().join("target")).unwrap();
+        fs::write(project.path().join(".gitignore"), "target/\n").unwrap();
+        fs::write(project.path().join("target/output"), "untouched output").unwrap();
+        fs::write(project.path().join("keep"), "untouched source").unwrap();
+        for path in ["a", "src/b"] {
+            fs::write(project.path().join(path), "v1").unwrap();
+        }
+        let root = project.path().join(".deltabox/test/engine");
+        let mut state =
+            State::create(project.path(), &root, Mode::Through, false, 1, "device".into()).unwrap();
+        let history = crate::history::HistoryStore::open(storage.path(), project.path()).unwrap();
+        let v1 = history.capture("fixture", None).unwrap();
+        for path in ["a", "src/b"] {
+            fs::write(project.path().join(path), "v2").unwrap();
+        }
+        state.mark_paths(["a".into(), "src/b".into()]).unwrap();
+        state.commit(None, 0).unwrap();
+        let v2 = history.capture("fixture", None).unwrap();
+        (project, storage, state, history, v1, v2)
+    }
+
+    fn file_history_child(
+        project: &Path,
+        root: &Path,
+        target: &Path,
+        crash: Option<&str>,
+        fail: Option<&str>,
+        recover: bool,
+    ) -> std::process::Output {
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args([
+            "--exact",
+            "macos_cbcow::state::tests::history_files_child",
+            "--nocapture",
+        ])
+        .env("DELTABOX_HISTORY_CRASH_PROJECT", project)
+        .env("DELTABOX_HISTORY_CRASH_ROOT", root)
+        .env("DELTABOX_HISTORY_CRASH_TARGET", target);
+        if let Some(point) = crash {
+            cmd.env("DELTABOX_TEST_CRASH_AT", point);
+        }
+        if let Some(point) = fail {
+            cmd.env("DELTABOX_TEST_FAIL_AT", point);
+        }
+        if recover {
+            cmd.env("DELTABOX_HISTORY_RECOVER_ONLY", "1");
+        }
+        cmd.output().unwrap()
+    }
+
+    #[test]
+    fn history_files_child() {
+        let Ok(project) = std::env::var("DELTABOX_HISTORY_CRASH_PROJECT") else {
+            return;
+        };
+        unsafe {
+            libc::setrlimit(
+                libc::RLIMIT_CORE,
+                &libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                },
+            );
+        }
+        let project = PathBuf::from(project);
+        let root = PathBuf::from(std::env::var("DELTABOX_HISTORY_CRASH_ROOT").unwrap());
+        let target = PathBuf::from(std::env::var("DELTABOX_HISTORY_CRASH_TARGET").unwrap());
+        let mut state = State::open(&project, &root).unwrap();
+        if std::env::var("DELTABOX_HISTORY_RECOVER_ONLY").as_deref() == Ok("1") {
+            return;
+        }
+        let scope = crate::history_scope::SourceScope::capture(&target).unwrap();
+        let result = state.restore_history_scoped(&target, Some(&scope), || Ok(()));
+        if std::env::var_os("DELTABOX_HISTORY_EXPECT_CONFLICT").is_some() {
+            assert!(matches!(result, Err(Error::ProjectConflict(_))));
+            return;
+        }
+        if std::env::var_os("DELTABOX_TEST_FAIL_AT").is_some() {
+            assert!(result.unwrap_err().to_string().contains("No space left"));
+            return;
+        }
+        result.unwrap();
+        panic!("crash hook did not fire");
+    }
+
+    #[test]
+    fn history_files_keep_unrelated_inodes_and_adopt_regular_baseline_changes() {
+        let (project, _storage, mut state, history, v1, v2) = file_history_fixture();
+        let unchanged = ["keep", "src", "target", "target/output"];
+        let inodes: Vec<_> = unchanged
+            .iter()
+            .map(|p| fs::metadata(project.path().join(p)).unwrap().ino())
+            .collect();
+        fs::write(
+            project.path().join("target/output"),
+            "new output before restore",
+        )
+        .unwrap();
+        state
+            .restore_history_scoped(
+                &history.tree(&v1.id).unwrap(),
+                Some(&history.scope(&v1.id).unwrap()),
+                || history.verify_expected(&v2.id),
+            )
+            .unwrap();
+        history.verify_expected(&v1.id).unwrap();
+        assert_eq!(
+            unchanged
+                .iter()
+                .map(|p| fs::metadata(project.path().join(p)).unwrap().ino())
+                .collect::<Vec<_>>(),
+            inodes
+        );
+        assert_eq!(
+            fs::read(state.root.join("base/target/output")).unwrap(),
+            b"new output before restore"
+        );
+        state.abort(None).unwrap();
+        history.verify_expected(&v1.id).unwrap();
+        assert_eq!(
+            fs::read(project.path().join("target/output")).unwrap(),
+            b"new output before restore"
+        );
+    }
+
+    #[test]
+    fn history_files_recover_partial_publication_and_reject_post_crash_edits() {
+        for crash in [
+            "macos_history_prepared",
+            "macos_history_files_renamed",
+            "macos_history_files_host_1",
+            "macos_history_host_applied",
+            "macos_history_files_base_1",
+            "macos_history_base_applied",
+            "macos_history_files_before_commit",
+            "macos_history_state_updated",
+        ] {
+            let (project, _storage, state, history, v1, v2) = file_history_fixture();
+            let root = state.root.clone();
+            let untouched_inode = fs::metadata(project.path().join("target/output"))
+                .unwrap()
+                .ino();
+            drop(state);
+            let output = file_history_child(
+                project.path(),
+                &root,
+                &history.tree(&v1.id).unwrap(),
+                Some(crash),
+                None,
+                false,
+            );
+            assert!(!output.status.success(), "{crash}");
+            let transaction: Transaction = read_json(&root.join(TRANSACTION_FILE)).unwrap();
+            assert_eq!(
+                transaction.mode,
+                TransactionMode::HistoryFilesV1,
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let tx = root.join(TRANSACTIONS_DIR).join(&transaction.id);
+            assert!(!tx.join("host-backup/target").exists());
+            assert!(!tx.join("base-backup/target").exists());
+            if crash != "macos_history_state_updated" {
+                for path in ["a", "keep", "target/output"] {
+                    let before = fs::read(project.path().join(path)).unwrap();
+                    let base_before = fs::read(root.join("base/a")).unwrap();
+                    fs::write(project.path().join(path), "post-crash external edit").unwrap();
+                    assert!(
+                        matches!(State::open(project.path(), &root), Err(Error::ProjectConflict(_))),
+                        "{crash} {path}"
+                    );
+                    assert_eq!(
+                        fs::read(project.path().join(path)).unwrap(),
+                        b"post-crash external edit"
+                    );
+                    assert_eq!(fs::read(root.join("base/a")).unwrap(), base_before);
+                    assert!(root.join(TRANSACTION_FILE).exists());
+                    fs::write(project.path().join(path), before).unwrap();
+                }
+                fs::write(project.path().join("new-user-file"), "keep").unwrap();
+                assert!(State::open(project.path(), &root).is_err());
+                assert_eq!(
+                    fs::read(project.path().join("new-user-file")).unwrap(),
+                    b"keep"
+                );
+                fs::remove_file(project.path().join("new-user-file")).unwrap();
+            }
+            let mut recovered = State::open(project.path(), &root).unwrap();
+            let expected = if crash == "macos_history_state_updated" {
+                &v1.id
+            } else {
+                &v2.id
+            };
+            history.verify_expected(expected).unwrap();
+            recovered.abort(None).unwrap();
+            history.verify_expected(expected).unwrap();
+            assert_eq!(
+                fs::metadata(project.path().join("target/output"))
+                    .unwrap()
+                    .ino(),
+                untouched_inode
+            );
+            assert!(!root.join(TRANSACTION_FILE).exists());
+        }
+    }
+
+    #[test]
+    fn history_files_recovery_can_itself_crash_and_retry() {
+        for crash in [
+            "macos_history_files_recovery_base_1",
+            "macos_history_files_recovery_host_1",
+        ] {
+            let (project, _storage, state, history, v1, v2) = file_history_fixture();
+            let root = state.root.clone();
+            drop(state);
+            let target = history.tree(&v1.id).unwrap();
+            assert!(!file_history_child(
+                project.path(),
+                &root,
+                &target,
+                Some("macos_history_files_base_1"),
+                None,
+                false
+            )
+            .status
+            .success());
+            assert!(
+                !file_history_child(project.path(), &root, &target, Some(crash), None, true)
+                    .status
+                    .success()
+            );
+            let mut recovered = State::open(project.path(), &root).unwrap();
+            history.verify_expected(&v2.id).unwrap();
+            recovered.abort(None).unwrap();
+            history.verify_expected(&v2.id).unwrap();
+        }
+    }
+
+    fn assert_history_recovery_after_version_collection(full: bool) {
+        let publication_crash = if full {
+            "macos_history_host_applied"
+        } else {
+            "macos_history_files_host_1"
+        };
+        for crash in [
+            "macos_history_prepared",
+            publication_crash,
+            "macos_history_state_updated",
+        ] {
+            let (project, _storage, state, history, target_version, expected_version) =
+                file_history_fixture();
+            let backup_version = history
+                .capture("fixture", Some("pre-restore backup".into()))
+                .unwrap();
+            let versions = [&target_version, &expected_version, &backup_version];
+            let version_dirs: Vec<_> = versions
+                .iter()
+                .map(|version| {
+                    history
+                        .tree(&version.id)
+                        .unwrap()
+                        .parent()
+                        .unwrap()
+                        .to_path_buf()
+                })
+                .collect();
+            let target = history.tree(&target_version.id).unwrap();
+            let root = state.root.clone();
+            let untouched_inode = fs::metadata(project.path().join("target/output"))
+                .unwrap()
+                .ino();
+            drop(state);
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "macos_cbcow::state::tests::history_files_child",
+                    "--nocapture",
+                ])
+                .env("DELTABOX_HISTORY_CRASH_PROJECT", project.path())
+                .env("DELTABOX_HISTORY_CRASH_ROOT", &root)
+                .env("DELTABOX_HISTORY_CRASH_TARGET", &target)
+                .env("DELTABOX_TEST_CRASH_AT", crash);
+            if full {
+                command.env("DELTABOX_TEST_HISTORY_FULL_RESTORE", "1");
+            }
+            let output = command.output().unwrap();
+            assert!(!output.status.success(), "{crash}");
+            let transaction: Transaction = read_json(&root.join(TRANSACTION_FILE)).unwrap();
+            assert!(transaction.history_restore);
+            assert_eq!(
+                transaction.mode,
+                if full {
+                    TransactionMode::Through
+                } else {
+                    TransactionMode::HistoryFilesV1
+                },
+                "{crash}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let transaction_root = root.join(TRANSACTIONS_DIR).join(&transaction.id);
+
+            for directory in &version_dirs {
+                crate::macos_tree::remove_path(directory).unwrap();
+                assert!(!directory.exists());
+            }
+            assert!(history.list().unwrap().is_empty());
+            for version in versions {
+                assert!(history.get(&version.id).is_err());
+            }
+            assert!(transaction_root.is_dir());
+            if !full && crash == publication_crash {
+                let recovery = file_history_child(
+                    project.path(),
+                    &root,
+                    &target,
+                    Some("macos_history_files_recovery_base_1"),
+                    None,
+                    true,
+                );
+                assert!(!recovery.status.success(), "recovery crash hook did not fire");
+                assert!(root.join(TRANSACTION_FILE).exists());
+            }
+            let expected = if crash == "macos_history_state_updated" {
+                b"v1"
+            } else {
+                b"v2"
+            };
+            let mut recovered = State::open(project.path(), &root).unwrap();
+            for tree in [project.path().to_path_buf(), root.join(BASE_DIR)] {
+                for path in ["a", "src/b"] {
+                    assert_eq!(
+                        fs::read(tree.join(path)).unwrap(),
+                        expected,
+                        "{crash}: {}",
+                        tree.join(path).display()
+                    );
+                }
+                assert_eq!(fs::read(tree.join("keep")).unwrap(), b"untouched source");
+                assert_eq!(
+                    fs::read(tree.join("target/output")).unwrap(),
+                    b"untouched output"
+                );
+            }
+            if !full {
+                assert_eq!(
+                    fs::metadata(project.path().join("target/output"))
+                        .unwrap()
+                        .ino(),
+                    untouched_inode
+                );
+            }
+            assert!(!root.join(TRANSACTION_FILE).exists());
+            assert!(!transaction_root.exists());
+            recovered.abort(None).unwrap();
+            drop(recovered);
+            let _reopened = State::open(project.path(), &root).unwrap();
+            for path in ["a", "src/b"] {
+                assert_eq!(fs::read(project.path().join(path)).unwrap(), expected);
+                assert_eq!(
+                    fs::read(root.join(BASE_DIR).join(path)).unwrap(),
+                    expected
+                );
+            }
+            assert!(history.list().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn history_files_recovery_survives_collection_of_all_history_versions() {
+        assert_history_recovery_after_version_collection(false);
+    }
+
+    #[test]
+    fn history_full_recovery_survives_collection_of_all_history_versions() {
+        assert_history_recovery_after_version_collection(true);
+    }
+
+    #[test]
+    fn history_files_enospc_before_and_after_publication_preserves_original() {
+        for fail in [
+            "macos_history_files_backup",
+            "macos_history_files_before_marker",
+            "macos_history_files_host_1",
+            "macos_history_files_base_1",
+            "macos_history_files_before_commit",
+        ] {
+            let (project, _storage, state, history, v1, v2) = file_history_fixture();
+            let root = state.root.clone();
+            drop(state);
+            let output = file_history_child(
+                project.path(),
+                &root,
+                &history.tree(&v1.id).unwrap(),
+                None,
+                Some(fail),
+                false,
+            );
+            assert!(
+                output.status.success(),
+                "{fail}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let mut recovered = State::open(project.path(), &root).unwrap();
+            history.verify_expected(&v2.id).unwrap();
+            recovered.abort(None).unwrap();
+            history.verify_expected(&v2.id).unwrap();
+            assert!(!root.join(TRANSACTION_FILE).exists());
+        }
+    }
+
+    #[test]
+    fn history_files_corrupt_undo_backup_refuses_recovery_without_writes() {
+        let (project, _storage, state, history, v1, v2) = file_history_fixture();
+        let root = state.root.clone();
+        drop(state);
+        assert!(!file_history_child(
+            project.path(),
+            &root,
+            &history.tree(&v1.id).unwrap(),
+            Some("macos_history_prepared"),
+            None,
+            false
+        )
+        .status
+        .success());
+        let transaction: Transaction = read_json(&root.join(TRANSACTION_FILE)).unwrap();
+        let backup = root
+            .join(TRANSACTIONS_DIR)
+            .join(transaction.id)
+            .join("host-backup/a");
+        fs::write(backup, "corrupt backup").unwrap();
+        assert!(State::open(project.path(), &root)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("integrity"));
+        history.verify_expected(&v2.id).unwrap();
+        assert!(root.join(TRANSACTION_FILE).exists());
+    }
+
+    #[test]
+    fn history_files_complex_cases_keep_full_restore_semantics() {
+        for case in [
+            "added",
+            "deleted",
+            "symlink",
+            "hardlink",
+            "external-hardlink",
+            "permissions",
+            "readonly-parent",
+            "ignored-structure",
+            "directory-swap",
+            "xattr",
+            "base-hardlink",
+        ] {
+            let (project, storage, mut state, history, v1, _v2) = file_history_fixture();
+            let a = project.path().join("a");
+            match case {
+                "added" => fs::write(project.path().join("new"), "new source").unwrap(),
+                "deleted" => fs::remove_file(&a).unwrap(),
+                "symlink" => {
+                    fs::remove_file(&a).unwrap();
+                    std::os::unix::fs::symlink("keep", &a).unwrap();
+                }
+                "hardlink" => {
+                    fs::remove_file(&a).unwrap();
+                    fs::hard_link(project.path().join("src/b"), &a).unwrap();
+                }
+                "external-hardlink" => {
+                    fs::hard_link(&a, storage.path().join("outside-link")).unwrap()
+                }
+                "permissions" => fs::set_permissions(&a, fs::Permissions::from_mode(0o600)).unwrap(),
+                "readonly-parent" => {
+                    fs::set_permissions(project.path().join("src"), fs::Permissions::from_mode(0o500))
+                        .unwrap()
+                }
+                "ignored-structure" => {
+                    fs::write(project.path().join("target/new"), "keep generated").unwrap()
+                }
+                "directory-swap" => {
+                    fs::remove_file(&a).unwrap();
+                    fs::create_dir(&a).unwrap();
+                    fs::write(a.join("child"), "child").unwrap();
+                }
+                "xattr" => xattr::set(&a, "com.deltabox.test", b"metadata").unwrap(),
+                "base-hardlink" => {
+                    fs::remove_file(state.root.join("base/a")).unwrap();
+                    fs::hard_link(state.root.join("base/keep"), state.root.join("base/a")).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let expected = history.capture("current", None).unwrap();
+            let target = history.tree(&v1.id).unwrap();
+            let scope = history.scope(&v1.id).unwrap();
+            assert!(
+                crate::history::incremental::FileRestorePlan::plan(
+                    project.path(),
+                    &state.root.join(BASE_DIR),
+                    &target,
+                    &scope,
+                    &state.root.join(TRANSACTIONS_DIR)
+                )
+                .unwrap()
+                .is_none(),
+                "{case}"
+            );
+            state
+                .restore_history_scoped(&target, Some(&scope), || {
+                    history.verify_expected(&expected.id)
+                })
+                .unwrap();
+            history.verify_expected(&v1.id).unwrap();
+            state.abort(None).unwrap();
+            history.verify_expected(&v1.id).unwrap();
+            assert_eq!(
+                fs::read(project.path().join("target/output")).unwrap(),
+                b"untouched output"
+            );
+            if case == "ignored-structure" {
+                assert_eq!(
+                    fs::read(project.path().join("target/new")).unwrap(),
+                    b"keep generated"
+                );
+            }
+            if case == "external-hardlink" {
+                assert_eq!(fs::read(storage.path().join("outside-link")).unwrap(), b"v2");
+            }
+        }
+    }
+
+    #[test]
+    fn history_files_external_changes_during_preparation_fail_before_writing() {
+        let (project, _storage, state, history, v1, _v2) = file_history_fixture();
+        let root = state.root.clone();
+        drop(state);
+        let pause = tempfile::tempdir().unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "macos_cbcow::state::tests::history_files_child",
+                "--nocapture",
+            ])
+            .env("DELTABOX_HISTORY_CRASH_PROJECT", project.path())
+            .env("DELTABOX_HISTORY_CRASH_ROOT", &root)
+            .env(
+                "DELTABOX_HISTORY_CRASH_TARGET",
+                history.tree(&v1.id).unwrap(),
+            )
+            .env("DELTABOX_HISTORY_EXPECT_CONFLICT", "1")
+            .env("DELTABOX_TEST_PAUSE_AT", "macos_history_files_before_verify")
+            .env("DELTABOX_TEST_PAUSE_DIR", pause.path())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !pause
+            .path()
+            .join("macos_history_files_before_verify.arrived")
+            .exists()
+        {
+            assert!(
+                std::time::Instant::now() < deadline && child.try_wait().unwrap().is_none(),
+                "child failed to reach preparation boundary"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        fs::write(
+            project.path().join("target/output"),
+            "concurrent build output",
+        )
+        .unwrap();
+        fs::write(
+            pause.path().join("macos_history_files_before_verify.release"),
+            "",
+        )
+        .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert_eq!(fs::read(project.path().join("a")).unwrap(), b"v2");
+        assert_eq!(fs::read(project.path().join("src/b")).unwrap(), b"v2");
+        assert_eq!(
+            fs::read(project.path().join("target/output")).unwrap(),
+            b"concurrent build output"
+        );
+        assert!(!root.join(TRANSACTION_FILE).exists());
+    }
+
+    #[test]
+    fn trusted_command_completion_tracks_all_mutations_without_any_events() {
+        let (project, mut state) = state(Mode::Through);
+        let (checkpoint, _) = state.checkpoint(Some("review".into())).unwrap();
+        fs::write(project.path().join("a.txt"), "rejected").unwrap();
+        fs::write(project.path().join("generated.txt"), "created").unwrap();
+        fs::remove_dir(project.path().join("empty")).unwrap();
+        assert_eq!(
+            state.reconcile_command_completion("device".into()).unwrap(),
+            3
+        );
+        assert_eq!(state.diff(Some(checkpoint), None).unwrap().len(), 3);
+        state.abort(Some(checkpoint)).unwrap();
+        assert_eq!(fs::read(project.path().join("a.txt")).unwrap(), b"accepted");
+        assert!(!project.path().join("generated.txt").exists());
+        assert!(project.path().join("empty").is_dir());
+    }
+
+    #[test]
+    fn history_crash_child() {
+        let Ok(project) = std::env::var("DELTABOX_HISTORY_CRASH_PROJECT") else {
+            return;
+        };
+        unsafe {
+            libc::setrlimit(
+                libc::RLIMIT_CORE,
+                &libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                },
+            );
+        }
+        let project = PathBuf::from(project);
+        let root = PathBuf::from(std::env::var("DELTABOX_HISTORY_CRASH_ROOT").unwrap());
+        let target = PathBuf::from(std::env::var("DELTABOX_HISTORY_CRASH_TARGET").unwrap());
+        State::open(&project, &root)
+            .unwrap()
+            .restore_history(&target, || Ok(()))
+            .unwrap();
+        panic!("crash hook did not fire");
+    }
+
+    #[test]
+    fn history_restore_recovers_each_crash_boundary() {
+        for crash in [
+            "macos_history_prepared",
+            "macos_history_host_applied",
+            "macos_history_base_applied",
+            "macos_history_state_updated",
+        ] {
+            let (project, mut state) = state(Mode::Through);
+            let storage = tempfile::tempdir().unwrap();
+            let history =
+                crate::history::HistoryStore::open(storage.path(), project.path()).unwrap();
+            let v1 = history.capture("sid", None).unwrap();
+            fs::write(project.path().join("a.txt"), "v2").unwrap();
+            state.mark_paths(["a.txt".into()]).unwrap();
+            state.commit(None, 0).unwrap();
+            let v2 = history.capture("sid", Some("backup".into())).unwrap();
+            let root = state.root.clone();
+            drop(state);
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "macos_cbcow::state::tests::history_crash_child",
+                    "--nocapture",
+                ])
+                .env("DELTABOX_HISTORY_CRASH_PROJECT", project.path())
+                .env("DELTABOX_HISTORY_CRASH_ROOT", &root)
+                .env(
+                    "DELTABOX_HISTORY_CRASH_TARGET",
+                    history.tree(&v1.id).unwrap(),
+                )
+                .env("DELTABOX_TEST_CRASH_AT", crash)
+                .output()
+                .unwrap();
+            assert!(!output.status.success(), "{crash}");
+            assert!(
+                root.join(TRANSACTION_FILE).exists(),
+                "{crash}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if crash != "macos_history_state_updated" {
+                let original = fs::read(project.path().join("a.txt")).unwrap();
+                fs::write(project.path().join("a.txt"), "post-crash user edit").unwrap();
+                fs::write(project.path().join("external"), "new user file").unwrap();
+                assert!(matches!(
+                    State::open(project.path(), &root),
+                    Err(Error::ProjectConflict(_))
+                ));
+                assert_eq!(
+                    fs::read(project.path().join("a.txt")).unwrap(),
+                    b"post-crash user edit"
+                );
+                assert_eq!(
+                    fs::read(project.path().join("external")).unwrap(),
+                    b"new user file"
+                );
+                assert!(root.join(TRANSACTION_FILE).exists());
+                fs::write(project.path().join("a.txt"), original).unwrap();
+                fs::remove_file(project.path().join("external")).unwrap();
+            }
+            let mut recovered = State::open(project.path(), &root).unwrap();
+            let expected = if crash == "macos_history_state_updated" {
+                &v1.id
+            } else {
+                &v2.id
+            };
+            history.verify_expected(expected).unwrap();
+            recovered.abort(None).unwrap();
+            history.verify_expected(expected).unwrap();
+            assert!(!root.join(TRANSACTION_FILE).exists());
+            assert_eq!(history.list().unwrap().len(), 2);
+        }
+    }
+
+    #[test]
+    fn durable_history_survives_commit_restore_and_session_restart() {
+        let (project, mut state) = state(Mode::Through);
+        let readonly = project.path().join("readonly");
+        fs::create_dir(&readonly).unwrap();
+        fs::write(readonly.join("keep"), "read-only subtree").unwrap();
+        fs::set_permissions(&readonly, fs::Permissions::from_mode(0o500)).unwrap();
+        state
+            .mark_paths(["readonly".into(), "readonly/keep".into()])
+            .unwrap();
+        state.commit(None, 0).unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let history = crate::history::HistoryStore::open(storage.path(), project.path()).unwrap();
+        let v1 = history.capture("session-one", Some("v1".into())).unwrap();
+        fs::write(project.path().join("a.txt"), "v2").unwrap();
+        state.mark_paths(["a.txt".into()]).unwrap();
+        state.commit(None, 0).unwrap();
+        let v2 = history.capture("session-one", Some("v2".into())).unwrap();
+        history.verify_expected(&v2.id).unwrap();
+        let target = history.tree(&v1.id).unwrap();
+        state
+            .restore_history(&target, || history.verify_expected(&v2.id))
+            .unwrap();
+        assert_eq!(fs::read(project.path().join("a.txt")).unwrap(), b"accepted");
+        state.abort(None).unwrap();
+        assert_eq!(fs::read(project.path().join("a.txt")).unwrap(), b"accepted");
+        drop(state);
+        let next_root = project.path().join(".deltabox/test/restarted");
+        let mut restarted = State::create(
+            project.path(),
+            &next_root,
+            Mode::Through,
+            false,
+            1,
+            "device".into(),
+        )
+        .unwrap();
+        let reopened = crate::history::HistoryStore::open(storage.path(), project.path()).unwrap();
+        assert_eq!(reopened.list().unwrap().len(), 2);
+        restarted
+            .restore_history(&reopened.tree(&v2.id).unwrap(), || {
+                reopened.verify_expected(&v1.id)
+            })
+            .unwrap();
+        assert_eq!(fs::read(project.path().join("a.txt")).unwrap(), b"v2");
+        assert_eq!(fs::metadata(&readonly).unwrap().mode() & 0o777, 0o500);
+        assert_eq!(reopened.list().unwrap().len(), 2);
+        crate::macos_tree::remove_path(project.path()).unwrap();
+        crate::macos_tree::remove_path(storage.path()).unwrap();
     }
 
     #[test]

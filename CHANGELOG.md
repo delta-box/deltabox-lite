@@ -11,14 +11,20 @@ Unreleased section below into the new version's section.
 
 ### Added
 
+- Durable project file history (`deltabox history`, stdio RPC `history.*`, and
+  Node `history*`) for macOS `cbcow-through` sessions: immutable project-source
+  snapshots with frozen `.gitignore`/tracked-file scope, session-free read-only
+  `preview`, conflict-checked `restore` with automatic pre-restore undo backups,
+  and selective atomic regular-file restore transactions (`history-files-v1`)
+  that preserve ignored build-output inodes.
 - `deltabox session list` (`SessionCoordinator::list_sessions`) with
   project/status filters and JSON output for discovering recorded sessions
   without probing helper liveness.
 - `deltabox session release` (`session.release` / `releaseSession`) for ending
   a macOS `cbcow-through` session while preserving current project edits;
   active review scopes and private modes are rejected.
-- Repeatable `--path` filters and `--stat` / `--name-only` output for `diff`
-  and `review diff`.
+- Repeatable `--path` filters and `--stat` / `--name-only` output for session,
+  review, and history diffs (including session-free history previews).
 - `deltabox policy check` for TOML, policy-constraint, and unknown-field
   validation, and `policy show` for resolved TOML or JSON policy output.
 - Repeatable `--network-allow HOST:PORT` on `exec` and `run`, exposing

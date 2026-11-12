@@ -62,6 +62,33 @@ export interface NativeExecResult {
  */
 export type NativeExecutionProfile = 'workspace-write' | 'read-write'
 
+/** Durable project versions survive commit, abort, and session restart.
+ * History v1 supports macOS cbcow-through. Snapshots are retained indefinitely;
+ * logical_bytes is not physical APFS usage. No automatic pruning is performed.
+ */
+export interface NativeHistoryVersion {
+  id: string
+  session_id: string
+  label: string | null
+  created_at_ms: number
+  entry_count: number
+  logical_bytes: number
+}
+
+export interface NativeHistoryCapabilities {
+  version: number
+  supported: boolean
+  reason?: string
+  retention: 'manual'
+  scope: 'project'
+}
+
+export interface NativeHistoryRestoreResult {
+  version: NativeHistoryVersion
+  backup: NativeHistoryVersion
+  restored: number
+}
+
 export interface NativeCheckpointInfo {
   id: string
   label: string | null
@@ -173,6 +200,17 @@ export interface NativeDeltaboxInstance {
   readFile(sessionId: string, path: string): Promise<Buffer>
   writeFile(sessionId: string, path: string, content: Buffer): Promise<void>
   recordFileChanges(sessionId: string, paths: string[]): Promise<void>
+  historyCapabilities(sessionId: string): Promise<NativeHistoryCapabilities>
+  historyCapture(sessionId: string, label?: string): Promise<NativeHistoryVersion>
+  historyList(sessionId: string): Promise<NativeHistoryVersion[]>
+  /** Compare current files with a saved version without starting a sandbox. */
+  historyPreview(versionId: string): Promise<NativeDiffResult>
+  /** Diff from the current project to the immutable target version. */
+  historyDiff(sessionId: string, versionId: string): Promise<NativeDiffResult>
+  /** Requires no active review and an exact live match with expectedVersionId.
+   * Saves a persistent backup, restores the target, and accepts the new baseline.
+   */
+  historyRestore(sessionId: string, versionId: string, expectedVersionId: string): Promise<NativeHistoryRestoreResult>
   checkpoint(sessionId: string, label?: string): Promise<NativeCheckpointInfo>
   diff(sessionId: string, from?: string, to?: string): Promise<NativeDiffResult>
   commit(sessionId: string, checkpoint?: string): Promise<NativeCommitResult>
