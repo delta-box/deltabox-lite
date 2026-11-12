@@ -11,6 +11,9 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 
+mod diff_output;
+mod policy_command;
+
 #[derive(Parser)]
 #[command(
     name = "deltabox",
@@ -55,6 +58,11 @@ enum Command {
         #[command(subcommand)]
         cmd: ReviewCmd,
     },
+    /// Check policy files or print a reusable policy without starting a session.
+    Policy {
+        #[command(subcommand)]
+        cmd: policy_command::PolicyCommand,
+    },
     /// Run the in-sandbox worker loop (spawned by the Linux backend).
     #[command(hide = true)]
     Worker(WorkerArgs),
@@ -84,6 +92,29 @@ enum SessionCmd {
     Stop(StopArgs),
     /// Show session status.
     Status(StatusArgs),
+    /// List recorded sessions for this project without recovering or starting them.
+    List(SessionListArgs),
+    /// End a macOS cbcow-through session while preserving current file edits.
+    Release(ReleaseArgs),
+}
+
+#[derive(clap::Args)]
+struct SessionListArgs {
+    #[arg(long, default_value = ".")]
+    project: PathBuf,
+    /// Filter by recorded lifecycle state, not by process liveness.
+    #[arg(long, value_parser = ["running", "stopped"])]
+    status: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(clap::Args)]
+struct ReleaseArgs {
+    #[arg(value_parser = parse_session_id)]
+    session: String,
+    #[arg(long, default_value = ".")]
+    project: PathBuf,
 }
 
 #[derive(Subcommand)]
@@ -125,8 +156,8 @@ struct ReviewDiffArgs {
     session: String,
     #[arg(long, default_value = ".")]
     project: PathBuf,
-    #[arg(long)]
-    json: bool,
+    #[command(flatten)]
+    output: diff_output::DiffOutputArgs,
 }
 
 #[derive(clap::Args)]
@@ -186,6 +217,10 @@ struct ExecArgs {
     fs_write_allow: Vec<PathBuf>,
     #[arg(long)]
     env: Vec<String>,
+    /// Temporarily allow an exact host:port; repeat for multiple targets (max 32).
+    /// Requires an approval-enabled allowlist policy on the session.
+    #[arg(long, value_name = "HOST:PORT", value_parser = parse_network_target)]
+    network_allow: Vec<String>,
     #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
     command: Vec<String>,
 }
@@ -218,6 +253,9 @@ struct RunArgs {
     cwd: Option<PathBuf>,
     #[arg(long)]
     env: Vec<String>,
+    /// Temporarily allow an exact host:port; requires an approval-enabled policy.
+    #[arg(long, value_name = "HOST:PORT", value_parser = parse_network_target)]
+    network_allow: Vec<String>,
     #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
     command: Vec<String>,
 }
@@ -259,8 +297,8 @@ struct DiffArgs {
     session: String,
     #[arg(long, default_value = ".")]
     project: PathBuf,
-    #[arg(long)]
-    json: bool,
+    #[command(flatten)]
+    output: diff_output::DiffOutputArgs,
     #[arg(long)]
     from: Option<String>,
     #[arg(long)]
@@ -418,6 +456,38 @@ fn main() -> anyhow::Result<()> {
                 let info = manager.status(&args.session)?;
                 println!("{}", serde_json::to_string_pretty(&info)?);
             }
+            SessionCmd::List(args) => {
+                let manager = SessionCoordinator::new(&args.project, None)?;
+                let mut sessions = manager.list_sessions()?;
+                if let Some(status) = args.status {
+                    sessions.retain(|session| session_status_name(&session.status) == status);
+                }
+                if args.json {
+                    println!("{}", serde_json::to_string_pretty(&sessions)?);
+                } else if sessions.is_empty() {
+                    println!("No recorded sessions.");
+                } else {
+                    println!(
+                        "{:<36} {:<7} {:<13} {:>13}",
+                        "SESSION", "STATUS", "FS_MODE", "STARTED_AT_MS"
+                    );
+                    for session in sessions {
+                        let mode = serde_json::to_value(&session.resolved_fs_mode)?;
+                        println!(
+                            "{:<36} {:<7} {:<13} {:>13}",
+                            session.session_id,
+                            session_status_name(&session.status),
+                            mode.as_str().unwrap_or("unknown"),
+                            session.started_at_ms
+                        );
+                    }
+                }
+            }
+            SessionCmd::Release(args) => {
+                let manager = SessionCoordinator::new(&args.project, None)?;
+                let info = manager.release(&args.session)?;
+                println!("{}", serde_json::to_string_pretty(&info)?);
+            }
         },
         Command::Run(args) => {
             let _cancel = cancel_on_termination();
@@ -429,6 +499,7 @@ fn main() -> anyhow::Result<()> {
         Command::Exec(args) => {
             let _cancel = cancel_on_termination();
             validate_exec_command(&args.command)?;
+            validate_network_grant_count(&args.network_allow)?;
             let manager = SessionCoordinator::new(&args.project, None)?;
             let env = if args.env.is_empty() {
                 None
@@ -447,7 +518,7 @@ fn main() -> anyhow::Result<()> {
                 env,
                 label: args.label,
                 execution_profile: args.execution_profile.unwrap_or_default(),
-                network_allow: Vec::new(),
+                network_allow: args.network_allow,
                 fs_read_allow: args.fs_read_allow,
                 fs_write_allow: args.fs_write_allow,
             })?;
@@ -493,11 +564,7 @@ fn main() -> anyhow::Result<()> {
                 from: args.from,
                 to: args.to,
             })?;
-            if args.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
-                print!("{}", deltabox_core::changeset::render_diff_text(&result));
-            }
+            print!("{}", diff_output::render(result, &args.output)?);
         }
         Command::Commit(args) => {
             let manager = SessionCoordinator::new(&args.project, None)?;
@@ -604,11 +671,7 @@ fn main() -> anyhow::Result<()> {
             ReviewCmd::Diff(args) => {
                 let manager = SessionCoordinator::new(&args.project, None)?;
                 let diff = manager.review_diff(&args.session)?;
-                if args.json {
-                    println!("{}", serde_json::to_string_pretty(&diff)?);
-                } else {
-                    print!("{}", deltabox_core::changeset::render_diff_text(&diff));
-                }
+                print!("{}", diff_output::render(diff, &args.output)?);
             }
             ReviewCmd::Commit(args) => {
                 let manager = SessionCoordinator::new(&args.project, None)?;
@@ -632,6 +695,7 @@ fn main() -> anyhow::Result<()> {
                 );
             }
         },
+        Command::Policy { cmd } => policy_command::run(cmd)?,
         Command::Worker(args) => {
             deltabox_core::worker::run_worker(&args.root, &args.runtime)?;
         }
@@ -710,6 +774,29 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn session_status_name(status: &deltabox_core::protocol::SessionStatus) -> &'static str {
+    match status {
+        deltabox_core::protocol::SessionStatus::Running => "running",
+        deltabox_core::protocol::SessionStatus::Stopped => "stopped",
+    }
+}
+
+fn parse_session_id(value: &str) -> Result<String, String> {
+    match uuid::Uuid::parse_str(value) {
+        Ok(id) if id.to_string() == value => Ok(value.to_owned()),
+        _ => Err("session ID must be a canonical UUID".into()),
+    }
+}
+
+fn parse_network_target(value: &str) -> Result<String, String> {
+    deltabox_core::network::normalize_target(value).map_err(|error| error.to_string())
+}
+
+fn validate_network_grant_count(targets: &[String]) -> anyhow::Result<()> {
+    anyhow::ensure!(targets.len() <= 32, "at most 32 network targets per exec");
+    Ok(())
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn default_backend() -> DefaultBackend {
     DefaultBackend::default()
@@ -774,6 +861,7 @@ enum RunAction {
 
 fn run_transaction(args: RunArgs) -> anyhow::Result<i32> {
     validate_exec_command(&args.command)?;
+    validate_network_grant_count(&args.network_allow)?;
     let action = if args.commit {
         Some(RunAction::Commit)
     } else if args.abort {
@@ -819,7 +907,7 @@ fn run_transaction(args: RunArgs) -> anyhow::Result<i32> {
             env,
             label: args.label,
             execution_profile: Default::default(),
-            network_allow: Vec::new(),
+            network_allow: args.network_allow,
             fs_read_allow: Vec::new(),
             fs_write_allow: Vec::new(),
         })?;

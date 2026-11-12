@@ -195,3 +195,13 @@ a hardcoded host-project path therefore sees that literal unchanged, and the
 isolation policy denies direct backing writes. Prefer relative paths or pass
 project paths as separate argv values. `mount_namespace: false` in session
 status makes this limitation machine-readable.
+
+## Native host release (macOS)
+
+`session.release` / `releaseSession` / `deltabox session release` closes an idle
+`cbcow-through` session without reverting pending host edits. It refuses an
+unresolved review and private mode. Native embedding hosts should resolve their
+review first, then release when unloading. The next session adopts the current
+workspace as its baseline. `session.stop` / `stopSession` keeps its explicit
+rollback behavior. This matters when external editors change files after the
+last accepted agent review.

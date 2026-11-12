@@ -347,6 +347,20 @@ impl NativeDeltabox {
         .await
     }
 
+    /// Preserve host edits when a native embedding closes an idle session.
+    #[napi]
+    pub async fn release_session(&self, session_id: String) -> napi::Result<NativeSessionInfo> {
+        let coordinator = Arc::clone(&self.coordinator);
+        let isolation = self.isolation;
+        run_blocking(move || {
+            coordinator
+                .release(&session_id)
+                .map(|value| session_info(value, isolation))
+                .map_err(native_error)
+        })
+        .await
+    }
+
     /// Take ownership of a session whose previous owner process died, keeping
     /// its pending changes so the caller can commit or abort them.
     #[napi]

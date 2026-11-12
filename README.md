@@ -261,6 +261,28 @@ Session records live in `<project>/.deltabox` by default, so each project stays
 self-contained. Set `DELTABOX_STATE_DIR=/path/to/state` to relocate session
 records and engine state to an arbitrary path instead.
 
+### Session discovery, focused diffs, and policy tools
+
+Find recorded sessions, inspect only the paths relevant to a task, and validate
+a policy before starting a sandbox:
+
+```bash
+deltabox session list --status running
+deltabox diff "$session_id" --path src --path README.md --stat
+deltabox policy check policy.toml
+deltabox policy show --policy policy.toml --json
+```
+
+`session list` reports stored lifecycle state, not helper-process liveness.
+Diff path filters affect the display only; later commit and abort operations
+keep their existing scope. On macOS `cbcow-through`, `session release` ends a
+session while preserving current project edits. Approval-enabled policies can
+also grant an exact destination to one command with
+`exec SESSION --network-allow example.com:443` or `run --network-allow example.com:443`.
+See [CLI workflows](docs/cli-workflows.md) for all five features, complete
+examples, JSON output, and platform limits. These commands are available in
+the current source tree; see the changelog for released versions.
+
 ### Shell command syntax
 
 `deltabox exec` and `deltabox run` execute the argv after `--` directly. Commands
@@ -445,6 +467,8 @@ isolation.
   helper, and local control protocol.
 - `plugin` - dsh and pi plugin
 - `npm` - npm package
+- `docs/cli-workflows.md` — session discovery/release, focused diffs, policy tools,
+  and temporary network grants.
 - `docs/policy.md` — policy schema and enforcement boundaries.
 - `docs/macos.md` — macOS backend behavior and compatibility matrix.
 

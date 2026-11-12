@@ -72,6 +72,9 @@ impl Server {
             )?)?
             }
             Method::SessionStop(p) => serde_json::to_value(self.manager.stop(&p.session_id)?)?,
+            Method::SessionRelease(p) => {
+                serde_json::to_value(self.manager.release(&p.session_id)?)?
+            }
             Method::SessionStatus(p) => serde_json::to_value(self.manager.status(&p.session_id)?)?,
             Method::SessionExec(p) => serde_json::to_value(self.manager.exec(p)?)?,
             Method::FsRead(p) => {

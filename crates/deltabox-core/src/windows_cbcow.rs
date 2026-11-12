@@ -48,6 +48,11 @@ impl Manager {
         Ok(self.manifest(id)?.fs_mode)
     }
 
+    /// Enumerate the native record root, including an explicit state override.
+    pub(crate) fn list_sessions(&self) -> Result<Vec<crate::session_catalog::SessionSummary>> {
+        crate::session_catalog::read_sessions(&self.state, &self.project)
+    }
+
     pub fn start(&self, policy: Option<&Path>, mode: FilesystemMode, durability: DurabilityMode, group: Option<u64>) -> Result<SessionInfo> {
         if mode == FilesystemMode::CopyPrivate {
             return Err(Error::Unsupported("use start_copy_private for copy-private sessions".into()));

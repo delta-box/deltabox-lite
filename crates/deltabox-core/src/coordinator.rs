@@ -8,6 +8,7 @@ use crate::protocol::{
     CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecResult, FilesystemMode,
     FsReadResult, ReviewBeginParams, SessionInfo,
 };
+use crate::session_catalog::SessionSummary;
 #[cfg(not(windows))]
 use crate::session::SessionMeta;
 #[cfg(not(windows))]
@@ -53,6 +54,8 @@ pub struct CoordinatorOptions {
 pub struct SessionCoordinator {
     #[cfg(not(windows))]
     project: PathBuf,
+    #[cfg(not(windows))]
+    session_root: PathBuf,
     routes: RwLock<HashMap<String, FilesystemMode>>,
     attach_sessions: bool,
     /// Owner locks for the sessions this process is attached to.
@@ -80,6 +83,10 @@ impl SessionCoordinator {
 
     pub fn new_with_options(project: &Path, options: CoordinatorOptions) -> Result<Self> {
         let project = project.canonicalize()?;
+        // Resolve once: listing must not create a removed state directory or
+        // change roots if the process environment changes after construction.
+        #[cfg(not(windows))]
+        let session_root = state_root(&project)?;
         let attach_sessions = options.attach_sessions;
         let helper_bin = options
             .helper_bin
@@ -119,6 +126,8 @@ impl SessionCoordinator {
         Ok(Self {
             #[cfg(not(windows))]
             project,
+            #[cfg(not(windows))]
+            session_root,
             routes: RwLock::new(HashMap::new()),
             attach_sessions,
             owners: Mutex::new(HashMap::new()),
@@ -300,7 +309,21 @@ impl SessionCoordinator {
         #[cfg(windows)]
         return Ok(self.windows_cbcow.sessions_root().to_path_buf());
         #[cfg(not(windows))]
-        state_root(&self.project)
+        Ok(self.session_root.clone())
+    }
+
+    /// List this project's persisted sessions without recovering state,
+    /// starting helpers, or scanning the working tree. Status is the last
+    /// recorded status, not a liveness probe. Results are oldest first.
+    pub fn list_sessions(&self) -> Result<Vec<SessionSummary>> {
+        #[cfg(not(windows))]
+        {
+            crate::session_catalog::read_sessions(&self.session_root, &self.project)
+        }
+        #[cfg(windows)]
+        {
+            self.windows_cbcow.list_sessions()
+        }
     }
 
     fn session_store(&self, session_id: &str) -> Result<PathBuf> {
@@ -351,6 +374,22 @@ impl SessionCoordinator {
             .remove(session_id);
         // Released only after the stop recorded itself, so no observer ever
         // sees a free owner lock on a session that is still running.
+        self.owners_map().remove(session_id);
+        Ok(info)
+    }
+
+    pub fn release(&self, session_id: &str) -> Result<SessionInfo> {
+        let info = match self.route(session_id)? {
+            #[cfg(target_os = "macos")]
+            Route::MacosCbcow(manager) => manager.release(session_id),
+            _ => Err(Error::Unsupported(
+                "preserve-current release requires macOS cbcow-through".into(),
+            )),
+        }?;
+        self.routes
+            .write()
+            .expect("coordinator route cache poisoned")
+            .remove(session_id);
         self.owners_map().remove(session_id);
         Ok(info)
     }
@@ -747,6 +786,43 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[cfg(not(windows))]
+    #[test]
+    fn list_sessions_uses_persisted_records_without_recovery_or_registry() {
+        let project = tempfile::tempdir().unwrap();
+        let coordinator = SessionCoordinator::new(project.path(), None).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let directory = coordinator.session_root.join(&id);
+        fs::create_dir(&directory).unwrap();
+        // A running native session has no runtime, engine, or helper at all:
+        // status() would attempt recovery, but discovery needs only this file.
+        let mut filesystem = crate::protocol::FilesystemInfo::default();
+        filesystem.resolved_fs_mode = FilesystemMode::CbcowThrough;
+        let meta = SessionMeta {
+            session_id: id.clone(),
+            project: project.path().canonicalize().unwrap(),
+            policy_path: None,
+            started_at_ms: 42,
+            status: crate::protocol::SessionStatus::Running,
+            filesystem,
+        };
+        fs::write(
+            directory.join("session.json"),
+            serde_json::to_vec(&meta).unwrap(),
+        )
+        .unwrap();
+        fs::write(coordinator.session_root.join("sessions.json"), b"stale registry").unwrap();
+        let sessions = coordinator.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, id);
+        assert_eq!(sessions[0].resolved_fs_mode, FilesystemMode::CbcowThrough);
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        assert!(coordinator.routes.read().unwrap().is_empty());
+        fs::remove_dir_all(&coordinator.session_root).unwrap();
+        assert!(coordinator.list_sessions().unwrap().is_empty());
+        assert!(!coordinator.session_root.exists());
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_routes_persisted_modes_from_custom_state_after_reopen() {
@@ -784,6 +860,10 @@ mod tests {
             manifest["fs_mode"] = serde_json::to_value(mode).unwrap();
             fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
             let reopened = SessionCoordinator::new_with_options(&project, options.clone()).unwrap();
+            let sessions = reopened.list_sessions().unwrap();
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].session_id, started.session_id);
+            assert_eq!(sessions[0].resolved_fs_mode, mode);
             for _ in 0..2 {
                 let route = reopened.route(&started.session_id).unwrap();
                 if mode == FilesystemMode::CopyPrivate {
