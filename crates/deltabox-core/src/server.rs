@@ -64,6 +64,20 @@ impl Server {
                 serde_json::to_value(self.manager.history_preview(&p.version_id)?)?
             }
             Method::HistoryRestore(p) => serde_json::to_value(self.manager.history_restore(p)?)?,
+            Method::HistoryStats {} => {
+                serde_json::to_value(self.manager.history_storage_stats()?)?
+            }
+            Method::HistoryVerify { version_id } => {
+                serde_json::to_value(self.manager.history_verify(version_id.as_deref())?)?
+            }
+            Method::HistoryPin(p) => serde_json::to_value(self.manager.history_pin(p)?)?,
+            Method::HistoryPrunePlan(p) => {
+                serde_json::to_value(self.manager.history_prune_plan(p)?)?
+            }
+            Method::HistoryPruneApply(p) => {
+                serde_json::to_value(self.manager.history_prune_apply(p)?)?
+            }
+            Method::HistoryGc {} => serde_json::to_value(self.manager.history_gc_resume()?)?,
             Method::SessionStart(p) => {
                 // serve is bound to one project at startup; silently ignoring
                 // the request's project misled adapters for a long time.

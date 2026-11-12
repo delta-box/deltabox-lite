@@ -1,5 +1,5 @@
-//! Durable, immutable project-file versions. Retention is manual: no automatic
-//! pruning is performed. APFS clone-exclusive bytes cannot be inferred by stat.
+//! Durable, immutable project-file versions. Retention is explicit; pins protect
+//! references from pruning. APFS clone-exclusive bytes cannot be inferred by stat.
 //! All access is serialized by the manager's session and project publication
 //! locks; captures additionally check selected files and ignore rules before and after cloning.
 use crate::changeset::{describe_change, ChangeKind, DEFAULT_TEXT_SIZE_LIMIT};
@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 pub(crate) mod incremental;
+mod gc;
+mod storage;
 
 /// Opt-in stage timings on stderr; never changes the RPC response or durability.
 pub(crate) struct RestoreTimings(Option<std::time::Instant>);

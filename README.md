@@ -310,6 +310,12 @@ Use the same project and, if overridden, the same external `DELTABOX_STATE_DIR`
 for later commands. See [history commands and semantics](docs/session-semantics.md#history-cli)
 for JSON output, listing, and undo.
 
+Project-scoped `history stats`, `history pin`, `history prune`, `history gc`, and
+`history verify` provide storage accounting, explicit retention, resumable
+collection and integrity checks, including after a session stops. See
+[history storage and reclamation](docs/history-storage.md) for space-accounting
+semantics, the GC transaction protocol and usage.
+
 ### Shell command syntax
 
 `deltabox exec` and `deltabox run` execute the argv after `--` directly. Commands

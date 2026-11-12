@@ -13,6 +13,7 @@ use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 mod diff_output;
+mod history_maintenance;
 mod policy_command;
 
 #[derive(Parser)]
@@ -141,6 +142,16 @@ enum ReviewCmd {
 
 #[derive(Subcommand)]
 enum HistoryCmd {
+    /// Account logical bytes, disk allocation, abandoned captures and pending garbage.
+    Stats(history_maintenance::ProjectArgs),
+    /// Read and verify snapshot contents and metadata without changing any version.
+    Verify(history_maintenance::VerifyArgs),
+    /// Persistently protect a version from explicit retention policies.
+    Pin(history_maintenance::PinArgs),
+    /// Plan retention, or apply a matching plan with crash-resumable garbage collection.
+    Prune(history_maintenance::PruneArgs),
+    /// Resume a previously committed garbage-collection intent after interruption.
+    Gc(history_maintenance::ProjectArgs),
     /// Print JSON describing history support for a session.
     Capabilities(SessionProjectArgs),
     /// Save project files and print the version ID; does not commit pending changes.
@@ -851,6 +862,11 @@ fn main() -> anyhow::Result<()> {
 
 fn run_history(cmd: HistoryCmd) -> anyhow::Result<()> {
     match cmd {
+        HistoryCmd::Stats(args) => history_maintenance::stats(args)?,
+        HistoryCmd::Verify(args) => history_maintenance::verify(args)?,
+        HistoryCmd::Pin(args) => history_maintenance::pin(args)?,
+        HistoryCmd::Prune(args) => history_maintenance::prune(args)?,
+        HistoryCmd::Gc(args) => history_maintenance::gc(args)?,
         HistoryCmd::Capabilities(args) => {
             let manager = SessionCoordinator::new(&args.project, None)?;
             let capabilities = manager.history_capabilities(&args.session)?;

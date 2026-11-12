@@ -379,11 +379,17 @@ flags, such as `hidden`, are preserved. Version integrity is checked before
 applying its tree; snapshot contents must not be edited manually.
 
 Retention is manual: there is no implicit pruning or automatic history quota.
-`logical_bytes` counts regular-file bytes, including each hard-link path; it does
-not measure physical APFS allocation. Snapshots and full restore staging need
-free storage even though APFS cloning can share file data. Out-of-space errors
-before the durable restore transaction leave project files unchanged. Interrupted
-unpublished captures remain hidden and are never listed as versions.
+Explicit retention plans support pins, newest-version counts, age boundaries,
+and logical-byte budgets. Pin external references before pruning. Collection
+persists its deletion intent and can resume after interruption with `history gc`.
+See [storage accounting, retention and GC](history-storage.md) for the protocol,
+commands, guarantees and limitations. `logical_bytes` counts regular-file bytes,
+including each hard-link path; it does not measure physical APFS allocation.
+Snapshots and full restore staging need free storage even though APFS cloning
+can share file data. Out-of-space errors before the durable restore transaction
+leave project files unchanged. Interrupted unpublished captures remain hidden
+and are never listed as versions. Explicit prune plans collect them under the
+project publication lock.
 
 History captures use up to eight concurrent readers, but still read every included
 project file and compare the live-before, cloned and live-after content/metadata

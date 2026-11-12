@@ -1,6 +1,10 @@
 #[cfg(not(windows))]
 use crate::durable::DurableSessionManager;
 use crate::error::{Error, Result};
+use crate::history_storage::{
+    HistoryGcResult, HistoryPinParams, HistoryPruneApplyParams, HistoryPrunePlan,
+    HistoryRetentionPolicy, HistoryStorageStats, HistoryVerifyResult,
+};
 #[cfg(not(windows))]
 use crate::protocol::FilesystemInfo;
 use crate::protocol::{
@@ -559,6 +563,73 @@ impl SessionCoordinator {
         #[cfg(not(target_os = "macos"))]
         Err(Error::Unsupported(
             "history v1 requires macOS cbcow-through".into(),
+        ))
+    }
+
+    /// Storage maintenance is project-scoped and works after sessions stop.
+    pub fn history_storage_stats(&self) -> Result<HistoryStorageStats> {
+        #[cfg(target_os = "macos")]
+        return self.macos_cbcow.history_storage_stats();
+        #[cfg(not(target_os = "macos"))]
+        Err(Error::Unsupported(
+            "history storage requires macOS cbcow-through history".into(),
+        ))
+    }
+
+    pub fn history_verify(&self, version_id: Option<&str>) -> Result<HistoryVerifyResult> {
+        #[cfg(target_os = "macos")]
+        return self.macos_cbcow.history_verify(version_id);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = version_id;
+            Err(Error::Unsupported(
+                "history storage requires macOS cbcow-through history".into(),
+            ))
+        }
+    }
+
+    pub fn history_pin(&self, params: HistoryPinParams) -> Result<Vec<String>> {
+        #[cfg(target_os = "macos")]
+        return self.macos_cbcow.history_pin(params);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = params;
+            Err(Error::Unsupported(
+                "history storage requires macOS cbcow-through history".into(),
+            ))
+        }
+    }
+
+    pub fn history_prune_plan(&self, policy: HistoryRetentionPolicy) -> Result<HistoryPrunePlan> {
+        #[cfg(target_os = "macos")]
+        return self.macos_cbcow.history_prune_plan(policy);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = policy;
+            Err(Error::Unsupported(
+                "history storage requires macOS cbcow-through history".into(),
+            ))
+        }
+    }
+
+    pub fn history_prune_apply(&self, params: HistoryPruneApplyParams) -> Result<HistoryGcResult> {
+        #[cfg(target_os = "macos")]
+        return self.macos_cbcow.history_prune_apply(params);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = params;
+            Err(Error::Unsupported(
+                "history storage requires macOS cbcow-through history".into(),
+            ))
+        }
+    }
+
+    pub fn history_gc_resume(&self) -> Result<HistoryGcResult> {
+        #[cfg(target_os = "macos")]
+        return self.macos_cbcow.history_gc_resume();
+        #[cfg(not(target_os = "macos"))]
+        Err(Error::Unsupported(
+            "history storage requires macOS cbcow-through history".into(),
         ))
     }
 

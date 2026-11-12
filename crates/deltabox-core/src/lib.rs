@@ -23,6 +23,7 @@ pub mod error;
 pub mod history;
 #[cfg(target_os = "macos")]
 mod history_scope;
+pub mod history_storage;
 pub mod journal;
 #[cfg(target_os = "macos")]
 pub mod macos_cbcow;

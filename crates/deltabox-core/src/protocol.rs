@@ -1,4 +1,5 @@
 use crate::changeset::Change;
+use crate::history_storage::{HistoryPinParams, HistoryPruneApplyParams, HistoryRetentionPolicy};
 use crate::policy::Policy;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -27,6 +28,18 @@ pub enum Method {
     HistoryPreview(HistoryPreviewParams),
     #[serde(rename = "history.restore")]
     HistoryRestore(HistoryRestoreParams),
+    #[serde(rename = "history.stats")]
+    HistoryStats {},
+    #[serde(rename = "history.verify")]
+    HistoryVerify { version_id: Option<String> },
+    #[serde(rename = "history.pin")]
+    HistoryPin(HistoryPinParams),
+    #[serde(rename = "history.prune_plan")]
+    HistoryPrunePlan(HistoryRetentionPolicy),
+    #[serde(rename = "history.prune_apply")]
+    HistoryPruneApply(HistoryPruneApplyParams),
+    #[serde(rename = "history.gc")]
+    HistoryGc {},
     #[serde(rename = "session.start")]
     SessionStart(SessionStartParams),
     #[serde(rename = "session.stop")]

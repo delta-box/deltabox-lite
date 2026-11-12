@@ -11,6 +11,10 @@ Unreleased section below into the new version's section.
 
 ### Added
 
+- Project-scoped history storage accounting and integrity scrub, persistent
+  retention pins, count/age/logical-budget planning with stale-plan detection,
+  and durable, crash-resumable version/abandoned-capture garbage collection.
+  Available through Rust, stdio RPC, and `history stats/pin/prune/gc/verify`.
 - Durable project file history (`deltabox history`, stdio RPC `history.*`, and
   Node `history*`) for macOS `cbcow-through` sessions: immutable project-source
   snapshots with frozen `.gitignore`/tracked-file scope, session-free read-only
