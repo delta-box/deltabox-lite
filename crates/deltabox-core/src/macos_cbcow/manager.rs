@@ -2,6 +2,10 @@ use super::state::{relative_string, Mode, State};
 use crate::command_executor::{self, Endpoint as CommandEndpoint};
 use crate::coordinator::CommandExecutionMode;
 use crate::error::{Error, Result};
+use crate::history_storage::{
+    HistoryGcResult, HistoryPinParams, HistoryPruneApplyParams, HistoryPrunePlan,
+    HistoryRetentionPolicy, HistoryStorageStats, HistoryVerifyResult,
+};
 use crate::journal::{Journal, JournalEntry, JournalKind};
 use crate::locks::Lock;
 use crate::pathmap::PathMapper;
@@ -977,6 +981,42 @@ impl Manager {
                 restored: changes.changes.len(),
             })
         })
+    }
+
+    /// Project-scoped maintenance never acquires session locks or opens engine
+    /// state while holding publish.lock. A crashed restore owns self-contained
+    /// transaction copies; collection cannot remove its recovery inputs.
+    fn with_history_maintenance<T>(
+        &self,
+        operation: impl FnOnce(&crate::history::HistoryStore) -> Result<T>,
+    ) -> Result<T> {
+        let _publish = Lock::acquire(&state_layout::publish_lock_path(&self.project)?)?;
+        let store = crate::history::HistoryStore::open_existing(&self.state_base, &self.project)?;
+        operation(&store)
+    }
+
+    pub fn history_storage_stats(&self) -> Result<HistoryStorageStats> {
+        self.with_history_maintenance(|store| store.storage_stats())
+    }
+
+    pub fn history_verify(&self, version_id: Option<&str>) -> Result<HistoryVerifyResult> {
+        self.with_history_maintenance(|store| store.verify_versions(version_id))
+    }
+
+    pub fn history_pin(&self, params: HistoryPinParams) -> Result<Vec<String>> {
+        self.with_history_maintenance(|store| store.set_pin(&params))
+    }
+
+    pub fn history_prune_plan(&self, policy: HistoryRetentionPolicy) -> Result<HistoryPrunePlan> {
+        self.with_history_maintenance(|store| store.prune_plan(&policy))
+    }
+
+    pub fn history_prune_apply(&self, params: HistoryPruneApplyParams) -> Result<HistoryGcResult> {
+        self.with_history_maintenance(|store| store.prune_apply(&params))
+    }
+
+    pub fn history_gc_resume(&self) -> Result<HistoryGcResult> {
+        self.with_history_maintenance(|store| store.gc_resume())
     }
 
     pub fn checkpoint(&self, params: CheckpointParams) -> Result<CheckpointInfo> {
