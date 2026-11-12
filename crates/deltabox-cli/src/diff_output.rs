@@ -2,7 +2,7 @@ use deltabox_core::changeset::{render_diff_text, ChangeKind};
 use deltabox_core::protocol::DiffResult;
 use std::fmt::Write;
 
-/// Output and path selection shared by session and review diffs.
+/// Output and path selection shared by session, review, and history diffs.
 #[derive(clap::Args, Default, Debug)]
 pub struct DiffOutputArgs {
     /// Print the diff as JSON.

@@ -3,6 +3,8 @@ use std::process::Command;
 const DIFF_COMMANDS: &[&[&str]] = &[
     &["diff", "unused-session"],
     &["review", "diff", "unused-session"],
+    &["history", "diff", "unused-session", "unused-version"],
+    &["history", "preview", "unused-version"],
 ];
 
 #[test]
@@ -78,8 +80,8 @@ fn conflicting_output_modes_are_rejected_before_project_access() {
     }
 }
 
-#[cfg(unix)]
-mod unix {
+#[cfg(target_os = "macos")]
+mod macos {
     use super::*;
     use serde_json::Value;
     use std::process::Output;
@@ -94,8 +96,14 @@ mod unix {
     impl Session {
         fn start() -> Self {
             let mut session = Self {
-                project: tempfile::tempdir().unwrap(),
-                state: tempfile::tempdir().unwrap(),
+                project: tempfile::Builder::new()
+                    .prefix("deltabox-diff-output-project-")
+                    .tempdir_in("/private/tmp")
+                    .unwrap(),
+                state: tempfile::Builder::new()
+                    .prefix("deltabox-diff-output-state-")
+                    .tempdir_in("/private/tmp")
+                    .unwrap(),
                 id: String::new(),
                 stopped: false,
             };
@@ -113,7 +121,7 @@ mod unix {
                     "start",
                     ".",
                     "--fs-mode",
-                    "copy-private",
+                    "cbcow-through",
                     "--require-fs-mode",
                 ])
                 .trim()
@@ -155,14 +163,20 @@ mod unix {
     impl Drop for Session {
         fn drop(&mut self) {
             if !self.stopped && !self.id.is_empty() {
+                // Stop helpers even if a test assertion unwinds. No other
+                // session or project is ever touched by this test fixture.
                 let _ = self.run(&["session", "stop", &self.id]);
             }
         }
     }
 
     #[test]
-    fn diff_filters_work_across_session_and_review_without_selective_commit() {
+    fn diff_filters_work_across_session_review_and_history_without_selective_commit() {
         let mut session = Session::start();
+        let version = session
+            .text(&["history", "capture", &session.id, "--label", "original"])
+            .trim()
+            .to_owned();
         let scope = session.json(&[
             "review",
             "begin",
@@ -176,14 +190,7 @@ mod unix {
             ("src/lib.rs", "new source\n"),
             ("src2/other.txt", "new other\n"),
         ] {
-            let full = session.project.path().join(path);
-            session.text(&[
-                "write",
-                &session.id,
-                full.to_str().unwrap(),
-                "--content",
-                contents,
-            ]);
+            session.text(&["write", &session.id, path, "--content", contents]);
         }
         let full_before = session.json(&["diff", &session.id, "--json"]);
         assert_eq!(full_before["pending_changes"], 2);
@@ -213,6 +220,24 @@ mod unix {
             " M src/lib.rs | +1 -1\n1 file(s) changed, 1 insertion(s)(+), 1 deletion(s)(-)\n"
         );
 
+        let history = session.json(&[
+            "history",
+            "diff",
+            &session.id,
+            &version,
+            "--path",
+            "src",
+            "--json",
+        ]);
+        assert_eq!(history["to"], version);
+        assert_eq!(history["pending_changes"], 1);
+        assert_eq!(history["changes"].as_array().unwrap().len(), 1);
+        assert_eq!(history["changes"][0]["path"], "src/lib.rs");
+        assert!(history["changes"][0]["text_diff"]
+            .as_str()
+            .unwrap()
+            .contains("+old source"));
+
         // Filtering is purely a view: both edits remain pending and the review
         // still refers to its original checkpoint until explicitly committed.
         assert_eq!(session.json(&["diff", &session.id, "--json"]), full_before);
@@ -226,6 +251,15 @@ mod unix {
         );
         session.stop();
 
+        // The session-free preview uses the same filtering after helpers stop.
+        let preview = session.json(&["history", "preview", &version, "--path", "./src/", "--json"]);
+        assert_eq!(preview["to"], version);
+        assert_eq!(preview["pending_changes"], 1);
+        assert_eq!(preview["changes"], history["changes"]);
+        assert_eq!(
+            session.text(&["history", "preview", &version, "--name-only"]),
+            "src/lib.rs\nsrc2/other.txt\n"
+        );
         for (path, expected) in [
             ("src/lib.rs", "new source\n"),
             ("src2/other.txt", "new other\n"),

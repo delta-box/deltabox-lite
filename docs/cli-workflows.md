@@ -51,9 +51,9 @@ cat notes.txt
 
 The command prints the stopped session as JSON and releases its project
 ownership. The recorded session remains available to `session list`. Release
-does not commit a private workspace; files already visible in the project remain
-as they are. Normal `session stop` retains its existing behavior of aborting
-pending changes.
+does not commit a private workspace or create a history version; files already
+visible in the project remain as they are. Normal `session stop` retains its
+existing behavior of aborting pending changes.
 
 Release requires macOS `cbcow-through` and no active review scope. Private modes
 and other platforms are unsupported. Complete an active review with its
@@ -63,11 +63,13 @@ operations; start a new session to continue working.
 
 ## Focus a diff on selected paths
 
-Both `diff` and `review diff` accept the same output and path-selection options:
+All four diff commands accept the same output and path-selection options:
 
 ```bash
 deltabox diff "$session_id" --path src --path README.md --stat
 deltabox review diff "$session_id" --path src --name-only
+deltabox history diff "$session_id" "$version_id" --path docs --json
+deltabox history preview "$version_id" --path docs --stat
 ```
 
 | Option | Output |
@@ -91,9 +93,12 @@ There is no glob expansion: a quoted `--path 'src/*'` means a literal path with
 an asterisk, not every file in `src`.
 
 **Filtering changes the display only.** It does not select files for a later
-commit or abort; those commands retain their existing scope. An empty filtered
-diff does not prove that the rest of the project is unchanged. Review diffs
-still need an active review.
+commit, abort, or history restore; those commands retain their existing scope.
+An empty filtered diff does not prove that the rest of the project is unchanged.
+Review diffs still need an active review. History diff/preview still require
+macOS `cbcow-through` file history and show the direction **current files →
+selected version**. Preview needs no running session. See
+[history semantics](session-semantics.md#history-cli) for capture and restore.
 
 ## Inspect and validate policy files
 

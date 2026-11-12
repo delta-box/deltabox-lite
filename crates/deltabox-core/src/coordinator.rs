@@ -6,7 +6,8 @@ use crate::protocol::FilesystemInfo;
 use crate::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
     CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecResult, FilesystemMode,
-    FsReadResult, ReviewBeginParams, SessionInfo,
+    FsReadResult, HistoryCapabilities, HistoryCaptureParams, HistoryDiffParams,
+    HistoryRestoreParams, HistoryRestoreResult, HistoryVersion, ReviewBeginParams, SessionInfo,
 };
 use crate::session_catalog::SessionSummary;
 #[cfg(not(windows))]
@@ -267,9 +268,15 @@ impl SessionCoordinator {
             Error::SessionBusy(format!("{session_id} was adopted by another process"))
         })?;
         self.owners_map().insert(session_id.into(), guard);
-        // Status also restarts a dead filesystem helper, so the adopted
-        // session is usable right away.
-        self.status(session_id)
+        // Status also restarts a dead filesystem helper and recovers any
+        // interrupted transaction, so the adopted session is usable right away.
+        match self.status(session_id) {
+            Ok(info) => Ok(info),
+            Err(error) => {
+                self.owners_map().remove(session_id);
+                Err(error)
+            }
+        }
     }
 
     /// Running sessions of this project whose attached owner died. Each one
@@ -473,6 +480,86 @@ impl SessionCoordinator {
             #[cfg(windows)]
             Route::WindowsCbcow(manager) => manager.record_file_changes(session_id, paths),
         }
+    }
+
+    pub fn history_capabilities(&self, session_id: &str) -> Result<HistoryCapabilities> {
+        if !uuid::Uuid::parse_str(session_id).is_ok_and(|id| id.to_string() == session_id) {
+            return Err(Error::Backend(
+                "invalid history/session ID: expected a canonical UUID".into(),
+            ));
+        }
+        let info = self.status(session_id)?;
+        let supported = cfg!(target_os = "macos")
+            && info.filesystem.resolved_fs_mode == FilesystemMode::CbcowThrough;
+        Ok(HistoryCapabilities {
+            version: 1,
+            supported,
+            reason: (!supported).then(|| "history v1 requires macOS cbcow-through".into()),
+            retention: "manual".into(),
+            scope: "project".into(),
+        })
+    }
+
+    fn require_history(&self, session_id: &str) -> Result<()> {
+        let capabilities = self.history_capabilities(session_id)?;
+        if capabilities.supported {
+            Ok(())
+        } else {
+            Err(Error::Unsupported(capabilities.reason.unwrap_or_default()))
+        }
+    }
+
+    pub fn history_capture(&self, params: HistoryCaptureParams) -> Result<HistoryVersion> {
+        self.require_history(&params.session_id)?;
+        #[cfg(target_os = "macos")]
+        return self.macos_cbcow.history_capture(params);
+        #[cfg(not(target_os = "macos"))]
+        Err(Error::Unsupported(
+            "history v1 requires macOS cbcow-through".into(),
+        ))
+    }
+
+    pub fn history_list(&self, session_id: &str) -> Result<Vec<HistoryVersion>> {
+        self.require_history(session_id)?;
+        #[cfg(target_os = "macos")]
+        return self.macos_cbcow.history_list(session_id);
+        #[cfg(not(target_os = "macos"))]
+        Err(Error::Unsupported(
+            "history v1 requires macOS cbcow-through".into(),
+        ))
+    }
+
+    pub fn history_diff(&self, params: HistoryDiffParams) -> Result<DiffResult> {
+        self.require_history(&params.session_id)?;
+        #[cfg(target_os = "macos")]
+        return self.macos_cbcow.history_diff(params);
+        #[cfg(not(target_os = "macos"))]
+        Err(Error::Unsupported(
+            "history v1 requires macOS cbcow-through".into(),
+        ))
+    }
+
+    /// Inspect immutable file history without starting or adopting a session.
+    pub fn history_preview(&self, version_id: &str) -> Result<DiffResult> {
+        #[cfg(target_os = "macos")]
+        return self.macos_cbcow.history_preview(version_id);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = version_id;
+            Err(Error::Unsupported(
+                "history preview requires macOS cbcow-through history".into(),
+            ))
+        }
+    }
+
+    pub fn history_restore(&self, params: HistoryRestoreParams) -> Result<HistoryRestoreResult> {
+        self.require_history(&params.session_id)?;
+        #[cfg(target_os = "macos")]
+        return self.macos_cbcow.history_restore(params);
+        #[cfg(not(target_os = "macos"))]
+        Err(Error::Unsupported(
+            "history v1 requires macOS cbcow-through".into(),
+        ))
     }
 
     pub fn checkpoint(&self, params: CheckpointParams) -> Result<CheckpointInfo> {

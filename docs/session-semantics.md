@@ -205,3 +205,187 @@ review first, then release when unloading. The next session adopts the current
 workspace as its baseline. `session.stop` / `stopSession` keeps its explicit
 rollback behavior. This matters when external editors change files after the
 last accepted agent review.
+
+## Durable file history (API version 1)
+
+Capture follows the session durability: fast mode retains versions across process
+restart without forcing every cloned file to disk; strict mode flushes the whole
+validated version before publishing it. Fast mode makes no power-loss guarantee.
+Restore transaction backups retain their existing strict flush/recovery ordering.
+
+`history.capture` records immutable project files independently of review
+checkpoints. `history.list` lists versions across sessions for the same canonical
+project and stable external state directory. Commit, review abort, session stop,
+and a new coordinator do not delete those versions. `history.capabilities` reports
+support explicitly; version 1 supports macOS `cbcow-through` only. Unsupported
+modes return an error rather than silently falling back to transaction checkpoints.
+
+### History CLI
+
+`deltabox history` exposes the same history operations from the command line.
+Every command accepts `--project PATH`, defaulting to the current directory (`.`).
+Use the same canonical project and state directory that created the versions;
+if `DELTABOX_STATE_DIR` is set, retain that external directory and use the same
+value in subsequent shells. Pointing at another project or state directory does
+not locate the original history.
+
+| Command | Default output | Optional flags |
+| --- | --- | --- |
+| `history capabilities SESSION` | JSON capability report | |
+| `history capture SESSION` | New version UUID | `--label TEXT`, `--json` for the complete version |
+| `history list SESSION` | Version table | `--json` for the version array |
+| `history diff SESSION VERSION` | Readable diff from current files to `VERSION` | `--path`, `--stat`, `--name-only`, `--json` |
+| `history preview VERSION` | The same diff without a running session | `--path`, `--stat`, `--name-only`, `--json` |
+| `history restore SESSION VERSION --expected-version EXPECTED` | JSON `{ version, backup, restored }` | |
+
+Prefix each command with `deltabox`. Capture, list, diff, and restore require a
+running macOS `cbcow-through` session. Preview needs no session ID and remains
+available after the session stops. Capture saves a version without committing
+pending changes or resolving an active review.
+
+The [README example](../README.md#durable-file-history-macos) demonstrates capture,
+restore, and preview in a disposable project. For an existing session, inspect
+support and saved versions with:
+
+```bash
+deltabox history capabilities "$session_id"
+deltabox history list "$session_id"
+deltabox history list "$session_id" --json
+```
+
+Restore requires `--expected-version` to identify a captured version matching the
+current project. Resolve any active review and wait for commands and external
+writers to finish first. If current files differ from that expected version,
+restore fails without replacing them; there is no force option. A preview is
+advisory and does not satisfy this check. Both diff commands describe the current
+project becoming the target, so their additions and deletions follow that direction.
+
+Save the restore result outside the project if recording it to a file: adding a
+new project file can itself invalidate the next expected-version check. To undo
+a successful restore, use its `backup.id` as the new target and its `version.id`
+as the expected current version, provided the project has not changed since.
+For example, with `jq` installed and `target_version` / `current_version` set to
+existing version IDs:
+
+```bash
+restore_result=$(deltabox history restore "$session_id" "$target_version" \
+  --expected-version "$current_version")
+backup_version=$(printf '%s' "$restore_result" | jq -r '.backup.id')
+deltabox history restore "$session_id" "$backup_version" \
+  --expected-version "$target_version"
+```
+
+Restore preserves ignored/generated files and Git metadata under the rules below.
+A successful restore also updates the accepted session baseline, so stopping the
+session retains it. Keep the backup ID and state directory for later recovery.
+
+### API and restoration semantics
+
+The stdio methods are `history.capabilities` / `history.list` (`session_id`),
+`history.capture` (`session_id`, optional `label`), `history.diff` (`session_id`,
+`version_id`), and `history.restore` (`session_id`, `version_id`,
+`expected_version_id`). The N-API equivalents are `historyCapabilities`,
+`historyList`, `historyCapture`, `historyDiff`, and `historyRestore`, with positional
+arguments in the same order. IDs are opaque canonical UUIDs. Versions contain
+`id`, `session_id`, `label`, `created_at_ms`, `entry_count`, and `logical_bytes`.
+Diffs describe the current project becoming the target version.
+
+Read-only `history.preview` (`version_id`), or N-API `historyPreview(versionId)`,
+compares current project files with an existing immutable version without a running
+session. It does not start, recover or adopt a sandbox, clone build outputs, or
+create a version. Snapshot integrity and source-scope checks are the same as
+`history.diff`. An in-flight publication returns busy instead of blocking a preview.
+Callers should reject previews during active agent work/review and serialize them
+with capture/restore; a preview is advisory and never replaces restore's full
+expected-version check.
+
+Restore requires a running, idle session with no active review. It checks every
+versioned entry against the expected version using full SHA-256 content digests,
+entry types, symlink targets, in-project hard-link equivalence groups, permissions,
+ownership, ACLs, supported flags and tracked xattrs. Root-directory metadata is
+included and appears as path `.` in diffs. An external content or metadata change
+causes a conflict before restoration. Timestamps alone are not conflicts. The
+manager serializes operations with command execution and project publication;
+callers must also quiesce external editors and other unmanaged writers throughout
+restore, since these do not honor session locks. Capture checks the selected live
+files and frozen ignore/index policy before and after cloning and fails if they
+changed. Ignored output changes alone do not conflict. Trusted shell execution
+completes a full tree reconciliation before returning, so an immediate review
+abort includes additions and deletions even when FSEvents notifications arrive
+late. This scan applies only to trusted command execution.
+
+A successful restore returns `{ version, backup, restored }`. `version` is the
+existing target version; `backup` is a new durable pre-restore version. A durable
+engine undo transaction restores both the host and accepted baseline after an
+interrupted restore, or finalizes an already accepted restore. A later stop or
+abort therefore retains a successful restore.
+
+Attached hosts (the Node addon) hold an `owner.lock` for the session's life. If
+the host crashes during a restore, admission reports `SessionOrphaned`; adopting
+the orphan via `adoptSession` (or opening/releasing a detached session) runs
+transaction recovery before allowing new operations. If recovery fails with a
+post-crash conflict, the orphan lock is released and the durable undo transaction
+remains intact on disk until the user reconciles the workspace. For a full-tree
+transaction, an uncommitted restore is recovered automatically only when the live
+tree still matches its complete pre-restore or target tree; an ambiguous partial
+tree blocks recovery rather than overwriting it. For the regular-file transaction
+described below, each touched file may independently match its old or new
+fingerprint after an atomic rename, while every untouched entry must still match.
+Both paths reject post-crash external edits, retaining current files and the
+durable undo transaction.
+
+Snapshots live under the external state base at
+`history-v1/<canonical-project-sha256>/<version-id>/`. The project-root `.deltabox`
+engine directory and all `.git` entries are excluded. Manifest format 2 freezes
+project-local `.gitignore` rules and the tracked path set. Tracked files always
+remain included, as do untracked and hidden files not ignored by those rules.
+Global Git excludes, parent rules outside the project, `.git/info/exclude`, and
+`.ignore` are not used. Empty directories and directories containing only ignored
+data are outside the version; ancestor metadata of included files is recorded.
+
+Restore preserves current ignored/generated files and Git metadata. It uses the
+target version's frozen policy, even if the live `.gitignore` has changed. A file
+or symlink replacing a directory containing excluded data fails before touching
+the live project. Legacy format 1 snapshots remain unchanged on disk and are
+projected to the same project-file semantics from their captured rules/index.
+Their original generated data is retained in storage but not restored.
+
+Ordinary content replacements can use a selective durable file transaction. Its
+first version handles existing regular files with unchanged metadata, no hard
+links (including links outside the project), no ACLs/xattrs/flags or special mode
+bits, and owned writable non-symlink parents on the staging filesystem. Every
+baseline update must qualify too. Additions, deletions, directory/type changes,
+metadata changes and other complex cases retain the full durable undo transaction
+and merged staging tree. This is an optimization, not a change to the history scope.
+
+The file path persists full before/after content and metadata fingerprints but
+copies only the files it will replace, including separate host and baseline undo
+images. It synchronizes the backups and existing host/baseline trees before the
+durable transaction marker, then atomically renames prepared files using directory
+descriptors that refuse symlink traversal. Each rename synchronizes both parent
+directories. Full-tree verification still precedes publication and commit;
+post-crash ignored edits still block automatic recovery. Untouched generated
+files retain their inodes and are not cloned or replaced, but are still scanned
+and synchronized: restore time is not independent of project size. Native session
+initialization is unchanged. The `history-files-v1` transaction mode deliberately
+makes older runtimes reject an incomplete new transaction; complete recovery with
+the newer runtime before downgrading.
+
+Binary files, symlinks (including dangling links), permissions, metadata,
+in-project hard links, additions and deletions are preserved. Special files,
+non-UTF-8 path names, and immutable/append-only BSD flags (`uchg`, `uappnd`,
+`schg`, `sappnd`) are rejected explicitly before capture/restore starts. Other
+flags, such as `hidden`, are preserved. Version integrity is checked before
+applying its tree; snapshot contents must not be edited manually.
+
+Retention is manual: there is no implicit pruning or automatic history quota.
+`logical_bytes` counts regular-file bytes, including each hard-link path; it does
+not measure physical APFS allocation. Snapshots and full restore staging need
+free storage even though APFS cloning can share file data. Out-of-space errors
+before the durable restore transaction leave project files unchanged. Interrupted
+unpublished captures remain hidden and are never listed as versions.
+
+History captures use up to eight concurrent readers, but still read every included
+project file and compare the live-before, cloned and live-after content/metadata
+indexes. Ignored build outputs are excluded from captures; initial session setup
+and full restore staging can still be expensive for large trees.

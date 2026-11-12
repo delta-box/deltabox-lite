@@ -9,8 +9,9 @@ use crate::policy::Policy;
 use crate::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
     CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecRequest, ExecResult,
-    FilesystemInfo, FilesystemMode, FsReadResult, ReviewBeginParams, SessionInfo, SessionSpec,
-    SessionStatus,
+    FilesystemInfo, FilesystemMode, FsReadResult, HistoryCaptureParams, HistoryDiffParams,
+    HistoryRestoreParams, HistoryRestoreResult, HistoryVersion, ReviewBeginParams, SessionInfo,
+    SessionSpec, SessionStatus,
 };
 use crate::session::{now_ms, SessionMeta, SessionRegistry};
 use crate::state_layout;
@@ -599,6 +600,7 @@ impl Manager {
                     resolved_deny_paths: Some(vec![
                         self.root.clone(),
                         record.state_root.clone(),
+                        self.state_base.join("history-v1"),
                         endpoint
                             .socket
                             .parent()
@@ -628,9 +630,15 @@ impl Manager {
                 command_executor::exec(&endpoint, &session_id, 0, spec, request)
             }
         };
-        let tracked = tracker.as_ref().map_or(Ok(()), |tracker| {
-            self.finish_events(&mut state, tracker, true)
-        });
+        let tracked = if self.execution_mode == CommandExecutionMode::Trusted {
+            device_uuid(&state.live())
+                .map_err(Error::from)
+                .and_then(|uuid| state.reconcile_command_completion(uuid).map(|_| ()))
+        } else {
+            tracker.as_ref().map_or(Ok(()), |tracker| {
+                self.finish_events(&mut state, tracker, true)
+            })
+        };
         let result = result?;
         tracked?;
         if tracker.is_some() {
@@ -856,6 +864,119 @@ impl Manager {
             return Err(Error::Backend("path denied by policy".into()));
         }
         Ok(())
+    }
+
+    /// The history lock order mirrors commit: session/command, then publication.
+    /// Through mode holds the exclusive project lease for its entire lifetime.
+    fn with_history<T>(
+        &self,
+        session_id: &str,
+        operation: impl FnOnce(&mut State, bool, &crate::history::HistoryStore) -> Result<T>,
+    ) -> Result<T> {
+        crate::history::validate_id(session_id)?;
+        if let Some(fast) = self.fast_session(session_id) {
+            let mut session = fast.lock().expect("embedded session poisoned");
+            self.require_fast_running(&session)?;
+            if session.state.status().mode != Mode::Through {
+                return Err(Error::Unsupported(
+                    "history v1 requires macOS cbcow-through".into(),
+                ));
+            }
+            let _publish =
+                Lock::acquire(&crate::state_layout::publish_lock_path(&self.project)?)?;
+            let store = crate::history::HistoryStore::open_with_durability(
+                &self.state_base,
+                &self.project,
+                session.record.durability == DurabilityMode::Strict,
+            )?;
+            let reviewing = session.review.is_some();
+            return operation(&mut session.state, reviewing, &store);
+        }
+        let _operation = self.lock(session_id)?;
+        self.running_meta(session_id)?;
+        let record = self.record(session_id)?;
+        let mut state = self.open_state(&record)?;
+        if state.status().mode != Mode::Through {
+            return Err(Error::Unsupported(
+                "history v1 requires macOS cbcow-through".into(),
+            ));
+        }
+        let _publish = Lock::acquire(&crate::state_layout::publish_lock_path(&self.project)?)?;
+        let store = crate::history::HistoryStore::open_with_durability(
+            &self.state_base,
+            &self.project,
+            record.durability == DurabilityMode::Strict,
+        )?;
+        let reviewing = self.review(session_id)?.is_some();
+        operation(&mut state, reviewing, &store)
+    }
+
+    pub fn history_capture(&self, params: HistoryCaptureParams) -> Result<HistoryVersion> {
+        self.with_history(&params.session_id, |_, _, store| {
+            store.capture(&params.session_id, params.label.clone())
+        })
+    }
+
+    pub fn history_list(&self, session_id: &str) -> Result<Vec<HistoryVersion>> {
+        self.with_history(session_id, |_, _, store| store.list())
+    }
+
+    pub fn history_diff(&self, params: HistoryDiffParams) -> Result<DiffResult> {
+        self.with_history(&params.session_id, |_, _, store| {
+            store.diff(&params.version_id)
+        })
+    }
+
+    pub fn history_preview(&self, version_id: &str) -> Result<DiffResult> {
+        // A preview must never create a sandbox, recover a session, or clone
+        // ignored build outputs. Do not queue behind an in-flight publication.
+        let _publish =
+            Lock::try_acquire(&crate::state_layout::publish_lock_path(&self.project)?)?
+                .ok_or_else(|| {
+                    Error::SessionBusy(
+                        "project publication is in progress; retry preview when idle".into(),
+                    )
+                })?;
+        let store =
+            crate::history::HistoryStore::open_existing(&self.state_base, &self.project)?;
+        store.diff(version_id)
+    }
+
+    pub fn history_restore(&self, params: HistoryRestoreParams) -> Result<HistoryRestoreResult> {
+        self.with_history(&params.session_id, |state, reviewing, store| {
+            if reviewing {
+                return Err(Error::SessionBusy(
+                    "history restore requires the active review to be resolved first".into(),
+                ));
+            }
+            let version = store.get(&params.version_id)?;
+            let target = store.tree(&params.version_id)?;
+            store.verify_expected(&params.expected_version_id)?;
+            let changes = store.diff(&params.version_id)?;
+            let backup = store.capture(
+                &params.session_id,
+                Some(format!("before restore {}", params.version_id)),
+            )?;
+            let scope = store.scope(&params.version_id)?;
+            let result = state.restore_history_scoped(&target, Some(&scope), || {
+                store.verify_expected(&params.expected_version_id)
+            });
+            if let Err(error) = result {
+                let suffix = format!("; persistent pre-restore backup: {}", backup.id);
+                return Err(match error {
+                    Error::ProjectConflict(mut report) => {
+                        report.message.push_str(&suffix);
+                        Error::ProjectConflict(report)
+                    }
+                    error => Error::Backend(format!("{error}{suffix}")),
+                });
+            }
+            Ok(HistoryRestoreResult {
+                version,
+                backup,
+                restored: changes.changes.len(),
+            })
+        })
     }
 
     pub fn checkpoint(&self, params: CheckpointParams) -> Result<CheckpointInfo> {
@@ -1201,6 +1322,11 @@ impl Manager {
     }
 
     fn require_fast_running(&self, session: &FastSession) -> Result<()> {
+        if session.record.state_root.join("engine/transaction.json").exists() {
+            return Err(Error::SessionBusy(
+                "an unrecovered filesystem transaction remains; reopen the coordinator before further operations".into(),
+            ));
+        }
         if session.meta.status == SessionStatus::Running {
             Ok(())
         } else {
@@ -1283,10 +1409,12 @@ impl Manager {
                     .transpose()?,
             },
         );
-        // The helper's boundary request performs FSEventStreamFlushSync. Since
-        // the child has already exited, one post-command boundary captures all
-        // of its mutations without creating a marker file or a second roundtrip.
-        let tracked = self.prepare_events(&mut session.state, false).map(|_| ());
+        // FSEvents flush may still omit a just-completed command's events.
+        // Trusted execution has no write journal, so the review boundary must
+        // be a complete scan rather than an asynchronous event boundary.
+        let tracked = device_uuid(&session.state.live())
+            .map_err(Error::from)
+            .and_then(|uuid| session.state.reconcile_command_completion(uuid).map(|_| ()));
         let result = result?;
         tracked?;
         self.enforce_fast_storage_limit(&session)?;

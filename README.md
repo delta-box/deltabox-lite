@@ -283,6 +283,33 @@ See [CLI workflows](docs/cli-workflows.md) for all five features, complete
 examples, JSON output, and platform limits. These commands are available in
 the current source tree; see the changelog for released versions.
 
+### Durable file history (macOS)
+
+On macOS, `cbcow-through` sessions can capture project-file versions that survive
+commit, abort, and session stop. Try a restore in a disposable project:
+
+```bash
+history_demo=$(mktemp -d)
+cd "$history_demo"
+printf 'original\n' > notes.txt
+session_id=$(deltabox session start . --fs-mode cbcow-through --require-fs-mode)
+original_version=$(deltabox history capture "$session_id" --label original)
+deltabox exec "$session_id" -- sh -c 'printf "revised\n" > notes.txt'
+revised_version=$(deltabox history capture "$session_id" --label revised)
+deltabox history diff "$session_id" "$original_version"
+deltabox history restore "$session_id" "$original_version" --expected-version "$revised_version"
+deltabox session stop "$session_id"
+deltabox history preview "$revised_version"
+```
+
+Capture does not commit pending changes. Restore requires an idle session with no
+active review and a version matching the current files; its JSON result includes
+a `backup.id` for undo. It preserves ignored outputs. `preview` works without a
+running session and shows changes from current files to the selected version.
+Use the same project and, if overridden, the same external `DELTABOX_STATE_DIR`
+for later commands. See [history commands and semantics](docs/session-semantics.md#history-cli)
+for JSON output, listing, and undo.
+
 ### Shell command syntax
 
 `deltabox exec` and `deltabox run` execute the argv after `--` directly. Commands

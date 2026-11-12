@@ -19,6 +19,10 @@ pub mod windows_cbcow;
 #[cfg(not(windows))]
 pub mod durable;
 pub mod error;
+#[cfg(target_os = "macos")]
+pub mod history;
+#[cfg(target_os = "macos")]
+mod history_scope;
 pub mod journal;
 #[cfg(target_os = "macos")]
 pub mod macos_cbcow;

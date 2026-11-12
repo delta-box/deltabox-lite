@@ -73,6 +73,7 @@ jobs:
           --test policy_cli
           --test network_cli
           --test session_lifecycle_cli
+          --test history_cli
           -- --test-threads=1 ${{ matrix.ignored_tests }}
       - if: runner.os == 'Windows'
         run: cargo check -p deltabox-node

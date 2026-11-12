@@ -15,6 +15,18 @@ pub struct Request {
 pub enum Method {
     #[serde(rename = "network.capabilities")]
     NetworkCapabilities {},
+    #[serde(rename = "history.capabilities")]
+    HistoryCapabilities(SessionStatusParams),
+    #[serde(rename = "history.capture")]
+    HistoryCapture(HistoryCaptureParams),
+    #[serde(rename = "history.list")]
+    HistoryList(SessionStatusParams),
+    #[serde(rename = "history.diff")]
+    HistoryDiff(HistoryDiffParams),
+    #[serde(rename = "history.preview")]
+    HistoryPreview(HistoryPreviewParams),
+    #[serde(rename = "history.restore")]
+    HistoryRestore(HistoryRestoreParams),
     #[serde(rename = "session.start")]
     SessionStart(SessionStartParams),
     #[serde(rename = "session.stop")]
@@ -51,6 +63,59 @@ pub enum Method {
     ReviewAbort(ReviewStatusParams),
     #[serde(rename = "review.skip")]
     ReviewSkip(ReviewStatusParams),
+}
+
+/// Immutable project version, independent of the current transaction's checkpoints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryVersion {
+    pub id: String,
+    pub session_id: String,
+    pub label: Option<String>,
+    pub created_at_ms: u64,
+    pub entry_count: usize,
+    pub logical_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryCapabilities {
+    pub version: u32,
+    pub supported: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub retention: String,
+    pub scope: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryCaptureParams {
+    pub session_id: String,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryDiffParams {
+    pub session_id: String,
+    pub version_id: String,
+}
+
+/// Read-only comparison against the bound project; no running sandbox is required.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryPreviewParams {
+    pub version_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryRestoreParams {
+    pub session_id: String,
+    pub version_id: String,
+    pub expected_version_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryRestoreResult {
+    pub version: HistoryVersion,
+    pub backup: HistoryVersion,
+    pub restored: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

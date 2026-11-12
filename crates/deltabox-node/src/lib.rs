@@ -5,7 +5,9 @@ use deltabox_core::coordinator::{CommandExecutionMode, CoordinatorOptions, Sessi
 use deltabox_core::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
     CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecResult, ExecutionProfile,
-    FilesystemMode, ReviewBeginParams, ReviewKind, SessionInfo, SessionStatus,
+    FilesystemMode, HistoryCapabilities, HistoryCaptureParams, HistoryDiffParams,
+    HistoryRestoreParams, HistoryVersion, ReviewBeginParams, ReviewKind, SessionInfo,
+    SessionStatus,
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -154,6 +156,36 @@ pub struct NativeActiveReview {
     pub label: Either<String, Null>,
     #[napi(js_name = "started_at_ms")]
     pub started_at_ms: f64,
+}
+
+#[napi(object)]
+pub struct NativeHistoryCapabilities {
+    pub version: u32,
+    pub supported: bool,
+    pub reason: Option<String>,
+    pub retention: String,
+    pub scope: String,
+}
+
+#[napi(object)]
+pub struct NativeHistoryVersion {
+    pub id: String,
+    #[napi(js_name = "session_id")]
+    pub session_id: String,
+    pub label: Either<String, Null>,
+    #[napi(js_name = "created_at_ms")]
+    pub created_at_ms: f64,
+    #[napi(js_name = "entry_count")]
+    pub entry_count: f64,
+    #[napi(js_name = "logical_bytes")]
+    pub logical_bytes: f64,
+}
+
+#[napi(object)]
+pub struct NativeHistoryRestoreResult {
+    pub version: NativeHistoryVersion,
+    pub backup: NativeHistoryVersion,
+    pub restored: f64,
 }
 
 #[napi(object)]
@@ -511,6 +543,114 @@ impl NativeDeltabox {
             let paths = paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
             coordinator
                 .record_file_changes(&session_id, &paths)
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn history_capabilities(
+        &self,
+        session_id: String,
+    ) -> napi::Result<NativeHistoryCapabilities> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .history_capabilities(&session_id)
+                .map(|value: HistoryCapabilities| NativeHistoryCapabilities {
+                    version: value.version,
+                    supported: value.supported,
+                    reason: value.reason,
+                    retention: value.retention,
+                    scope: value.scope,
+                })
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn history_capture(
+        &self,
+        session_id: String,
+        label: Option<String>,
+    ) -> napi::Result<NativeHistoryVersion> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .history_capture(HistoryCaptureParams { session_id, label })
+                .map(history_version)
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn history_list(
+        &self,
+        session_id: String,
+    ) -> napi::Result<Vec<NativeHistoryVersion>> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .history_list(&session_id)
+                .map(|versions| versions.into_iter().map(history_version).collect())
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn history_diff(
+        &self,
+        session_id: String,
+        version_id: String,
+    ) -> napi::Result<NativeDiffResult> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .history_diff(HistoryDiffParams {
+                    session_id,
+                    version_id,
+                })
+                .map(diff_result)
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn history_preview(&self, version_id: String) -> napi::Result<NativeDiffResult> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .history_preview(&version_id)
+                .map(diff_result)
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn history_restore(
+        &self,
+        session_id: String,
+        version_id: String,
+        expected_version_id: String,
+    ) -> napi::Result<NativeHistoryRestoreResult> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            coordinator
+                .history_restore(HistoryRestoreParams {
+                    session_id,
+                    version_id,
+                    expected_version_id,
+                })
+                .map(|value| NativeHistoryRestoreResult {
+                    version: history_version(value.version),
+                    backup: history_version(value.backup),
+                    restored: value.restored as f64,
+                })
                 .map_err(native_error)
         })
         .await
@@ -1097,5 +1237,16 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         });
+    }
+}
+
+fn history_version(value: HistoryVersion) -> NativeHistoryVersion {
+    NativeHistoryVersion {
+        id: value.id,
+        session_id: value.session_id,
+        label: value.label.map_or(Either::B(Null), Either::A),
+        created_at_ms: value.created_at_ms as f64,
+        entry_count: value.entry_count as f64,
+        logical_bytes: value.logical_bytes as f64,
     }
 }
