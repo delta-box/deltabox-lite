@@ -688,14 +688,22 @@ fn request_on(mut stream: UnixStream, token: &str, command: Command) -> Result<R
 /// nothing after the start confirmation, so any bytes that do arrive are
 /// ignored. Dropping the watcher stops and joins its thread on every exit
 /// path, including a backend panic, so it never keeps the socket open.
+///
+/// Stopping must not wait for the read timeout: every exec drops a watcher
+/// before replying, so a join that waited out `DISCONNECT_POLL` would add up
+/// to that much latency to every command. Drop therefore shuts down the read
+/// half of the socket, which wakes the blocked read at once; the timeout is
+/// only a backstop.
 struct DisconnectWatcher {
     finished: Arc<AtomicBool>,
+    waker: UnixStream,
     thread: Option<thread::JoinHandle<()>>,
 }
 
 impl DisconnectWatcher {
     fn start(stream: &UnixStream, cancel: crate::cancel::CancelHandle) -> Result<Self> {
         let mut peer = stream.try_clone()?;
+        let waker = stream.try_clone()?;
         peer.set_read_timeout(Some(DISCONNECT_POLL))?;
         let finished = Arc::new(AtomicBool::new(false));
         let watching = Arc::clone(&finished);
@@ -704,6 +712,12 @@ impl DisconnectWatcher {
             let mut byte = [0_u8; 1];
             while !watching.load(Ordering::Acquire) {
                 match peer.read(&mut byte) {
+                    // EOF or a hard error means the client went away, unless
+                    // Drop set `finished` and shut the read half down to wake
+                    // this read, which is a normal stop, not a disconnect.
+                    Ok(0) | Err(_) if watching.load(Ordering::Acquire) => {
+                        return;
+                    }
                     Ok(0) => {
                         cancel.cancel();
                         return;
@@ -725,6 +739,7 @@ impl DisconnectWatcher {
         });
         Ok(Self {
             finished,
+            waker,
             thread: Some(thread),
         })
     }
@@ -732,7 +747,12 @@ impl DisconnectWatcher {
 
 impl Drop for DisconnectWatcher {
     fn drop(&mut self) {
+        // Publish `finished` before waking the reader so the wake-up is never
+        // mistaken for a client disconnect.
         self.finished.store(true, Ordering::Release);
+        // The server never reads this connection again, so closing the read
+        // half is safe; the response is still written on the write half.
+        let _ = self.waker.shutdown(std::net::Shutdown::Read);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -1048,6 +1068,47 @@ mod tests {
     use super::*;
     use crate::policy::Policy;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn stopping_disconnect_watcher_does_not_wait_for_poll() {
+        use std::io::Read as _;
+        let (server, mut client) = UnixStream::pair().unwrap();
+        let cancel = crate::cancel::CancelHandle::default();
+        let watcher = DisconnectWatcher::start(&server, cancel.clone()).unwrap();
+        // Let the watcher block in read() before it is stopped.
+        thread::sleep(Duration::from_millis(5));
+        let started = Instant::now();
+        drop(watcher);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < DISCONNECT_POLL / 5,
+            "stopping the watcher took {elapsed:?}; it must not wait out the {DISCONNECT_POLL:?} poll"
+        );
+        // A normal stop is not a client disconnect.
+        assert!(!cancel.is_cancelled());
+        // The reply still goes out on the write half after the watcher stops.
+        (&server).write_all(b"done\n").unwrap();
+        let mut reply = [0_u8; 5];
+        client.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"done\n");
+    }
+
+    #[test]
+    fn disconnect_watcher_cancels_when_client_hangs_up() {
+        let (server, client) = UnixStream::pair().unwrap();
+        let cancel = crate::cancel::CancelHandle::default();
+        let watcher = DisconnectWatcher::start(&server, cancel.clone()).unwrap();
+        drop(client);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !cancel.is_cancelled() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            cancel.is_cancelled(),
+            "client hang-up must cancel the command"
+        );
+        drop(watcher);
+    }
 
     #[derive(Default)]
     struct Counts {
