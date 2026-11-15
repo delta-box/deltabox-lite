@@ -1,0 +1,14 @@
+# deltabox c2011a4 default_agent() policy with only max_processes raised (32 -> 100000)
+[filesystem]
+read = [".", "/usr", "/bin", "/lib", "/lib64", "/etc", "/run"]
+write = ["."]
+deny = [".env",".env.*","*.pem","*.key",".ssh",".aws",".gnupg",".git-credentials","Library/Keychains","Keychains","id_rsa","id_ed25519"]
+
+[network]
+mode = "allow_audit"
+
+[limits]
+max_processes = 100000
+max_open_files = 1024
+max_write_bytes = 16777216
+max_storage_bytes = 1073741824
