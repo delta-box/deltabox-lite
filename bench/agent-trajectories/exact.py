@@ -267,7 +267,35 @@ def verify(img, steps, segs, D, rcs, skip, timeout):
 
 
 class Skip(set):
+    """Non-deterministic paths: content that differs between the two observe
+    runs, and files with random names (present at a step in one run only, e.g.
+    a compiler's tmp/tmpk2j9x.o). A random name is new in every run, so the
+    whole kind is left out: new files (absent from the image) in the same
+    directory with the same extension."""
     rc_steps = set()
+    kinds = set()
+    base = frozenset()
+
+    @staticmethod
+    def kind(p):
+        d, _, name = p.rpartition("/")
+        return d, os.path.splitext(name)[1]
+
+    def __contains__(self, p):
+        return set.__contains__(self, p) or (p not in self.base and self.kind(p) in self.kinds)
+
+    @classmethod
+    def from_runs(cls, sA, sB, rcA, rcB):
+        s = cls()
+        s.base = frozenset(sA[0])
+        s.kinds = set()
+        for a, b in zip(sA, sB):
+            for p in set(a) ^ set(b):
+                if p not in s.base:
+                    s.kinds.add(cls.kind(p))
+            set.update(s, (p for p in set(a) | set(b) if a.get(p) != b.get(p)))
+        s.rc_steps = {k for k, (x, y) in enumerate(zip(rcA, rcB)) if x != y}
+        return s
 
 
 # ------------------------------------------------------------------ driver
@@ -285,10 +313,7 @@ def run_one(run, iid, details):
             img.pip_index = index.__enter__()
         sA, rcA, msA, imeta = observe(img, steps, timeout)
         sB, rcB, _, _ = observe(img, steps, timeout)
-        skip = Skip()
-        for a, b in zip(sA, sB):
-            skip.update(p for p in set(a) | set(b) if a.get(p) != b.get(p))
-        skip.rc_steps = {k for k, (x, y) in enumerate(zip(rcA, rcB)) if x != y}
+        skip = Skip.from_runs(sA, sB, rcA, rcB)
         D = [digest(s, skip) for s in sA]
         banned, dropped, rounds = set(), [], 0
         while True:
@@ -323,6 +348,7 @@ def run_one(run, iid, details):
         "rc_match_recording": sum(same_rc(a, r) for a, r in zip(rcA, rec) if r is not None),
         "rc_recorded": sum(r is not None for r in rec),
         "nondeterministic_paths": sorted(skip), "nondeterministic_rc_steps": sorted(skip.rc_steps),
+        "random_name_kinds": sorted(f"{d}/*{e}" for d, e in skip.kinds),
         "dropped_aborts": dropped, "overlapping_reverts": skipped,
         "per_step": [{"i": k, "rc": rcA[k], "changed": sorted(diff(sA[k], sA[k + 1]))}
                      for k in range(len(steps))],
