@@ -41,6 +41,8 @@ import shutil
 import stat
 import sys
 import time
+import traceback
+import urllib.error
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -395,6 +397,9 @@ def main():
         except Exception as e:  # noqa: BLE001
             failed += 1
             print(f"FAILED {iid}: {type(e).__name__}: {e}", flush=True)
+            traceback.print_exc(file=sys.stdout)
+            if isinstance(e, urllib.error.HTTPError):
+                print(f"   url: {e.url}", flush=True)
     sys.exit(1 if failed else 0)
 
 
