@@ -1,0 +1,698 @@
+{
+ "instance_id": "pydata__xarray-4075",
+ "source": {
+  "benchmark": "SWE-bench Verified",
+  "track": "bash-only",
+  "agent": "mini-SWE-agent 2.0.0",
+  "agent_version_in_trajectory": "2.1.0",
+  "model": "claude-sonnet-4-5-20250929 (reasoning effort: high)",
+  "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+  "trajectory_url": "https://swe-bench-submissions.s3.amazonaws.com/bash-only/20260217_mini-v2.0.0_claude-4-5-sonnet-high/trajs/pydata__xarray-4075/pydata__xarray-4075.traj.json",
+  "trajectory_sha256": "615d2cd609f36ec9e255b6476956f00e31d6171b8aa09b3078c817540d70f44b",
+  "leaderboard_resolved": true,
+  "exit_status": "Submitted",
+  "repo": "pydata/xarray",
+  "base_commit": "19b088636eb7d3f65ab7a1046ac672e0689371d8",
+  "environment": {
+   "image": "docker.io/swebench/sweb.eval.x86_64.pydata_1776_xarray-4075:latest",
+   "cwd": "/testbed",
+   "env": {
+    "PAGER": "cat",
+    "MANPAGER": "cat",
+    "LESS": "-R",
+    "PIP_PROGRESS_BAR": "off",
+    "TQDM_DISABLE": "1"
+   },
+   "forward_env": [],
+   "timeout": 60,
+   "executable": "docker",
+   "run_args": [
+    "--rm"
+   ],
+   "container_timeout": "2h",
+   "pull_timeout": 300,
+   "interpreter": [
+    "bash",
+    "-c"
+   ]
+  },
+  "agent_wall_time_s": 315.2
+ },
+ "workspace": "/testbed",
+ "excluded_from_workspace": [
+  ".git",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".tox",
+  "__pycache__",
+  "*.pyc",
+  "*.egg-info"
+ ],
+ "steps": [
+  {
+   "i": 0,
+   "cmd_sha256": "992e9a7b6a8afd3f",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 1,
+   "cmd_sha256": "8794b88ad5ddaf60",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 2,
+   "cmd_sha256": "30075c939aaa42e7",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 3,
+   "cmd_sha256": "40d4fe01777a0377",
+   "kind": "write",
+   "recorded_rc": 1,
+   "writes": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 4,
+   "cmd_sha256": "b1f70377ee65f337",
+   "kind": "env",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 5,
+   "cmd_sha256": "79c7bf62329e3816",
+   "kind": "eval",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 6,
+   "cmd_sha256": "4cb70b7db166a30f",
+   "kind": "env",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 7,
+   "cmd_sha256": "79c7bf62329e3816",
+   "kind": "eval",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 8,
+   "cmd_sha256": "50e5708e930d844b",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 9,
+   "cmd_sha256": "0bdd44cf450907cc",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 10,
+   "cmd_sha256": "6dd2e94641cafbb1",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 11,
+   "cmd_sha256": "b9a931acdf0cb370",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "xarray/core/weighted.py"
+   ]
+  },
+  {
+   "i": 12,
+   "cmd_sha256": "79c7bf62329e3816",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 13,
+   "cmd_sha256": "a2a96158fb051f58",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "test_fix.py"
+   ]
+  },
+  {
+   "i": 14,
+   "cmd_sha256": "5650429d5096275d",
+   "kind": "eval",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 15,
+   "cmd_sha256": "3933e8b57b19c84f",
+   "kind": "env",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 16,
+   "cmd_sha256": "5650429d5096275d",
+   "kind": "eval",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 17,
+   "cmd_sha256": "71e43ce9c0b05c14",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 18,
+   "cmd_sha256": "20344c7b5c8ee51d",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 19,
+   "cmd_sha256": "3603616650bf1509",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "xarray/core/weighted.py"
+   ]
+  },
+  {
+   "i": 20,
+   "cmd_sha256": "79c7bf62329e3816",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 21,
+   "cmd_sha256": "72b53d75a3a9e3a4",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 22,
+   "cmd_sha256": "56a38fe86637e67c",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 23,
+   "cmd_sha256": "04f3871a4c0f80a6",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 24,
+   "cmd_sha256": "8c3d6a2cf6074e09",
+   "kind": "write",
+   "recorded_rc": 1,
+   "writes": [
+    "test_astype.py"
+   ]
+  },
+  {
+   "i": 25,
+   "cmd_sha256": "49db1f730c998d72",
+   "kind": "env",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 26,
+   "cmd_sha256": "3dac4914fb95f473",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 27,
+   "cmd_sha256": "57cb5539114dab93",
+   "kind": "revert",
+   "recorded_rc": 0,
+   "writes": [
+    "xarray/core/weighted.py",
+    "xarray/core/weighted.py.new"
+   ]
+  },
+  {
+   "i": 28,
+   "cmd_sha256": "1b29cd9587cd0feb",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 29,
+   "cmd_sha256": "e272ce5049771c6f",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "xarray/core/weighted.py"
+   ]
+  },
+  {
+   "i": 30,
+   "cmd_sha256": "c26cae3c628e9d19",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 31,
+   "cmd_sha256": "79c7bf62329e3816",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 32,
+   "cmd_sha256": "72b53d75a3a9e3a4",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 33,
+   "cmd_sha256": "4903f86f08de26f6",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 34,
+   "cmd_sha256": "c339bef86da4d94e",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 35,
+   "cmd_sha256": "cb7e5fa551f9866a",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 36,
+   "cmd_sha256": "46ca8cbbde340937",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 37,
+   "cmd_sha256": "14dc06def76579e8",
+   "kind": "read",
+   "recorded_rc": null,
+   "writes": []
+  }
+ ],
+ "transactions": {
+  "minimal": [
+   {
+    "first": 0,
+    "last": 26,
+    "outcome": "commit",
+    "id": 0,
+    "writes": 6,
+    "evals": 13
+   },
+   {
+    "first": 27,
+    "last": 28,
+    "outcome": "abort",
+    "checkpoint_before": 27,
+    "replaces": [
+     29
+    ],
+    "files": [
+     "xarray/core/weighted.py",
+     "xarray/core/weighted.py.new"
+    ],
+    "id": 1,
+    "writes": 2,
+    "evals": 1
+   },
+   {
+    "first": 30,
+    "last": 37,
+    "outcome": "commit",
+    "id": 2,
+    "writes": 1,
+    "evals": 4
+   }
+  ],
+  "per_eval": [
+   {
+    "first": 0,
+    "last": 3,
+    "outcome": "commit",
+    "id": 0,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 4,
+    "last": 5,
+    "outcome": "commit",
+    "id": 1,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 6,
+    "last": 7,
+    "outcome": "commit",
+    "id": 2,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 8,
+    "last": 8,
+    "outcome": "commit",
+    "id": 3,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 9,
+    "last": 12,
+    "outcome": "commit",
+    "id": 4,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 13,
+    "last": 13,
+    "outcome": "commit",
+    "id": 5,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 14,
+    "last": 14,
+    "outcome": "commit",
+    "id": 6,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 15,
+    "last": 16,
+    "outcome": "commit",
+    "id": 7,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 17,
+    "last": 17,
+    "outcome": "commit",
+    "id": 8,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 18,
+    "last": 20,
+    "outcome": "commit",
+    "id": 9,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 21,
+    "last": 21,
+    "outcome": "commit",
+    "id": 10,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 22,
+    "last": 22,
+    "outcome": "commit",
+    "id": 11,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 23,
+    "last": 24,
+    "outcome": "commit",
+    "id": 12,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 25,
+    "last": 26,
+    "outcome": "commit",
+    "id": 13,
+    "writes": 0,
+    "evals": 0
+   },
+   {
+    "first": 27,
+    "last": 28,
+    "outcome": "abort",
+    "checkpoint_before": 27,
+    "replaces": [
+     29
+    ],
+    "files": [
+     "xarray/core/weighted.py",
+     "xarray/core/weighted.py.new"
+    ],
+    "id": 14,
+    "writes": 2,
+    "evals": 1
+   },
+   {
+    "first": 30,
+    "last": 30,
+    "outcome": "commit",
+    "id": 15,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 31,
+    "last": 31,
+    "outcome": "commit",
+    "id": 16,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 32,
+    "last": 32,
+    "outcome": "commit",
+    "id": 17,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 33,
+    "last": 36,
+    "outcome": "commit",
+    "id": 18,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 37,
+    "last": 37,
+    "outcome": "commit",
+    "id": 19,
+    "writes": 0,
+    "evals": 0
+   }
+  ],
+  "per_write": [
+   {
+    "first": 0,
+    "last": 3,
+    "outcome": "commit",
+    "id": 0,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 4,
+    "last": 8,
+    "outcome": "commit",
+    "id": 1,
+    "writes": 1,
+    "evals": 3
+   },
+   {
+    "first": 9,
+    "last": 12,
+    "outcome": "commit",
+    "id": 2,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 13,
+    "last": 13,
+    "outcome": "commit",
+    "id": 3,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 14,
+    "last": 20,
+    "outcome": "commit",
+    "id": 4,
+    "writes": 1,
+    "evals": 4
+   },
+   {
+    "first": 21,
+    "last": 24,
+    "outcome": "commit",
+    "id": 5,
+    "writes": 1,
+    "evals": 3
+   },
+   {
+    "first": 25,
+    "last": 26,
+    "outcome": "commit",
+    "id": 6,
+    "writes": 0,
+    "evals": 0
+   },
+   {
+    "first": 27,
+    "last": 28,
+    "outcome": "abort",
+    "checkpoint_before": 27,
+    "replaces": [
+     29
+    ],
+    "files": [
+     "xarray/core/weighted.py",
+     "xarray/core/weighted.py.new"
+    ],
+    "id": 7,
+    "writes": 2,
+    "evals": 1
+   },
+   {
+    "first": 30,
+    "last": 36,
+    "outcome": "commit",
+    "id": 8,
+    "writes": 1,
+    "evals": 4
+   },
+   {
+    "first": 37,
+    "last": 37,
+    "outcome": "commit",
+    "id": 9,
+    "writes": 0,
+    "evals": 0
+   }
+  ]
+ },
+ "revert_events": [
+  {
+   "step": 27,
+   "files_reverted": [
+    "xarray/core/weighted.py"
+   ],
+   "span": [
+    11,
+    26
+   ],
+   "accepted": false,
+   "reason": "temporary revert: xarray/core/weighted.py gets the span's version back at step 29"
+  },
+  {
+   "step": 29,
+   "files_reverted": [
+    "xarray/core/weighted.py"
+   ],
+   "span": [
+    27,
+    28
+   ],
+   "accepted": true,
+   "reason": "rollback to a checkpoint before the span reproduces the revert",
+   "dropped_unused_scratch": [
+    "xarray/core/weighted.py.new"
+   ],
+   "files": [
+    "xarray/core/weighted.py",
+    "xarray/core/weighted.py.new"
+   ]
+  }
+ ],
+ "session_outcome": "commit",
+ "summary": {
+  "steps": 38,
+  "revert_events": 2,
+  "accepted_aborts": 1,
+  "minimal": {
+   "transactions": 3,
+   "aborts": 1,
+   "commits": 2,
+   "writing_transactions": 3,
+   "abort_rate_of_writing_transactions": 0.333
+  },
+  "per_eval": {
+   "transactions": 20,
+   "aborts": 1,
+   "commits": 19,
+   "writing_transactions": 8,
+   "abort_rate_of_writing_transactions": 0.125
+  },
+  "per_write": {
+   "transactions": 10,
+   "aborts": 1,
+   "commits": 9,
+   "writing_transactions": 8,
+   "abort_rate_of_writing_transactions": 0.125
+  }
+ },
+ "validation": {
+  "status": "static analysis only",
+  "todo": "replay in the task image and compare workspace hashes (replay.py --validate)"
+ }
+}

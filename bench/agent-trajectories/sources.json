@@ -1,0 +1,73 @@
+{
+  "benchmark": "SWE-bench Verified",
+  "leaderboard_track": "bash-only",
+  "agent": "mini-SWE-agent 2.0.0",
+  "model": "claude-sonnet-4-5-20250929 (reasoning effort: high)",
+  "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+  "run_metadata": "https://github.com/SWE-bench/experiments/tree/main/evaluation/verified/20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+  "selection": "From a 60-trajectory sample (every 8th trajectory of the run in S3 key order), all trajectories whose commands contain an explicit revert of a file (git checkout/restore <file>, git stash, cp|mv <file>.backup|.bak|.orig <file>), plus two without any revert as controls.",
+  "instances": [
+    {
+      "instance_id": "django__django-11433",
+      "why": "two restores from a .backup copy",
+      "sha256": "e64b7ed4756a285668a1b48ff2493f54ed3a4779b64a9f4036890b1939226136",
+      "resolved": true
+    },
+    {
+      "instance_id": "sympy__sympy-13372",
+      "why": "three git checkout <file> reverts",
+      "sha256": "bd095e47dc5197e57fc38ee1cb045149a22e312e055ff7e330e71474d2dbfa2f",
+      "resolved": true
+    },
+    {
+      "instance_id": "sympy__sympy-13877",
+      "why": "two reverts, unresolved",
+      "sha256": "1322e509b4592e896725b3c1de0c075044b7c9b0455074070b66b616fca4448e",
+      "resolved": false
+    },
+    {
+      "instance_id": "pydata__xarray-4075",
+      "why": "git checkout used to compare against the original",
+      "sha256": "615d2cd609f36ec9e255b6476956f00e31d6171b8aa09b3078c817540d70f44b",
+      "resolved": true
+    },
+    {
+      "instance_id": "pydata__xarray-6599",
+      "why": "one revert, unresolved",
+      "sha256": "46e034c2563a0dc92d4de10dc68d7e3029dd79bbf61b2f0114b8449f736b0d8c",
+      "resolved": false
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-11310",
+      "why": "one revert",
+      "sha256": "3ab1152a88461c294a4d8592a96428915b55070df5f6bbb1c13f63781cffb88e",
+      "resolved": true
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8595",
+      "why": "one revert",
+      "sha256": "60c04a784e2eddb96d0b034a1b07a00b8c0c11c900dc44229780eeac5995fb8b",
+      "resolved": true
+    },
+    {
+      "instance_id": "pylint-dev__pylint-4551",
+      "why": "the sample's revert pattern matched, but it copies the backup to /tmp (not a workspace revert); long (105 commands), unresolved",
+      "sha256": "20c5f8641b58c6052e44e14b89e5f95c03e0723490be907c6503b8542ac27e68",
+      "resolved": false
+    },
+    {
+      "instance_id": "django__django-14373",
+      "why": "control: no revert, short",
+      "sha256": "ef82b6b0cf82ce837ca59d3213204c1755f7d5884a37e14a2cd619bf120d79d1",
+      "resolved": true
+    },
+    {
+      "instance_id": "django__django-12308",
+      "why": "control: no revert, unresolved",
+      "sha256": "9353bf897836a5815f934414ea6929434d9228052e96ec001cb21a82b59ca587",
+      "resolved": false
+    }
+  ],
+  "details_sha256_at_lock": "c7f61049937deafa6327e0d5f17c0baf482751388530530bb9f5d53ce0fbf7cc",
+  "agent_version_note": "The run's metadata.yaml says mini-SWE-agent 2.0.0; the trajectory files record mini_version 2.1.0."
+}
