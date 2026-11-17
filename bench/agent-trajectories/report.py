@@ -35,6 +35,11 @@ for inst in src["instances"]:
         data.append({"id": iid, "missing": True, "why": inst["why"]})
         continue
     t = json.loads((CACHE / "replay" / f"{iid}.json").read_text())
+    # per_write comes from exact.py (transactions derived from observed
+    # workspace states and verified by replay); other policies from annotate.py.
+    ex_p = HERE / "results" / "exact" / f"{iid}.json"
+    ex = json.loads(ex_p.read_text()) if policy == "per_write" and ex_p.exists() else None
+    txs = ex["transactions"] if ex else t["transactions"][policy]
     rows = []
     for parts in zip(*(runs[b] for b in BACKENDS)):
         r0 = parts[0]
@@ -47,13 +52,22 @@ for inst in src["instances"]:
                        rc={b: p["rc"] for b, p in zip(BACKENDS, parts)},
                        rec=r0["recorded_rc"])
         elif r0["op"] == "abort":
-            tx = next(x for x in t["transactions"][policy] if x["id"] == row["tx"])
+            tx = next(x for x in txs if x["id"] == row["tx"])
+            files = tx.get("files") or sorted({p for k in range(tx["first"], tx["last"] + 2)
+                                               for p in ex["per_step"][k]["changed"]})
             row.update(replaces=[{"step": r, "cmd": t["steps"][r]["cmd"]} for r in tx["replaces"]],
-                       span=[tx["first"], tx["last"]], files=tx["files"])
+                       span=[tx["first"], tx["last"]], files=files)
         if r0["op"] != "begin":
             rows.append(row)
-    ev = [{k: e[k] for k in ("step", "span", "accepted", "reason", "files_reverted")}
-          for e in t["revert_events"]]
+    if ex:
+        ev = ([{"step": d["step"], "span": None, "accepted": False, "files_reverted": [],
+                "reason": f"rollback changed a later step (diverged at step {d['diverged_at']})"}
+               for d in ex["dropped_aborts"]]
+              + [{"step": o["step"], "span": o["span"], "accepted": False, "files_reverted": [],
+                  "reason": o["reason"]} for o in ex["overlapping_reverts"]])
+    else:
+        ev = [{k: e[k] for k in ("step", "span", "accepted", "reason", "files_reverted")}
+              for e in t["revert_events"]]
     data.append({"id": iid, "repo": t["source"].get("repo", iid.split("__")[0]),
                  "resolved": inst["resolved"], "why": inst["why"],
                  "url": f"https://swe-bench-submissions.s3.amazonaws.com/bash-only/{src['run']}"

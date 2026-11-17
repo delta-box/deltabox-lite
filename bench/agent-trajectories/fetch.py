@@ -17,12 +17,17 @@ derived annotations, not copies of the transcripts).
 import argparse
 import hashlib
 import json
+import time
+import urllib.error
+import os
 import sys
 import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CACHE = HERE.parents[1] / "target" / "agent-traj-cache"
+# Downloads, unpacked images and command outputs (large; never committed).
+# AGENT_TRAJ_CACHE moves it, e.g. to a big data disk.
+CACHE = Path(os.environ.get("AGENT_TRAJ_CACHE", HERE.parents[1] / "target" / "agent-traj-cache"))
 S3 = "https://swe-bench-submissions.s3.amazonaws.com/bash-only"
 GH_RAW = "https://raw.githubusercontent.com/SWE-bench/experiments/main/evaluation/verified"
 
@@ -37,9 +42,19 @@ def details_url(run):
 
 def download(url, dest):
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if not dest.exists():
-        with urllib.request.urlopen(url, timeout=120) as r:
-            dest.write_bytes(r.read())
+    for attempt in range(6):
+        if dest.exists():
+            break
+        try:
+            with urllib.request.urlopen(url, timeout=120) as r:
+                data = r.read()
+            tmp = dest.with_suffix(".part")
+            tmp.write_bytes(data)
+            tmp.rename(dest)
+        except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
+            if attempt == 5 or getattr(e, "code", None) == 404:
+                raise
+            time.sleep(10 * (attempt + 1))
     return hashlib.sha256(dest.read_bytes()).hexdigest()
 
 

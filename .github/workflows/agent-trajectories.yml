@@ -1,0 +1,117 @@
+name: Agent trajectories (exact replay)
+# Replays every trajectory of a SWE-bench bash-only run in its task image and
+# derives commit/abort from the observed workspace states, then verifies them
+# with real git rollbacks (bench/agent-trajectories/exact.py).
+# Runs on demand, and on a push to bench/experiments that changes this file or
+# the replay code (a workflow_dispatch workflow can only be started by hand
+# once it is on the default branch).
+on:
+  workflow_dispatch:
+    inputs:
+      run:
+        description: SWE-bench bash-only run (folder of SWE-bench/experiments evaluation/verified)
+        default: 20260217_mini-v2.0.0_claude-4-5-sonnet-high
+      shards:
+        description: number of parallel jobs (each takes every N-th instance)
+        default: "100"
+      only:
+        description: optional space-separated instance ids (overrides the full run)
+        default: ""
+  push:
+    branches: [bench/experiments]
+    paths:
+      - .github/workflows/agent-trajectories.yml
+      - bench/agent-trajectories/exact.py
+      - bench/agent-trajectories/swe_env.py
+      - bench/agent-trajectories/pypi_asof.py
+permissions:
+  contents: read
+concurrency:
+  group: agent-trajectories-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  RUN: ${{ inputs.run || '20260217_mini-v2.0.0_claude-4-5-sonnet-high' }}
+  SHARDS: ${{ inputs.shards || '100' }}
+  ONLY: ${{ inputs.only || '' }}
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      shards: ${{ steps.s.outputs.shards }}
+    steps:
+      - id: s
+        run: python3 -c "import json, os; print('shards=' + json.dumps(list(range(int(os.environ['SHARDS'])))))" >> "$GITHUB_OUTPUT"
+
+  replay:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    env:
+      AGENT_TRAJ_CACHE: /mnt/agent-traj
+      # Optional: a Docker Hub login raises the anonymous pull limit.
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Disk, bubblewrap, user namespaces
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo apt-get update -q && sudo apt-get install -yq bubblewrap
+          # Ubuntu 24.04 blocks unprivileged user namespaces by default; bwrap needs them.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo mkdir -p "$AGENT_TRAJ_CACHE" && sudo chown "$USER" "$AGENT_TRAJ_CACHE"
+          df -h / /mnt
+      - name: Replay
+        working-directory: bench/agent-trajectories
+        run: |
+          # Results of the committed sample are not this run's: start empty.
+          rm -rf results/exact results/*.per_write.csv
+          if [ -n "$ONLY" ]; then
+            ids=$(python3 -c "import sys; a=sys.argv[1].split(); print(' '.join(a[int(sys.argv[2])::int(sys.argv[3])]))" "$ONLY" "${{ matrix.shard }}" "$SHARDS")
+            [ -z "$ids" ] && exit 0
+            python3 exact.py --run "$RUN" $ids
+          else
+            python3 exact.py --run "$RUN" --all --shard "${{ matrix.shard }}/$SHARDS"
+          fi
+      # Counts, hashes and timings only: no command text (the trajectory
+      # archive has no licence).
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exact-${{ matrix.shard }}
+          path: |
+            bench/agent-trajectories/results/exact/
+            bench/agent-trajectories/results/*.per_write.csv
+          if-no-files-found: ignore
+
+  summary:
+    needs: replay
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: exact-*
+          path: bench/agent-trajectories/results
+          merge-multiple: true
+      - name: Tables
+        working-directory: bench/agent-trajectories
+        run: |
+          python3 aggregate.py results/exact
+          cat results/exact-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exact-summary
+          path: |
+            bench/agent-trajectories/results/exact/
+            bench/agent-trajectories/results/exact-summary.*
+            bench/agent-trajectories/results/*.per_write.csv

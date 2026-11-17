@@ -16,6 +16,7 @@ container), the host network and DNS are shared, and `/tmp` is the image's own
 (persistent across commands, as in a container).
 """
 
+import http.client
 import json
 import os
 import shutil
@@ -41,13 +42,40 @@ def image_name(instance_id):
 def _get(url, token, accept=None):
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}",
                                                **({"Accept": accept} if accept else {})})
-    return urllib.request.urlopen(req, timeout=120)
+    # Docker Hub allows ~100 anonymous manifest pulls per hour per IP: on 429,
+    # wait for the window to move rather than fail.
+    for attempt in range(120):
+        try:
+            return urllib.request.urlopen(req, timeout=120)
+        except urllib.error.HTTPError as e:
+            if e.code != 429:
+                raise
+            time.sleep(60)
+        except (urllib.error.URLError, ConnectionError, http.client.HTTPException, TimeoutError):
+            # Dropped connections (proxies, many parallel pulls): back off, retry.
+            if attempt >= 5:
+                raise
+            time.sleep(10 * (attempt + 1))
+    raise RuntimeError(f"rate-limited for 2 h: {url}")
 
 
 def _token(repo):
     url = ("https://auth.docker.io/token?service=registry.docker.io"
            f"&scope=repository:{repo}:pull")
-    return json.load(urllib.request.urlopen(url, timeout=60))["token"]
+    req = urllib.request.Request(url)
+    # A Docker Hub login (optional) gets a higher pull limit than anonymous.
+    user, tok = os.environ.get("DOCKERHUB_USERNAME"), os.environ.get("DOCKERHUB_TOKEN")
+    if user and tok:
+        import base64
+        req.add_header("Authorization", "Basic " + base64.b64encode(
+            f"{user}:{tok}".encode()).decode())
+    for attempt in range(6):
+        try:
+            return json.load(urllib.request.urlopen(req, timeout=60))["token"]
+        except (urllib.error.URLError, ConnectionError, http.client.HTTPException, TimeoutError):
+            if attempt == 5:
+                raise
+            time.sleep(10 * (attempt + 1))
 
 
 def resolve(repo, tag="latest"):
@@ -110,15 +138,24 @@ def unpack(repo, root, blobs, log=print):
             part = tmp.with_suffix(".part")
             # Anonymous registry tokens expire after ~5 min: one per layer,
             # and one retry with a new token on 401.
-            for attempt in (0, 1):
+            # A fresh token per attempt (they expire after ~5 min); retry an
+            # expired token (401) or a connection dropped mid-layer.
+            for attempt in range(6):
                 try:
                     with _get(f"{REGISTRY}/v2/{repo}/blobs/{layer['digest']}",
                               _token(repo)) as r, open(part, "wb") as f:
                         shutil.copyfileobj(r, f, 1 << 20)
+                    if layer["size"] and part.stat().st_size != layer["size"]:
+                        raise ConnectionError("short layer download")
                     break
                 except urllib.error.HTTPError as e:
-                    if e.code != 401 or attempt:
+                    if e.code != 401 or attempt == 5:
                         raise
+                except (urllib.error.URLError, ConnectionError, http.client.HTTPException,
+                        TimeoutError):
+                    if attempt == 5:
+                        raise
+                    time.sleep(10 * (attempt + 1))
             part.rename(tmp)
         # Apply this layer's whiteouts to the lower layers, then extract the rest.
         with tarfile.open(tmp) as t:
@@ -161,11 +198,24 @@ def unpack(repo, root, blobs, log=print):
 class Env:
     """Runs agent commands inside an unpacked image."""
 
-    def __init__(self, root, meta, cwd="/testbed", timeout=60):
+    def __init__(self, root, meta, cwd="/testbed", timeout=60, pip_index=None):
         self.root, self.meta, self.cwd, self.timeout = Path(root), meta, cwd, timeout
         self.env = dict(e.split("=", 1) for e in meta["env"])
         self.env.update(AGENT_ENV)
         self.env.setdefault("HOME", "/root")
+        # Hosts that reach the internet through a proxy: commands such as
+        # `pip install` need it too (the recording had direct access).
+        for k in ("http_proxy", "https_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+                  "NO_PROXY"):
+            if k in os.environ:
+                self.env[k] = os.environ[k]
+        # pip resolves against an index frozen at the recording time
+        # (pypi_asof.py), served on the host's loopback, never via the proxy.
+        if pip_index:
+            self.env["PIP_INDEX_URL"] = pip_index
+            self.env.pop("PIP_EXTRA_INDEX_URL", None)
+            for k in ("no_proxy", "NO_PROXY"):
+                self.env[k] = ",".join(filter(None, [self.env.get(k), "127.0.0.1", "localhost"]))
 
     def host(self, path):
         """Host path of a path inside the environment."""

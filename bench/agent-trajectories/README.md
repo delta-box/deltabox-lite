@@ -132,6 +132,10 @@ Where commits happen is a modelling choice; both are in every annotation:
 | `results/<id>.<backend>.<policy>.csv` | one row per begin/exec/commit/abort: ms, exit code vs recorded, workspace hash (command output goes to `target/agent-traj-cache/outputs/`, not committed) |
 | `report.py`, `report_template.html` | `target/agent-traj-cache/report.<policy>.html`: every step with its time per backend, commit/abort lines highlighted, policies compared (local only: it quotes the commands) |
 | `swe_env.py` | pulls a task image from Docker Hub without Docker, unpacks it, runs commands in it with unprivileged bubblewrap as uid 0 |
+| `exact.py` | `per_write` commit/abort from real replays: observe every workspace state twice, derive commits and aborts, verify them with git rollbacks → `results/exact/<id>.json` (no command text) |
+| `pypi_asof.py` | local PyPI index frozen at the recording time, so the agents' `pip install` gets the packages it got then |
+| `aggregate.py` | per-repository table from `results/exact/` → `results/exact-summary.{md,csv}` |
+| `.github/workflows/agent-trajectories.yml` | `exact.py` over every trajectory of the run in 100 parallel jobs; the table is the run's summary, the JSON its artifact |
 
 A transaction:
 

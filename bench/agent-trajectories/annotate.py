@@ -95,7 +95,8 @@ def load_trajectory(run, iid):
     return steps, {"mini_version": info.get("mini_version"),
                    "exit_status": info.get("exit_status"),
                    "environment": cfg.get("environment"),
-                   "agent_wall_time_s": round(max(times) - min(times), 1) if times else None}
+                   "agent_wall_time_s": round(max(times) - min(times), 1) if times else None,
+                   "recorded_at": max(times) if times else None}
 
 
 def dataset_rows(iids):

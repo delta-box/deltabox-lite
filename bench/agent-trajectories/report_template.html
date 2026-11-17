@@ -212,7 +212,7 @@ function section(I, s) {
   h += `</tbody></table></div>`;
   const rej = I.events.filter(e => !e.accepted);
   if (rej.length) h += `<details><summary>${rej.length} revert(s) by the agent that are not aborts</summary><ul>${
-    rej.map(e => `<li>step ${e.step} (${e.files_reverted.map(esc).join(", ")}): ${esc(e.reason)}</li>`).join("")}</ul></details>`;
+    rej.map(e => `<li>step ${e.step}${e.files_reverted.length ? ` (${e.files_reverted.map(esc).join(", ")})` : ""}: ${esc(e.reason)}</li>`).join("")}</ul></details>`;
   return h + `</div>`;
 }
 
