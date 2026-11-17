@@ -24,6 +24,7 @@ import subprocess
 import tarfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -39,6 +40,22 @@ def image_name(instance_id):
     return f"swebench/sweb.eval.x86_64.{owner}_1776_{rest}".lower()
 
 
+class _NoAuthAcrossHosts(urllib.request.HTTPRedirectHandler):
+    """Blob requests redirect to a storage CDN (S3, Cloudflare). The registry
+    token must not follow: S3 answers a request with a foreign Authorization
+    header with 400 Bad Request."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and (urllib.parse.urlsplit(newurl).hostname
+                                != urllib.parse.urlsplit(req.full_url).hostname):
+            new.remove_header("Authorization")
+        return new
+
+
+_opener = urllib.request.build_opener(_NoAuthAcrossHosts)
+
+
 def _get(url, token, accept=None):
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}",
                                                **({"Accept": accept} if accept else {})})
@@ -46,7 +63,7 @@ def _get(url, token, accept=None):
     # wait for the window to move rather than fail.
     for attempt in range(120):
         try:
-            return urllib.request.urlopen(req, timeout=120)
+            return _opener.open(req, timeout=120)
         except urllib.error.HTTPError as e:
             if e.code != 429:
                 raise
