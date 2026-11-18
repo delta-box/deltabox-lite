@@ -9,6 +9,8 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-11-18
+
 ### Added
 
 - Node clients can call `removeStopped(sessionId)` to reclaim the state and history of a stopped session.
