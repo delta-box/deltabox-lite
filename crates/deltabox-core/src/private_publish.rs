@@ -433,10 +433,7 @@ impl AcceptedIndex {
                     self.manifest.root = fingerprint(project, true)?
                         .ok_or_else(|| Error::Backend("project root is unavailable".into()))?;
                 } else {
-                    self.remove_entry(&parent)?;
-                    if let Some(value) = fingerprint(&path, false)? {
-                        self.add_entry(&parent, value)?;
-                    }
+                    self.refresh_parent_entry(&parent, fingerprint(&path, false)?)?;
                 }
             }
             if let Some(stamp) = fingerprint_shallow(&path, parent.is_empty())?
@@ -449,6 +446,29 @@ impl AcceptedIndex {
         }
         self.manifest.hardlinks.retain(|_, paths| paths.len() > 1);
         self.save_manifest()
+    }
+
+    fn refresh_parent_entry(&mut self, path: &str, value: Option<Fingerprint>) -> Result<()> {
+        // A membership change updates directory metadata. Keep the generation
+        // referenced by both the just-published child and untouched siblings.
+        if let (Some(mut entry), Some(current)) = (self.stored_entry(path)?, value.as_ref()) {
+            if let (
+                Fingerprint::Directory { inode: old, .. },
+                Fingerprint::Directory { inode: new, .. },
+            ) = (&entry.fingerprint, current)
+            {
+                if old == new {
+                    entry.fingerprint = current.clone();
+                    return save_json(&entry_path(&self.directory, path), &entry, self.durable);
+                }
+            }
+        }
+
+        self.remove_entry(path)?;
+        if let Some(current) = value {
+            self.add_entry(path, current)?;
+        }
+        Ok(())
     }
 
     fn entry(&self, path: &str) -> Result<Option<Fingerprint>> {
@@ -1333,6 +1353,61 @@ mod tests {
             accepted.validate(&project, ["a".into()]),
             Err(Error::ProjectConflict(_))
         ));
+    }
+
+    #[test]
+    fn parent_refresh_preserves_children_and_detects_host_edits() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let index = root.path().join("accepted");
+        fs::create_dir_all(project.join("work")).unwrap();
+        fs::write(project.join("work/one"), "first").unwrap();
+        let mut accepted =
+            AcceptedIndex::create(&index, AcceptedState::capture(&project).unwrap()).unwrap();
+
+        fs::write(project.join("work/two"), "second").unwrap();
+        let addition = PublishChange {
+            path: "work/two".into(),
+            kind: ChangeKind::Added,
+            existed: false,
+            namespace_changed: true,
+        };
+        accepted.refresh(&project, &[addition]).unwrap();
+        let accepted = AcceptedIndex::open_with_durability(&index, false).unwrap();
+        accepted
+            .validate(&project, ["work/one".into(), "work/two".into()])
+            .unwrap();
+
+        fs::write(project.join("work/two"), "edited").unwrap();
+        let Err(Error::ProjectConflict(report)) = accepted.validate(&project, ["work/two".into()])
+        else {
+            panic!("expected a conflict on the externally edited child");
+        };
+        assert_eq!(report.conflicts.len(), 1);
+        assert_eq!(report.conflicts[0].path, "work/two");
+        assert_eq!(report.conflicts[0].host_change, HostChangeKind::Modified);
+    }
+
+    #[test]
+    fn replacing_a_directory_invalidates_its_old_children() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let index = root.path().join("accepted");
+        fs::create_dir_all(project.join("work")).unwrap();
+        fs::write(project.join("work/old"), "old").unwrap();
+        let mut accepted =
+            AcceptedIndex::create(&index, AcceptedState::capture(&project).unwrap()).unwrap();
+
+        fs::rename(project.join("work"), root.path().join("retired")).unwrap();
+        fs::create_dir(project.join("work")).unwrap();
+        let replacement = PublishChange {
+            path: "work".into(),
+            kind: ChangeKind::Modified,
+            existed: true,
+            namespace_changed: false,
+        };
+        accepted.refresh(&project, &[replacement]).unwrap();
+        assert!(accepted.entry("work/old").unwrap().is_none());
     }
 
     #[test]
