@@ -122,6 +122,8 @@ export interface NativeDeltaboxInstance {
     requireFilesystemMode?: boolean,
   ): Promise<NativeSessionInfo>
   stopSession(sessionId: string): Promise<NativeSessionInfo>
+  /** Permanently discard a stopped session, including its checkpoints and journal. */
+  removeStopped(sessionId: string): Promise<void>
   /**
    * Take ownership of a session whose owner process died (an orphan). Its
    * pending changes are kept; commit or abort them, then stop the session.

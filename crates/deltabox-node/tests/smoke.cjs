@@ -112,7 +112,10 @@ async function main() {
       await rm(outside, { recursive: true, force: true })
     }
 
+    await assert.rejects(native.removeStopped(session.session_id))
     await native.stopSession(session.session_id)
+    await native.removeStopped(session.session_id)
+    await assert.rejects(native.sessionStatus(session.session_id))
     session = undefined
     console.log(JSON.stringify({ transport: 'native', environment: 'shared', bytes: content.length }))
   } finally {

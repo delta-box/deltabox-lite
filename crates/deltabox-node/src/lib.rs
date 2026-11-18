@@ -347,6 +347,13 @@ impl NativeDeltabox {
         .await
     }
 
+    /// Permanently remove the state and history of an already stopped session.
+    #[napi]
+    pub async fn remove_stopped(&self, session_id: String) -> napi::Result<()> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || coordinator.remove_stopped(&session_id).map_err(native_error)).await
+    }
+
     /// Take ownership of a session whose previous owner process died, keeping
     /// its pending changes so the caller can commit or abort them.
     #[napi]
