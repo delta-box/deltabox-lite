@@ -1,0 +1,383 @@
+{
+ "instance_id": "psf__requests-1142",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "2d2fead2c1b34bfee72efdaac001ddb082fb678e4ec6d012bd29641bd6b0c8ad",
+ "image": "swebench/sweb.eval.x86_64.psf_1776_requests-1142",
+ "image_digest": "sha256:fa9c859412109d003a68c2bbe3c65541ca4714526afeb6906fe589c18af0b30d",
+ "resolved": true,
+ "pypi_as_of": 1771247419.149104,
+ "steps": 49,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 5,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 47,
+ "rc_recorded": 47,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 1,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": [
+    "requests/models.py.backup"
+   ]
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": [
+    "requests/models.py"
+   ]
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": [
+    "build/lib/requests/__init__.py",
+    "build/lib/requests/adapters.py",
+    "build/lib/requests/api.py",
+    "build/lib/requests/auth.py",
+    "build/lib/requests/cacert.pem",
+    "build/lib/requests/certs.py",
+    "build/lib/requests/compat.py",
+    "build/lib/requests/cookies.py",
+    "build/lib/requests/exceptions.py",
+    "build/lib/requests/hooks.py",
+    "build/lib/requests/models.py",
+    "build/lib/requests/packages/__init__.py",
+    "build/lib/requests/packages/charade/__init__.py",
+    "build/lib/requests/packages/charade/big5freq.py",
+    "build/lib/requests/packages/charade/big5prober.py",
+    "build/lib/requests/packages/charade/chardistribution.py",
+    "build/lib/requests/packages/charade/charsetgroupprober.py",
+    "build/lib/requests/packages/charade/charsetprober.py",
+    "build/lib/requests/packages/charade/codingstatemachine.py",
+    "build/lib/requests/packages/charade/compat.py",
+    "build/lib/requests/packages/charade/constants.py",
+    "build/lib/requests/packages/charade/escprober.py",
+    "build/lib/requests/packages/charade/escsm.py",
+    "build/lib/requests/packages/charade/eucjpprober.py",
+    "build/lib/requests/packages/charade/euckrfreq.py",
+    "build/lib/requests/packages/charade/euckrprober.py",
+    "build/lib/requests/packages/charade/euctwfreq.py",
+    "build/lib/requests/packages/charade/euctwprober.py",
+    "build/lib/requests/packages/charade/gb2312freq.py",
+    "build/lib/requests/packages/charade/gb2312prober.py",
+    "build/lib/requests/packages/charade/hebrewprober.py",
+    "build/lib/requests/packages/charade/jisfreq.py",
+    "build/lib/requests/packages/charade/jpcntx.py",
+    "build/lib/requests/packages/charade/langbulgarianmodel.py",
+    "build/lib/requests/packages/charade/langcyrillicmodel.py",
+    "build/lib/requests/packages/charade/langgreekmodel.py",
+    "build/lib/requests/packages/charade/langhebrewmodel.py",
+    "build/lib/requests/packages/charade/langhungarianmodel.py",
+    "build/lib/requests/packages/charade/langthaimodel.py",
+    "build/lib/requests/packages/charade/latin1prober.py",
+    "build/lib/requests/packages/charade/mbcharsetprober.py",
+    "build/lib/requests/packages/charade/mbcsgroupprober.py",
+    "build/lib/requests/packages/charade/mbcssm.py",
+    "build/lib/requests/packages/charade/sbcharsetprober.py",
+    "build/lib/requests/packages/charade/sbcsgroupprober.py",
+    "build/lib/requests/packages/charade/sjisprober.py",
+    "build/lib/requests/packages/charade/universaldetector.py",
+    "build/lib/requests/packages/charade/utf8prober.py",
+    "build/lib/requests/packages/urllib3/__init__.py",
+    "build/lib/requests/packages/urllib3/_collections.py",
+    "build/lib/requests/packages/urllib3/connectionpool.py",
+    "build/lib/requests/packages/urllib3/exceptions.py",
+    "build/lib/requests/packages/urllib3/filepost.py",
+    "build/lib/requests/packages/urllib3/packages/__init__.py",
+    "build/lib/requests/packages/urllib3/packages/ordered_dict.py",
+    "build/lib/requests/packages/urllib3/packages/six.py",
+    "build/lib/requests/packages/urllib3/packages/ssl_match_hostname/__init__.py",
+    "build/lib/requests/packages/urllib3/poolmanager.py",
+    "build/lib/requests/packages/urllib3/request.py",
+    "build/lib/requests/packages/urllib3/response.py",
+    "build/lib/requests/packages/urllib3/util.py",
+    "build/lib/requests/sessions.py",
+    "build/lib/requests/status_codes.py",
+    "build/lib/requests/structures.py",
+    "build/lib/requests/utils.py"
+   ]
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 2,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 2,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 8,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 9,
+   "last": 14,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 15,
+   "last": 15,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 16,
+   "last": 33,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 34,
+   "last": 45,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 46,
+   "last": 48,
+   "outcome": "none",
+   "id": 5
+  }
+ ],
+ "seconds": 83
+}

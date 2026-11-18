@@ -1,0 +1,430 @@
+{
+ "instance_id": "scikit-learn__scikit-learn-25232",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "6d337f02c2f34911e69b2d53ff438f0f8bc93bd85bf81d2d4d93d930e310b382",
+ "image": "swebench/sweb.eval.x86_64.scikit-learn_1776_scikit-learn-25232",
+ "image_digest": "sha256:900e73a469c0e96d9e33620187202814262c8409f6a51669d1c61d22ac48219d",
+ "resolved": true,
+ "pypi_as_of": 1771250673.9479666,
+ "steps": 41,
+ "verified": false,
+ "diverged_at": 11,
+ "rounds": 1,
+ "commits": 9,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 40,
+ "rc_recorded": 40,
+ "nondeterministic_paths": [
+  "sklearn/_isotonic.c",
+  "sklearn/_loss/_loss.c",
+  "sklearn/cluster/_dbscan_inner.cpp",
+  "sklearn/cluster/_hierarchical_fast.cpp",
+  "sklearn/cluster/_k_means_common.c",
+  "sklearn/cluster/_k_means_elkan.c",
+  "sklearn/cluster/_k_means_lloyd.c",
+  "sklearn/cluster/_k_means_minibatch.c",
+  "sklearn/datasets/_svmlight_format_fast.c",
+  "sklearn/decomposition/_cdnmf_fast.c",
+  "sklearn/decomposition/_online_lda_fast.c",
+  "sklearn/ensemble/_gradient_boosting.c",
+  "sklearn/ensemble/_hist_gradient_boosting/_binning.c",
+  "sklearn/ensemble/_hist_gradient_boosting/_bitset.c",
+  "sklearn/ensemble/_hist_gradient_boosting/_gradient_boosting.c",
+  "sklearn/ensemble/_hist_gradient_boosting/_predictor.c",
+  "sklearn/ensemble/_hist_gradient_boosting/common.c",
+  "sklearn/ensemble/_hist_gradient_boosting/histogram.c",
+  "sklearn/ensemble/_hist_gradient_boosting/splitting.c",
+  "sklearn/ensemble/_hist_gradient_boosting/utils.c",
+  "sklearn/feature_extraction/_hashing_fast.cpp",
+  "sklearn/linear_model/_cd_fast.c",
+  "sklearn/linear_model/_sag_fast.c",
+  "sklearn/linear_model/_sgd_fast.c",
+  "sklearn/manifold/_barnes_hut_tsne.c",
+  "sklearn/manifold/_utils.c",
+  "sklearn/metrics/_dist_metrics.c",
+  "sklearn/metrics/_pairwise_distances_reduction/_argkmin.cpp",
+  "sklearn/metrics/_pairwise_distances_reduction/_base.cpp",
+  "sklearn/metrics/_pairwise_distances_reduction/_datasets_pair.cpp",
+  "sklearn/metrics/_pairwise_distances_reduction/_middle_term_computer.cpp",
+  "sklearn/metrics/_pairwise_distances_reduction/_radius_neighbors.cpp",
+  "sklearn/metrics/_pairwise_fast.c",
+  "sklearn/metrics/cluster/_expected_mutual_info_fast.c",
+  "sklearn/neighbors/_ball_tree.c",
+  "sklearn/neighbors/_kd_tree.c",
+  "sklearn/neighbors/_partition_nodes.cpp",
+  "sklearn/neighbors/_quad_tree.c",
+  "sklearn/preprocessing/_csr_polynomial_expansion.c",
+  "sklearn/svm/_liblinear.c",
+  "sklearn/svm/_libsvm.c",
+  "sklearn/svm/_libsvm_sparse.c",
+  "sklearn/svm/_newrand.cpp",
+  "sklearn/tree/_criterion.c",
+  "sklearn/tree/_splitter.c",
+  "sklearn/tree/_tree.cpp",
+  "sklearn/tree/_utils.c",
+  "sklearn/utils/_fast_dict.cpp",
+  "sklearn/utils/_heap.c",
+  "sklearn/utils/_logistic_sigmoid.c",
+  "sklearn/utils/_random.c",
+  "sklearn/utils/_readonly_array_wrapper.c",
+  "sklearn/utils/_seq_dataset.c",
+  "sklearn/utils/_sorting.c",
+  "sklearn/utils/_typedefs.c",
+  "sklearn/utils/_vector_sentinel.cpp",
+  "sklearn/utils/_weight_vector.c"
+ ],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 1,
+   "changed": [
+    "test_fill_value.py"
+   ]
+  },
+  {
+   "i": 10,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": -9,
+   "changed": [
+    "sklearn/__check_build/_check_build.c",
+    "sklearn/_isotonic.c",
+    "sklearn/_loss/_loss.c",
+    "sklearn/cluster/_dbscan_inner.cpp",
+    "sklearn/cluster/_hierarchical_fast.cpp",
+    "sklearn/cluster/_k_means_common.c",
+    "sklearn/cluster/_k_means_elkan.c",
+    "sklearn/cluster/_k_means_lloyd.c",
+    "sklearn/cluster/_k_means_minibatch.c",
+    "sklearn/datasets/_svmlight_format_fast.c",
+    "sklearn/decomposition/_cdnmf_fast.c",
+    "sklearn/decomposition/_online_lda_fast.c",
+    "sklearn/ensemble/_gradient_boosting.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_binning.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_bitset.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_gradient_boosting.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_predictor.c",
+    "sklearn/ensemble/_hist_gradient_boosting/common.c",
+    "sklearn/ensemble/_hist_gradient_boosting/histogram.c",
+    "sklearn/ensemble/_hist_gradient_boosting/splitting.c",
+    "sklearn/ensemble/_hist_gradient_boosting/utils.c",
+    "sklearn/feature_extraction/_hashing_fast.cpp",
+    "sklearn/linear_model/_cd_fast.c",
+    "sklearn/linear_model/_sag_fast.c",
+    "sklearn/linear_model/_sgd_fast.c",
+    "sklearn/manifold/_barnes_hut_tsne.c",
+    "sklearn/manifold/_utils.c",
+    "sklearn/metrics/_dist_metrics.c",
+    "sklearn/metrics/_pairwise_distances_reduction/_argkmin.cpp",
+    "sklearn/metrics/_pairwise_distances_reduction/_base.cpp",
+    "sklearn/metrics/_pairwise_distances_reduction/_datasets_pair.cpp",
+    "sklearn/metrics/_pairwise_distances_reduction/_middle_term_computer.cpp",
+    "sklearn/metrics/_pairwise_distances_reduction/_radius_neighbors.cpp",
+    "sklearn/metrics/_pairwise_fast.c",
+    "sklearn/metrics/cluster/_expected_mutual_info_fast.c",
+    "sklearn/neighbors/_ball_tree.c",
+    "sklearn/neighbors/_kd_tree.c",
+    "sklearn/neighbors/_partition_nodes.cpp",
+    "sklearn/neighbors/_quad_tree.c",
+    "sklearn/preprocessing/_csr_polynomial_expansion.c",
+    "sklearn/svm/_liblinear.c",
+    "sklearn/svm/_libsvm.c",
+    "sklearn/svm/_libsvm_sparse.c",
+    "sklearn/svm/_newrand.cpp",
+    "sklearn/tree/_criterion.c",
+    "sklearn/tree/_splitter.c",
+    "sklearn/tree/_tree.cpp",
+    "sklearn/tree/_utils.c",
+    "sklearn/utils/_cython_blas.c",
+    "sklearn/utils/_fast_dict.cpp",
+    "sklearn/utils/_heap.c",
+    "sklearn/utils/_isfinite.c",
+    "sklearn/utils/_logistic_sigmoid.c",
+    "sklearn/utils/_openmp_helpers.c",
+    "sklearn/utils/_random.c",
+    "sklearn/utils/_readonly_array_wrapper.c",
+    "sklearn/utils/_seq_dataset.c",
+    "sklearn/utils/_sorting.c",
+    "sklearn/utils/_typedefs.c",
+    "sklearn/utils/_vector_sentinel.cpp",
+    "sklearn/utils/_weight_vector.c"
+   ]
+  },
+  {
+   "i": 12,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": [
+    "sklearn/impute/_iterative.py.backup"
+   ]
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": [
+    "modify_iterative.py",
+    "sklearn/impute/_iterative.py"
+   ]
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": [
+    "test_fill_value_comprehensive.py"
+   ]
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": [
+    "verify_changes.py"
+   ]
+  },
+  {
+   "i": 29,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": [
+    "demo_fill_value.py"
+   ]
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": [
+    "IMPLEMENTATION_SUMMARY.md"
+   ]
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 9,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 10,
+   "last": 11,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 12,
+   "last": 18,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 19,
+   "last": 19,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 20,
+   "last": 27,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 28,
+   "last": 28,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 29,
+   "last": 30,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 31,
+   "last": 34,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 35,
+   "last": 37,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 38,
+   "last": 40,
+   "outcome": "none",
+   "id": 9
+  }
+ ],
+ "seconds": 363
+}

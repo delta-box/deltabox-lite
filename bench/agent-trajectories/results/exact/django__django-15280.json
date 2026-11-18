@@ -1,0 +1,576 @@
+{
+ "instance_id": "django__django-15280",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "c9ff23b55a3eb00d7e75d1f4f099c1452b0d939446ff8cb606418b01c72bea52",
+ "image": "swebench/sweb.eval.x86_64.django_1776_django-15280",
+ "image_digest": "sha256:d1fc6c4600c4e41b9f1894611a22b91f30baa109270ee8205a42de90d995b54d",
+ "resolved": true,
+ "pypi_as_of": 1771243259.0362997,
+ "steps": 73,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 22,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 72,
+ "rc_recorded": 72,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 1,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": [
+    "debug_issue.py"
+   ]
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": [
+    "debug_issue2.py"
+   ]
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": [
+    "debug_issue3.py"
+   ]
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": [
+    "debug_issue4.py"
+   ]
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": [
+    "debug_issue5.py"
+   ]
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": [
+    "debug_issue6.py"
+   ]
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": [
+    "debug_issue7.py"
+   ]
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": [
+    "trace_issue.py"
+   ]
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": [
+    "trace_detailed.py"
+   ]
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": [
+    "trace_fields_cache.py"
+   ]
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 45,
+   "rc": 1,
+   "changed": [
+    "trace_order.py"
+   ]
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": [
+    "trace_final.py"
+   ]
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": [
+    "trace_profile_ids.py"
+   ]
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": [
+    "trace_get_prefetch.py"
+   ]
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": [
+    "fix.patch"
+   ]
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": [
+    "django/db/models/fields/related_descriptors.py"
+   ]
+  },
+  {
+   "i": 53,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 54,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": [
+    "test_foreignkey.py"
+   ]
+  },
+  {
+   "i": 56,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 57,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 58,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 59,
+   "rc": 0,
+   "changed": [
+    "fix_foreignkey.patch"
+   ]
+  },
+  {
+   "i": 60,
+   "rc": 0,
+   "changed": [
+    "django/db/models/fields/related_descriptors.py",
+    "django/db/models/fields/related_descriptors.py.orig"
+   ]
+  },
+  {
+   "i": 61,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 62,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 63,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 64,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 65,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 66,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 67,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 68,
+   "rc": 0,
+   "changed": [
+    "test_comprehensive.py"
+   ]
+  },
+  {
+   "i": 69,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 70,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 71,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 72,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 2,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 3,
+   "last": 27,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 28,
+   "last": 28,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 29,
+   "last": 31,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 32,
+   "last": 32,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 33,
+   "last": 35,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 36,
+   "last": 37,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 38,
+   "last": 38,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 39,
+   "last": 39,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 40,
+   "last": 40,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 41,
+   "last": 41,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 42,
+   "last": 45,
+   "outcome": "commit",
+   "id": 11
+  },
+  {
+   "first": 46,
+   "last": 46,
+   "outcome": "commit",
+   "id": 12
+  },
+  {
+   "first": 47,
+   "last": 47,
+   "outcome": "commit",
+   "id": 13
+  },
+  {
+   "first": 48,
+   "last": 49,
+   "outcome": "commit",
+   "id": 14
+  },
+  {
+   "first": 50,
+   "last": 51,
+   "outcome": "commit",
+   "id": 15
+  },
+  {
+   "first": 52,
+   "last": 52,
+   "outcome": "commit",
+   "id": 16
+  },
+  {
+   "first": 53,
+   "last": 55,
+   "outcome": "commit",
+   "id": 17
+  },
+  {
+   "first": 56,
+   "last": 59,
+   "outcome": "commit",
+   "id": 18
+  },
+  {
+   "first": 60,
+   "last": 60,
+   "outcome": "commit",
+   "id": 19
+  },
+  {
+   "first": 61,
+   "last": 68,
+   "outcome": "commit",
+   "id": 20
+  },
+  {
+   "first": 69,
+   "last": 69,
+   "outcome": "commit",
+   "id": 21
+  },
+  {
+   "first": 70,
+   "last": 72,
+   "outcome": "none",
+   "id": 22
+  }
+ ],
+ "seconds": 160
+}

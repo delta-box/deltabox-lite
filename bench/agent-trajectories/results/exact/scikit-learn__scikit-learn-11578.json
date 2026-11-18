@@ -1,0 +1,434 @@
+{
+ "instance_id": "scikit-learn__scikit-learn-11578",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "0cf6003a4e4e937be91a7914a40ee571cc13a8e332374a33c2bd4c2499c8d21e",
+ "image": "swebench/sweb.eval.x86_64.scikit-learn_1776_scikit-learn-11578",
+ "image_digest": "sha256:4d8cf9ac05bdbcd88c02e3eb7aa09635f4dd69ebed5b8261a87b38d6f2b6481f",
+ "resolved": true,
+ "pypi_as_of": 1771249920.3767076,
+ "steps": 52,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 5,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 51,
+ "rc_recorded": 51,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 9,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": [
+    "sklearn/__check_build/_check_build.c",
+    "sklearn/_isotonic.c",
+    "sklearn/cluster/_dbscan_inner.cpp",
+    "sklearn/cluster/_hierarchical.cpp",
+    "sklearn/cluster/_k_means.c",
+    "sklearn/cluster/_k_means_elkan.c",
+    "sklearn/cluster/_optics_inner.c"
+   ]
+  },
+  {
+   "i": 16,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": [
+    "build/temp.linux-x86_64-3.6/liblibsvm-skl.a",
+    "build/temp.linux-x86_64-3.6/sklearn/__check_build/_check_build.o",
+    "build/temp.linux-x86_64-3.6/sklearn/__check_build/_check_build.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/_isotonic.o",
+    "build/temp.linux-x86_64-3.6/sklearn/_isotonic.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/cluster/_dbscan_inner.o",
+    "build/temp.linux-x86_64-3.6/sklearn/cluster/_dbscan_inner.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/cluster/_hierarchical.o",
+    "build/temp.linux-x86_64-3.6/sklearn/cluster/_hierarchical.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/cluster/_k_means.o",
+    "build/temp.linux-x86_64-3.6/sklearn/cluster/_k_means.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/cluster/_k_means_elkan.o",
+    "build/temp.linux-x86_64-3.6/sklearn/cluster/_k_means_elkan.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/cluster/_optics_inner.o",
+    "build/temp.linux-x86_64-3.6/sklearn/cluster/_optics_inner.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/datasets/_svmlight_format.o",
+    "build/temp.linux-x86_64-3.6/sklearn/datasets/_svmlight_format.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/decomposition/_online_lda.o",
+    "build/temp.linux-x86_64-3.6/sklearn/decomposition/_online_lda.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/decomposition/cdnmf_fast.o",
+    "build/temp.linux-x86_64-3.6/sklearn/decomposition/cdnmf_fast.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/ensemble/_gradient_boosting.o",
+    "build/temp.linux-x86_64-3.6/sklearn/ensemble/_gradient_boosting.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/feature_extraction/_hashing.o",
+    "build/temp.linux-x86_64-3.6/sklearn/feature_extraction/_hashing.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/linear_model/cd_fast.o",
+    "build/temp.linux-x86_64-3.6/sklearn/linear_model/cd_fast.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/linear_model/sag_fast.o",
+    "build/temp.linux-x86_64-3.6/sklearn/linear_model/sag_fast.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/linear_model/sgd_fast.o",
+    "build/temp.linux-x86_64-3.6/sklearn/linear_model/sgd_fast.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/manifold/_barnes_hut_tsne.o",
+    "build/temp.linux-x86_64-3.6/sklearn/manifold/_barnes_hut_tsne.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/manifold/_utils.o",
+    "build/temp.linux-x86_64-3.6/sklearn/manifold/_utils.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/metrics/cluster/expected_mutual_info_fast.o",
+    "build/temp.linux-x86_64-3.6/sklearn/metrics/cluster/expected_mutual_info_fast.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/metrics/pairwise_fast.o",
+    "build/temp.linux-x86_64-3.6/sklearn/metrics/pairwise_fast.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/ball_tree.o",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/ball_tree.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/dist_metrics.o",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/dist_metrics.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/kd_tree.o",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/kd_tree.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/quad_tree.o",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/quad_tree.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/typedefs.o",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/typedefs.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/liblinear.o",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/liblinear.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/libsvm.o",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/libsvm.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/libsvm_sparse.o",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/libsvm_sparse.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/src/liblinear/linear.o",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/src/liblinear/linear.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/src/liblinear/tron.o",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/src/liblinear/tron.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/src/libsvm/libsvm_template.o",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/src/libsvm/libsvm_template.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/tree/_criterion.o",
+    "build/temp.linux-x86_64-3.6/sklearn/tree/_criterion.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/tree/_splitter.o",
+    "build/temp.linux-x86_64-3.6/sklearn/tree/_splitter.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/tree/_tree.o",
+    "build/temp.linux-x86_64-3.6/sklearn/tree/_tree.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/tree/_utils.o",
+    "build/temp.linux-x86_64-3.6/sklearn/tree/_utils.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/_logistic_sigmoid.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/_logistic_sigmoid.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/_random.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/_random.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/arrayfuncs.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/arrayfuncs.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/fast_dict.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/fast_dict.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/graph_shortest_path.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/graph_shortest_path.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/lgamma.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/lgamma.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/murmurhash.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/murmurhash.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/seq_dataset.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/seq_dataset.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/sparsefuncs_fast.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/sparsefuncs_fast.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/src/MurmurHash3.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/src/MurmurHash3.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/src/gamma.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/src/gamma.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/weight_vector.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/weight_vector.o.d",
+    "sklearn/__check_build/_check_build.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/_isotonic.cpython-36m-x86_64-linux-gnu.so"
+   ]
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": [
+    "sklearn/linear_model/logistic.py"
+   ]
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 41,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 45,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 8,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 9,
+   "last": 15,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 16,
+   "last": 19,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 20,
+   "last": 30,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 31,
+   "last": 48,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 49,
+   "last": 51,
+   "outcome": "none",
+   "id": 5
+  }
+ ],
+ "seconds": 192
+}

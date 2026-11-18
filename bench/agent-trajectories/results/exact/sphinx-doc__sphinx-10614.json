@@ -1,0 +1,597 @@
+{
+ "instance_id": "sphinx-doc__sphinx-10614",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "7328d0b09e6872edaa6fd08489685127a5fb392e2d18193711721f46888da0c4",
+ "image": "swebench/sweb.eval.x86_64.sphinx-doc_1776_sphinx-10614",
+ "image_digest": "sha256:b42999cdf3caca4300c2b500c928210389dd26e66124f0652661bfefb2664b2a",
+ "resolved": false,
+ "pypi_as_of": 1771251324.3861566,
+ "steps": 74,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 16,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 73,
+ "rc_recorded": 73,
+ "nondeterministic_paths": [
+  "test_inheritance/_build/.doctrees/environment.pickle"
+ ],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/conf.py"
+   ]
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/index.rst"
+   ]
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/my_package/index.rst"
+   ]
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/my_package/__init__.py"
+   ]
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/_build/.buildinfo",
+    "test_inheritance/_build/.doctrees/environment.pickle",
+    "test_inheritance/_build/.doctrees/index.doctree",
+    "test_inheritance/_build/.doctrees/my_package/index.doctree",
+    "test_inheritance/_build/_images/inheritance-53f46a9ce9f15341cd078c5accdec4a640448b4b.svg",
+    "test_inheritance/_build/_sources/index.rst.txt",
+    "test_inheritance/_build/_sources/my_package/index.rst.txt",
+    "test_inheritance/_build/_static/alabaster.css",
+    "test_inheritance/_build/_static/basic.css",
+    "test_inheritance/_build/_static/custom.css",
+    "test_inheritance/_build/_static/doctools.js",
+    "test_inheritance/_build/_static/documentation_options.js",
+    "test_inheritance/_build/_static/file.png",
+    "test_inheritance/_build/_static/graphviz.css",
+    "test_inheritance/_build/_static/language_data.js",
+    "test_inheritance/_build/_static/minus.png",
+    "test_inheritance/_build/_static/plus.png",
+    "test_inheritance/_build/_static/pygments.css",
+    "test_inheritance/_build/_static/searchtools.js",
+    "test_inheritance/_build/_static/sphinx_highlight.js",
+    "test_inheritance/_build/genindex.html",
+    "test_inheritance/_build/index.html",
+    "test_inheritance/_build/my_package/index.html",
+    "test_inheritance/_build/objects.inv",
+    "test_inheritance/_build/search.html",
+    "test_inheritance/_build/searchindex.js"
+   ]
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/my_package/my_class_1.rst"
+   ]
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/my_package/my_class_2.rst"
+   ]
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/_build/.doctrees/environment.pickle",
+    "test_inheritance/_build/.doctrees/my_package/my_class_1.doctree",
+    "test_inheritance/_build/.doctrees/my_package/my_class_2.doctree",
+    "test_inheritance/_build/_images/inheritance-0eae35188f134add646f559fd350fe9703eed332.svg",
+    "test_inheritance/_build/_sources/my_package/my_class_1.rst.txt",
+    "test_inheritance/_build/_sources/my_package/my_class_2.rst.txt",
+    "test_inheritance/_build/genindex.html",
+    "test_inheritance/_build/index.html",
+    "test_inheritance/_build/my_package/my_class_1.html",
+    "test_inheritance/_build/my_package/my_class_2.html",
+    "test_inheritance/_build/objects.inv",
+    "test_inheritance/_build/searchindex.js"
+   ]
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/_build/.doctrees/environment.pickle",
+    "test_inheritance/_build/_images/inheritance-53f46a9ce9f15341cd078c5accdec4a640448b4b.svg",
+    "test_inheritance/_build/_images/inheritance-738c67e8cce0f7cde58a11617295ea6320cc5c51.svg",
+    "test_inheritance/_build/my_package/index.html"
+   ]
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/_build/.doctrees/environment.pickle"
+   ]
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 2,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": [
+    "sphinx/ext/inheritance_diagram.py"
+   ]
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/_build/.doctrees/environment.pickle",
+    "test_inheritance/_build/_images/inheritance-0eae35188f134add646f559fd350fe9703eed332.svg",
+    "test_inheritance/_build/_images/inheritance-738c67e8cce0f7cde58a11617295ea6320cc5c51.svg",
+    "test_inheritance/_build/_images/inheritance-f56f6a0790eeb4c431ebf295ca69a9e00bd27792.svg",
+    "test_inheritance/_build/index.html",
+    "test_inheritance/_build/my_package/index.html"
+   ]
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/_build/.doctrees/environment.pickle"
+   ]
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/deep/nested/index.rst"
+   ]
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/_build/.doctrees/deep/nested/index.doctree",
+    "test_inheritance/_build/.doctrees/environment.pickle",
+    "test_inheritance/_build/_images/inheritance-f56f6a0790eeb4c431ebf295ca69a9e00bd27792.svg",
+    "test_inheritance/_build/_sources/deep/nested/index.rst.txt",
+    "test_inheritance/_build/deep/nested/index.html",
+    "test_inheritance/_build/objects.inv",
+    "test_inheritance/_build/searchindex.js"
+   ]
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/_build/.doctrees/environment.pickle"
+   ]
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/_build/.doctrees/environment.pickle"
+   ]
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/_build/.doctrees/environment.pickle"
+   ]
+  },
+  {
+   "i": 53,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 54,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": [
+    "sphinx/ext/graphviz.py"
+   ]
+  },
+  {
+   "i": 56,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/_build/.doctrees/environment.pickle",
+    "test_inheritance/_build/_images/inheritance-f56f6a0790eeb4c431ebf295ca69a9e00bd27792.svg"
+   ]
+  },
+  {
+   "i": 57,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 58,
+   "rc": 0,
+   "changed": [
+    "test_inheritance/_build/.doctrees/environment.pickle"
+   ]
+  },
+  {
+   "i": 59,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 60,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 61,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 62,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 63,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 64,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 65,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 66,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 67,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 68,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 69,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 70,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 71,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 72,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 73,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 9,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 10,
+   "last": 10,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 11,
+   "last": 11,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 12,
+   "last": 12,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 13,
+   "last": 15,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 16,
+   "last": 19,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 20,
+   "last": 20,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 21,
+   "last": 21,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 22,
+   "last": 30,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 31,
+   "last": 37,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 38,
+   "last": 39,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 40,
+   "last": 46,
+   "outcome": "commit",
+   "id": 11
+  },
+  {
+   "first": 47,
+   "last": 47,
+   "outcome": "commit",
+   "id": 12
+  },
+  {
+   "first": 48,
+   "last": 55,
+   "outcome": "commit",
+   "id": 13
+  },
+  {
+   "first": 56,
+   "last": 56,
+   "outcome": "commit",
+   "id": 14
+  },
+  {
+   "first": 57,
+   "last": 69,
+   "outcome": "commit",
+   "id": 15
+  },
+  {
+   "first": 70,
+   "last": 73,
+   "outcome": "none",
+   "id": 16
+  }
+ ],
+ "seconds": 174
+}

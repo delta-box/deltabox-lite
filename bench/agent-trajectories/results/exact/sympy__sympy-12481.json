@@ -1,0 +1,437 @@
+{
+ "instance_id": "sympy__sympy-12481",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "706ec1815d424523360a4f5b4816a82a7a8771f9f6bee9634e09471a8795fe37",
+ "image": "swebench/sweb.eval.x86_64.sympy_1776_sympy-12481",
+ "image_digest": "sha256:eaaa73a493f6afb689056b65f566a1f69ead19b88eef24c05a5438244827198a",
+ "resolved": true,
+ "pypi_as_of": 1771253126.1450782,
+ "steps": 49,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 16,
+ "aborts": 1,
+ "aborted_steps": 4,
+ "rc_match_recording": 48,
+ "rc_recorded": 48,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [
+  {
+   "step": 16,
+   "span": [
+    12,
+    15
+   ],
+   "reason": "overlaps an earlier abort"
+  }
+ ],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 1,
+   "changed": [
+    "test_issue.py"
+   ]
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 1,
+   "changed": [
+    "test_issue.py"
+   ]
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": [
+    "sympy/core/basic.py"
+   ]
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": [
+    "sympy/core/basic.py"
+   ]
+  },
+  {
+   "i": 13,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": [
+    "sympy/core/basic.py"
+   ]
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": [
+    "sympy/core/basic.py"
+   ]
+  },
+  {
+   "i": 17,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 1,
+   "changed": [
+    "test_issue.py"
+   ]
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": [
+    "test_issue.py"
+   ]
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": [
+    "sympy/plotting/plot.py"
+   ]
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": [
+    "test_issue.py"
+   ]
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": [
+    "test_cycle.py"
+   ]
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": [
+    "sympy/combinatorics/permutations.py"
+   ]
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": [
+    "test_comprehensive.py"
+   ]
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 1,
+   "changed": [
+    "run_test.py"
+   ]
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": [
+    "sympy/matrices/matrices.py"
+   ]
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": [
+    "verify_pr.py"
+   ]
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": [
+    "trace_cycles.py"
+   ]
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": [
+    "final_verification.py"
+   ]
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 6,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 7,
+   "last": 9,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 10,
+   "last": 10,
+   "outcome": "none",
+   "id": 2
+  },
+  {
+   "first": 11,
+   "last": 14,
+   "outcome": "abort",
+   "replaces": [
+    15
+   ],
+   "id": 3
+  },
+  {
+   "first": 16,
+   "last": 16,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 17,
+   "last": 18,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 19,
+   "last": 19,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 20,
+   "last": 21,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 22,
+   "last": 22,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 23,
+   "last": 23,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 24,
+   "last": 25,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 26,
+   "last": 27,
+   "outcome": "commit",
+   "id": 11
+  },
+  {
+   "first": 28,
+   "last": 32,
+   "outcome": "commit",
+   "id": 12
+  },
+  {
+   "first": 33,
+   "last": 34,
+   "outcome": "commit",
+   "id": 13
+  },
+  {
+   "first": 35,
+   "last": 40,
+   "outcome": "commit",
+   "id": 14
+  },
+  {
+   "first": 41,
+   "last": 41,
+   "outcome": "commit",
+   "id": 15
+  },
+  {
+   "first": 42,
+   "last": 42,
+   "outcome": "commit",
+   "id": 16
+  },
+  {
+   "first": 43,
+   "last": 45,
+   "outcome": "commit",
+   "id": 17
+  },
+  {
+   "first": 46,
+   "last": 48,
+   "outcome": "none",
+   "id": 18
+  }
+ ],
+ "seconds": 124
+}

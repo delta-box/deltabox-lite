@@ -1,0 +1,263 @@
+{
+ "instance_id": "sympy__sympy-19346",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "d57c642d5e332d92d4a27de18baabee6ab73e9d753099b583fb07e69cba805ae",
+ "image": "swebench/sweb.eval.x86_64.sympy_1776_sympy-19346",
+ "image_digest": "sha256:b26508a2bb654f1870a7f975fa50bd16eec0fb4de295a321816ffd0abd332721",
+ "resolved": true,
+ "pypi_as_of": 1771254677.4808035,
+ "steps": 31,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 9,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 30,
+ "rc_recorded": 30,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 1,
+   "changed": [
+    "test_srepr_issue.py"
+   ]
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": [
+    "sympy/printing/repr.py.backup"
+   ]
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": [
+    "add_methods.py",
+    "sympy/printing/repr.py"
+   ]
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": [
+    "test_edge_cases.py"
+   ]
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": [
+    "test_frozenset.py"
+   ]
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": [
+    "add_frozenset.py",
+    "sympy/printing/repr.py"
+   ]
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": [
+    "final_test.py"
+   ]
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": [
+    "test_eval_srepr.py"
+   ]
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 4,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 5,
+   "last": 8,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 9,
+   "last": 10,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 11,
+   "last": 13,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 14,
+   "last": 19,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 20,
+   "last": 20,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 21,
+   "last": 25,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 26,
+   "last": 26,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 27,
+   "last": 28,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 29,
+   "last": 30,
+   "outcome": "none",
+   "id": 9
+  }
+ ],
+ "seconds": 104
+}

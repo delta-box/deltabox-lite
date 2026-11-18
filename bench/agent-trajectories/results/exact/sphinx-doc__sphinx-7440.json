@@ -1,0 +1,580 @@
+{
+ "instance_id": "sphinx-doc__sphinx-7440",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "934ff17c7f59fc8765aee2eb98e2a4e0d2bc46052d336b9ac3988d27e8dd3f62",
+ "image": "swebench/sweb.eval.x86_64.sphinx-doc_1776_sphinx-7440",
+ "image_digest": "sha256:e161d52daf02bf18e12fc1cf7837eabc318aa095fe0b7ddef9113af3cf51ab44",
+ "resolved": true,
+ "pypi_as_of": 1771251483.551686,
+ "steps": 90,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 12,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 89,
+ "rc_recorded": 89,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 2,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": [
+    "sphinx/domains/std.py.bak"
+   ]
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": [
+    "sphinx/domains/std.py"
+   ]
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": [
+    "sphinx/domains/std.py"
+   ]
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": [
+    "sphinx/domains/std.py"
+   ]
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 53,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 54,
+   "rc": 0,
+   "changed": [
+    "sphinx/domains/std.py"
+   ]
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 56,
+   "rc": 0,
+   "changed": [
+    "sphinx/domains/std.py"
+   ]
+  },
+  {
+   "i": 57,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 58,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 59,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 60,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 61,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 62,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 63,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 64,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 65,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 66,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 67,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 68,
+   "rc": 0,
+   "changed": [
+    "sphinx/domains/std.py.test"
+   ]
+  },
+  {
+   "i": 69,
+   "rc": 0,
+   "changed": [
+    "sphinx/domains/std.py"
+   ]
+  },
+  {
+   "i": 70,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 71,
+   "rc": 0,
+   "changed": [
+    "sphinx/domains/std.py"
+   ]
+  },
+  {
+   "i": 72,
+   "rc": 0,
+   "changed": [
+    "sphinx/domains/std.py"
+   ]
+  },
+  {
+   "i": 73,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 74,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 75,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 76,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 77,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 78,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 79,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 80,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 81,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 82,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 83,
+   "rc": 0,
+   "changed": [
+    "sphinx/domains/std.py"
+   ]
+  },
+  {
+   "i": 84,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 85,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 86,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 87,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 88,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 89,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 40,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 41,
+   "last": 41,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 42,
+   "last": 45,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 46,
+   "last": 48,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 49,
+   "last": 54,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 55,
+   "last": 56,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 57,
+   "last": 68,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 69,
+   "last": 69,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 70,
+   "last": 71,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 72,
+   "last": 72,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 73,
+   "last": 83,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 84,
+   "last": 87,
+   "outcome": "commit",
+   "id": 11
+  },
+  {
+   "first": 88,
+   "last": 89,
+   "outcome": "none",
+   "id": 12
+  }
+ ],
+ "seconds": 180
+}

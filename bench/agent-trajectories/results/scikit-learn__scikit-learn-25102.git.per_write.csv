@@ -1,0 +1,10 @@
+instance,backend,policy,tx,outcome,step,op,kind,ms,rc,recorded_rc,tree
+scikit-learn__scikit-learn-25102,git,per_write,0,commit,0,exec,,8.933,0,0,3813f136f25fd07f
+scikit-learn__scikit-learn-25102,git,per_write,0,commit,1,exec,,15.077,0,0,3813f136f25fd07f
+scikit-learn__scikit-learn-25102,git,per_write,0,commit,2,exec,,4.729,0,0,3813f136f25fd07f
+scikit-learn__scikit-learn-25102,git,per_write,0,commit,3,exec,change,4.74,0,0,cbdc75ebe9701d7c
+scikit-learn__scikit-learn-25102,git,per_write,0,commit,,commit,,18.175,,,cbdc75ebe9701d7c
+scikit-learn__scikit-learn-25102,git,per_write,1,commit,4,exec,,15.777,1,1,cbdc75ebe9701d7c
+scikit-learn__scikit-learn-25102,git,per_write,1,commit,5,exec,change,60060.977,-9,-1,4d2b76b1116fa423
+scikit-learn__scikit-learn-25102,git,per_write,1,commit,,commit,,786.814,,,4d2b76b1116fa423
+scikit-learn__scikit-learn-25102,git,per_write,2,commit,6,exec,,62.422,0,0,4d2b76b1116fa423

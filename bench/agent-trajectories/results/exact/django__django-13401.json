@@ -1,0 +1,399 @@
+{
+ "instance_id": "django__django-13401",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "ff7d94f2aeebed1f9f9a2dcf5a7b7efb9cc5f87dfc1db305e5bb7fd4adc210a5",
+ "image": "swebench/sweb.eval.x86_64.django_1776_django-13401",
+ "image_digest": "sha256:64a74a21a4c80468a65e56823461e9ec05625df646d92b989bc59c20f4989a01",
+ "resolved": true,
+ "pypi_as_of": 1771240041.8510237,
+ "steps": 56,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 8,
+ "aborts": 1,
+ "aborted_steps": 4,
+ "rc_match_recording": 55,
+ "rc_recorded": 55,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 1,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": [
+    "django/db/models/fields/__init__.py.backup"
+   ]
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": [
+    "django/db/models/fields/__init__.py"
+   ]
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": [
+    "test_edge_cases.py"
+   ]
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 1,
+   "changed": [
+    "test_fields_without_model.py"
+   ]
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": [
+    "django/db/models/fields/__init__.py"
+   ]
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": [
+    "final_demonstration.py"
+   ]
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": [
+    "django/db/models/fields/__init__.py"
+   ]
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": [
+    "django/db/models/fields/__init__.py"
+   ]
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": [
+    "django/db/models/fields/__init__.py"
+   ]
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 53,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 54,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 5,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 6,
+   "last": 16,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 17,
+   "last": 17,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 18,
+   "last": 20,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 21,
+   "last": 30,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 31,
+   "last": 31,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 32,
+   "last": 39,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 40,
+   "last": 40,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 41,
+   "last": 42,
+   "outcome": "none",
+   "id": 8
+  },
+  {
+   "first": 43,
+   "last": 46,
+   "outcome": "abort",
+   "replaces": [
+    47
+   ],
+   "id": 9
+  },
+  {
+   "first": 48,
+   "last": 55,
+   "outcome": "none",
+   "id": 10
+  }
+ ],
+ "seconds": 199
+}

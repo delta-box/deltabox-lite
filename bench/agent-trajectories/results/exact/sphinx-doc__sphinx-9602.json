@@ -1,0 +1,499 @@
+{
+ "instance_id": "sphinx-doc__sphinx-9602",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "be231b30b078e2a7ad228c9af07190fda246a77f50aea7b2e1c545015666b786",
+ "image": "swebench/sweb.eval.x86_64.sphinx-doc_1776_sphinx-9602",
+ "image_digest": "sha256:fc4a4f7057274ac47068c3996e729b3091b6a56fd7b8259076c4aafdbff176ee",
+ "resolved": false,
+ "pypi_as_of": 1771252859.8874822,
+ "steps": 65,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 13,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 64,
+ "rc_recorded": 64,
+ "nondeterministic_paths": [
+  "repro/_build/.doctrees/environment.pickle"
+ ],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": [
+    "repro/test_literal.py"
+   ]
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": [
+    "repro/conf.py"
+   ]
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": [
+    "repro/index.rst"
+   ]
+  },
+  {
+   "i": 11,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 2,
+   "changed": [
+    "repro/_build/.doctrees/index.doctree",
+    "repro/_build/_sources/index.rst.txt",
+    "repro/_build/index.html"
+   ]
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": [
+    "sphinx/domains/python.py.bak"
+   ]
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": [
+    "sphinx/domains/python.py"
+   ]
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": [
+    "repro/_build/.buildinfo",
+    "repro/_build/.doctrees/environment.pickle",
+    "repro/_build/.doctrees/index.doctree",
+    "repro/_build/_static/alabaster.css",
+    "repro/_build/_static/basic.css",
+    "repro/_build/_static/custom.css",
+    "repro/_build/_static/doctools.js",
+    "repro/_build/_static/documentation_options.js",
+    "repro/_build/_static/file.png",
+    "repro/_build/_static/jquery-3.5.1.js",
+    "repro/_build/_static/jquery.js",
+    "repro/_build/_static/language_data.js",
+    "repro/_build/_static/minus.png",
+    "repro/_build/_static/plus.png",
+    "repro/_build/_static/pygments.css",
+    "repro/_build/_static/searchtools.js",
+    "repro/_build/_static/underscore-1.13.1.js",
+    "repro/_build/_static/underscore.js",
+    "repro/_build/genindex.html",
+    "repro/_build/index.html",
+    "repro/_build/objects.inv",
+    "repro/_build/search.html",
+    "repro/_build/searchindex.js"
+   ]
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": [
+    "repro/test_literal_extended.py"
+   ]
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": [
+    "repro/index.rst"
+   ]
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": [
+    "repro/_build/.doctrees/environment.pickle",
+    "repro/_build/.doctrees/index.doctree",
+    "repro/_build/_sources/index.rst.txt",
+    "repro/_build/genindex.html",
+    "repro/_build/index.html",
+    "repro/_build/objects.inv",
+    "repro/_build/searchindex.js"
+   ]
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": [
+    "sphinx/domains/python.py"
+   ]
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": [
+    "repro/_build/.doctrees/environment.pickle",
+    "repro/_build/.doctrees/index.doctree",
+    "repro/_build/index.html"
+   ]
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 53,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 54,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 56,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 57,
+   "rc": 0,
+   "changed": [
+    "repro/_build/.doctrees/environment.pickle"
+   ]
+  },
+  {
+   "i": 58,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 59,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 60,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 61,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 62,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 63,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 64,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 8,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 9,
+   "last": 9,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 10,
+   "last": 10,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 11,
+   "last": 13,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 14,
+   "last": 25,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 26,
+   "last": 26,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 27,
+   "last": 27,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 28,
+   "last": 30,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 31,
+   "last": 31,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 32,
+   "last": 32,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 33,
+   "last": 41,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 42,
+   "last": 42,
+   "outcome": "commit",
+   "id": 11
+  },
+  {
+   "first": 43,
+   "last": 58,
+   "outcome": "commit",
+   "id": 12
+  },
+  {
+   "first": 59,
+   "last": 64,
+   "outcome": "none",
+   "id": 13
+  }
+ ],
+ "seconds": 121
+}

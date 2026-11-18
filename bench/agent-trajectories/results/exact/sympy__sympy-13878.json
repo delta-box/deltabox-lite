@@ -1,0 +1,970 @@
+{
+ "instance_id": "sympy__sympy-13878",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "3e6cae1cdc76eb2d339e2c4d982c526347f123b8c487dbb664b8fd2a02b03ff5",
+ "image": "swebench/sweb.eval.x86_64.sympy_1776_sympy-13878",
+ "image_digest": "sha256:3558909586746ae5fcf3d410db106257845669efbc3c94b080f8564cdf4a06ac",
+ "resolved": true,
+ "pypi_as_of": 1771253962.5576587,
+ "steps": 129,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 32,
+ "aborts": 1,
+ "aborted_steps": 4,
+ "rc_match_recording": 128,
+ "rc_recorded": 128,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 1,
+   "changed": [
+    "test_cdf_issues.py"
+   ]
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": [
+    "sympy/core/basic.py"
+   ]
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": [
+    "sympy/core/containers.py"
+   ]
+  },
+  {
+   "i": 22,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": [
+    "sympy/plotting/plot.py"
+   ]
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": [
+    "sympy/plotting/plot.py"
+   ]
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": [
+    "sympy/plotting/plot.py"
+   ]
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": [
+    "sympy/core/function.py",
+    "sympy/matrices/common.py",
+    "sympy/physics/mechanics/linearize.py",
+    "sympy/physics/units/util.py",
+    "sympy/printing/conventions.py",
+    "sympy/tensor/array/arrayop.py",
+    "sympy/tensor/array/ndim_array.py",
+    "sympy/tensor/functions.py",
+    "sympy/tensor/indexed.py"
+   ]
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": [
+    "sympy/core/function.py",
+    "sympy/matrices/common.py",
+    "sympy/physics/mechanics/linearize.py",
+    "sympy/physics/units/util.py",
+    "sympy/printing/conventions.py",
+    "sympy/tensor/array/arrayop.py",
+    "sympy/tensor/array/ndim_array.py",
+    "sympy/tensor/functions.py",
+    "sympy/tensor/indexed.py"
+   ]
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 46,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": [
+    "test_single.py"
+   ]
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": [
+    "sympy/matrices/matrices.py"
+   ]
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 53,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 54,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 56,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 57,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 58,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 59,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 60,
+   "rc": 0,
+   "changed": [
+    "sympy/stats/crv_types.py"
+   ]
+  },
+  {
+   "i": 61,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 62,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 63,
+   "rc": 0,
+   "changed": [
+    "sympy/stats/crv_types.py"
+   ]
+  },
+  {
+   "i": 64,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 65,
+   "rc": 0,
+   "changed": [
+    "sympy/stats/crv_types.py"
+   ]
+  },
+  {
+   "i": 66,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 67,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 68,
+   "rc": 0,
+   "changed": [
+    "sympy/stats/crv_types.py"
+   ]
+  },
+  {
+   "i": 69,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 70,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 71,
+   "rc": 0,
+   "changed": [
+    "sympy/stats/crv_types.py"
+   ]
+  },
+  {
+   "i": 72,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 73,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 74,
+   "rc": 0,
+   "changed": [
+    "sympy/stats/crv_types.py"
+   ]
+  },
+  {
+   "i": 75,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 76,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 77,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 78,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 79,
+   "rc": 0,
+   "changed": [
+    "sympy/stats/crv_types.py"
+   ]
+  },
+  {
+   "i": 80,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 81,
+   "rc": 0,
+   "changed": [
+    "sympy/stats/crv_types.py"
+   ]
+  },
+  {
+   "i": 82,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 83,
+   "rc": 0,
+   "changed": [
+    "sympy/stats/crv_types.py"
+   ]
+  },
+  {
+   "i": 84,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 85,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 86,
+   "rc": 0,
+   "changed": [
+    "sympy/stats/crv_types.py"
+   ]
+  },
+  {
+   "i": 87,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 88,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 89,
+   "rc": 0,
+   "changed": [
+    "sympy/stats/crv_types.py"
+   ]
+  },
+  {
+   "i": 90,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 91,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 92,
+   "rc": 0,
+   "changed": [
+    "sympy/stats/crv_types.py"
+   ]
+  },
+  {
+   "i": 93,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 94,
+   "rc": 0,
+   "changed": [
+    "test_erlang.py"
+   ]
+  },
+  {
+   "i": 95,
+   "rc": 0,
+   "changed": [
+    "test_lowergamma.py"
+   ]
+  },
+  {
+   "i": 96,
+   "rc": 0,
+   "changed": [
+    "test_erlang_trace.py"
+   ]
+  },
+  {
+   "i": 97,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 98,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 99,
+   "rc": 0,
+   "changed": [
+    "sympy/stats/crv_types.py"
+   ]
+  },
+  {
+   "i": 100,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 101,
+   "rc": 0,
+   "changed": [
+    "test_uniformsum.py"
+   ]
+  },
+  {
+   "i": 102,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 103,
+   "rc": 0,
+   "changed": [
+    "sympy/assumptions/sathandlers.py"
+   ]
+  },
+  {
+   "i": 104,
+   "rc": 124,
+   "changed": []
+  },
+  {
+   "i": 105,
+   "rc": 0,
+   "changed": [
+    "test_uniformsum2.py"
+   ]
+  },
+  {
+   "i": 106,
+   "rc": 0,
+   "changed": [
+    "test_uniformsum3.py"
+   ]
+  },
+  {
+   "i": 107,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 108,
+   "rc": 0,
+   "changed": [
+    "test_all_cdfs.py"
+   ]
+  },
+  {
+   "i": 109,
+   "rc": 0,
+   "changed": [
+    "test_cdf_correctness.py"
+   ]
+  },
+  {
+   "i": 110,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 111,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 112,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 113,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 114,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 115,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 116,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 117,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 118,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 119,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 120,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 121,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 122,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 123,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 124,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 125,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 126,
+   "rc": 0,
+   "changed": [
+    "final_test.py"
+   ]
+  },
+  {
+   "i": 127,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 128,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 8,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 9,
+   "last": 14,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 15,
+   "last": 21,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 22,
+   "last": 23,
+   "outcome": "none",
+   "id": 3
+  },
+  {
+   "first": 24,
+   "last": 27,
+   "outcome": "abort",
+   "replaces": [
+    28
+   ],
+   "id": 4
+  },
+  {
+   "first": 29,
+   "last": 30,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 31,
+   "last": 35,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 36,
+   "last": 43,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 44,
+   "last": 47,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 48,
+   "last": 51,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 52,
+   "last": 60,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 61,
+   "last": 63,
+   "outcome": "commit",
+   "id": 11
+  },
+  {
+   "first": 64,
+   "last": 65,
+   "outcome": "commit",
+   "id": 12
+  },
+  {
+   "first": 66,
+   "last": 68,
+   "outcome": "commit",
+   "id": 13
+  },
+  {
+   "first": 69,
+   "last": 71,
+   "outcome": "commit",
+   "id": 14
+  },
+  {
+   "first": 72,
+   "last": 74,
+   "outcome": "commit",
+   "id": 15
+  },
+  {
+   "first": 75,
+   "last": 79,
+   "outcome": "commit",
+   "id": 16
+  },
+  {
+   "first": 80,
+   "last": 81,
+   "outcome": "commit",
+   "id": 17
+  },
+  {
+   "first": 82,
+   "last": 83,
+   "outcome": "commit",
+   "id": 18
+  },
+  {
+   "first": 84,
+   "last": 86,
+   "outcome": "commit",
+   "id": 19
+  },
+  {
+   "first": 87,
+   "last": 89,
+   "outcome": "commit",
+   "id": 20
+  },
+  {
+   "first": 90,
+   "last": 92,
+   "outcome": "commit",
+   "id": 21
+  },
+  {
+   "first": 93,
+   "last": 94,
+   "outcome": "commit",
+   "id": 22
+  },
+  {
+   "first": 95,
+   "last": 95,
+   "outcome": "commit",
+   "id": 23
+  },
+  {
+   "first": 96,
+   "last": 96,
+   "outcome": "commit",
+   "id": 24
+  },
+  {
+   "first": 97,
+   "last": 99,
+   "outcome": "commit",
+   "id": 25
+  },
+  {
+   "first": 100,
+   "last": 101,
+   "outcome": "commit",
+   "id": 26
+  },
+  {
+   "first": 102,
+   "last": 103,
+   "outcome": "commit",
+   "id": 27
+  },
+  {
+   "first": 104,
+   "last": 105,
+   "outcome": "commit",
+   "id": 28
+  },
+  {
+   "first": 106,
+   "last": 106,
+   "outcome": "commit",
+   "id": 29
+  },
+  {
+   "first": 107,
+   "last": 108,
+   "outcome": "commit",
+   "id": 30
+  },
+  {
+   "first": 109,
+   "last": 109,
+   "outcome": "commit",
+   "id": 31
+  },
+  {
+   "first": 110,
+   "last": 121,
+   "outcome": "commit",
+   "id": 32
+  },
+  {
+   "first": 122,
+   "last": 126,
+   "outcome": "commit",
+   "id": 33
+  },
+  {
+   "first": 127,
+   "last": 128,
+   "outcome": "none",
+   "id": 34
+  }
+ ],
+ "seconds": 344
+}

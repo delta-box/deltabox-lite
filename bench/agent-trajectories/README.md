@@ -8,11 +8,14 @@ rollback to a checkpoint. Commit and abort are then pluggable, so the same
 trajectory can be replayed with different implementations (the agent's own
 commands, git, DeltaBox Lite, Sandlock, …) and the costs compared.
 
-Status: 8 of the 10 trajectories have been replayed in their task images with
-the `manual` and `git` backends: every exit code matches the recording and the
-two backends leave identical workspaces at every transaction boundary
-(`results/summary.per_eval.md`). The two xarray images (~2 GB compressed) have
-not been replayed yet (not enough disk on the machine that built this).
+Status: all 500 trajectories of the run have been replayed in their task images
+by `exact.py` (GitHub Actions, `.github/workflows/agent-trajectories.yml`):
+496 verified end to end, 5,366 `per_write` commits and 104 aborts in 68
+trajectories, 99.5% of exit codes equal to the recording. Per repository:
+`results/exact-summary.md`; per trajectory: `results/exact/<id>.json`. The 4
+unverified ones run a build that timed out in the recording too (where the
+kill lands differs from run to run). The older static `per_eval`/`minimal`
+schedules of the 10 sample trajectories are in `results/summary.per_eval.md`.
 
 ## Where the trajectories come from
 

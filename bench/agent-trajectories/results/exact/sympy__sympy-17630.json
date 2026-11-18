@@ -1,0 +1,340 @@
+{
+ "instance_id": "sympy__sympy-17630",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "799f47d2237e5da8314189a5602f83674a9a9a1c6afa0b2b447384479481bf30",
+ "image": "swebench/sweb.eval.x86_64.sympy_1776_sympy-17630",
+ "image_digest": "sha256:950c79918a3185786c91b207a0fc7cb9d0d5513a0ef4bf81f0ec2e2f07340a21",
+ "resolved": false,
+ "pypi_as_of": 1771254414.0432968,
+ "steps": 40,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 13,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 39,
+ "rc_recorded": 39,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 1,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": [
+    "test_blocks.py"
+   ]
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": [
+    "test_dimensions.py"
+   ]
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": [
+    "sympy/matrices/expressions/blockmatrix.py.bak"
+   ]
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": [
+    "fix_blockmul.py"
+   ]
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": [
+    "apply_fix.py",
+    "sympy/matrices/expressions/blockmatrix.py"
+   ]
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": [
+    "apply_fix2.py",
+    "sympy/matrices/expressions/blockmatrix.py"
+   ]
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 1,
+   "changed": [
+    "test_comprehensive.py"
+   ]
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": [
+    "test_comprehensive2.py"
+   ]
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": [
+    "test_blockdiag.py"
+   ]
+  },
+  {
+   "i": 27,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": [
+    "test_edge_cases.py"
+   ]
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": [
+    "verify_pr_issue.py"
+   ]
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 2,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 3,
+   "last": 10,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 11,
+   "last": 12,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 13,
+   "last": 13,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 14,
+   "last": 14,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 15,
+   "last": 16,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 17,
+   "last": 19,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 20,
+   "last": 22,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 23,
+   "last": 23,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 24,
+   "last": 26,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 27,
+   "last": 32,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 33,
+   "last": 33,
+   "outcome": "commit",
+   "id": 11
+  },
+  {
+   "first": 34,
+   "last": 35,
+   "outcome": "commit",
+   "id": 12
+  },
+  {
+   "first": 36,
+   "last": 39,
+   "outcome": "none",
+   "id": 13
+  }
+ ],
+ "seconds": 113
+}

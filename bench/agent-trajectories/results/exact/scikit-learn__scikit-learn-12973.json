@@ -1,0 +1,498 @@
+{
+ "instance_id": "scikit-learn__scikit-learn-12973",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "5cc09a32685ea0a1352a212df2b436a1ea058b4e72dea1e18a0e34fd7b2eee49",
+ "image": "swebench/sweb.eval.x86_64.scikit-learn_1776_scikit-learn-12973",
+ "image_digest": "sha256:e0121a5cee12b82a34a639f13ffa23f8b4438ec895ff1cccaa766d456420c84d",
+ "resolved": true,
+ "pypi_as_of": 1771249973.189667,
+ "steps": 45,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 12,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 44,
+ "rc_recorded": 44,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 4,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": [
+    "sklearn/__check_build/_check_build.c",
+    "sklearn/_isotonic.c",
+    "sklearn/cluster/_dbscan_inner.cpp",
+    "sklearn/cluster/_hierarchical.cpp",
+    "sklearn/cluster/_k_means.c",
+    "sklearn/cluster/_k_means_elkan.c",
+    "sklearn/datasets/_svmlight_format.c",
+    "sklearn/decomposition/_online_lda.c",
+    "sklearn/decomposition/cdnmf_fast.c",
+    "sklearn/ensemble/_gradient_boosting.c"
+   ]
+  },
+  {
+   "i": 11,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": [
+    "build/temp.linux-x86_64-3.6/liblibsvm-skl.a",
+    "build/temp.linux-x86_64-3.6/sklearn/__check_build/_check_build.o",
+    "build/temp.linux-x86_64-3.6/sklearn/__check_build/_check_build.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/_isotonic.o",
+    "build/temp.linux-x86_64-3.6/sklearn/_isotonic.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/cluster/_dbscan_inner.o",
+    "build/temp.linux-x86_64-3.6/sklearn/cluster/_dbscan_inner.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/cluster/_hierarchical.o",
+    "build/temp.linux-x86_64-3.6/sklearn/cluster/_hierarchical.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/cluster/_k_means.o",
+    "build/temp.linux-x86_64-3.6/sklearn/cluster/_k_means.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/cluster/_k_means_elkan.o",
+    "build/temp.linux-x86_64-3.6/sklearn/cluster/_k_means_elkan.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/datasets/_svmlight_format.o",
+    "build/temp.linux-x86_64-3.6/sklearn/datasets/_svmlight_format.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/decomposition/_online_lda.o",
+    "build/temp.linux-x86_64-3.6/sklearn/decomposition/_online_lda.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/decomposition/cdnmf_fast.o",
+    "build/temp.linux-x86_64-3.6/sklearn/decomposition/cdnmf_fast.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/ensemble/_gradient_boosting.o",
+    "build/temp.linux-x86_64-3.6/sklearn/ensemble/_gradient_boosting.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/feature_extraction/_hashing.o",
+    "build/temp.linux-x86_64-3.6/sklearn/feature_extraction/_hashing.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/linear_model/cd_fast.o",
+    "build/temp.linux-x86_64-3.6/sklearn/linear_model/cd_fast.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/linear_model/sag_fast.o",
+    "build/temp.linux-x86_64-3.6/sklearn/linear_model/sag_fast.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/linear_model/sgd_fast.o",
+    "build/temp.linux-x86_64-3.6/sklearn/linear_model/sgd_fast.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/manifold/_barnes_hut_tsne.o",
+    "build/temp.linux-x86_64-3.6/sklearn/manifold/_barnes_hut_tsne.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/manifold/_utils.o",
+    "build/temp.linux-x86_64-3.6/sklearn/manifold/_utils.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/metrics/cluster/expected_mutual_info_fast.o",
+    "build/temp.linux-x86_64-3.6/sklearn/metrics/cluster/expected_mutual_info_fast.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/metrics/pairwise_fast.o",
+    "build/temp.linux-x86_64-3.6/sklearn/metrics/pairwise_fast.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/ball_tree.o",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/ball_tree.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/dist_metrics.o",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/dist_metrics.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/kd_tree.o",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/kd_tree.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/quad_tree.o",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/quad_tree.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/typedefs.o",
+    "build/temp.linux-x86_64-3.6/sklearn/neighbors/typedefs.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/preprocessing/_csr_polynomial_expansion.o",
+    "build/temp.linux-x86_64-3.6/sklearn/preprocessing/_csr_polynomial_expansion.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/liblinear.o",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/liblinear.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/libsvm.o",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/libsvm.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/libsvm_sparse.o",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/libsvm_sparse.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/src/liblinear/linear.o",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/src/liblinear/linear.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/src/liblinear/tron.o",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/src/liblinear/tron.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/src/libsvm/libsvm_template.o",
+    "build/temp.linux-x86_64-3.6/sklearn/svm/src/libsvm/libsvm_template.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/tree/_criterion.o",
+    "build/temp.linux-x86_64-3.6/sklearn/tree/_criterion.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/tree/_splitter.o",
+    "build/temp.linux-x86_64-3.6/sklearn/tree/_splitter.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/tree/_tree.o",
+    "build/temp.linux-x86_64-3.6/sklearn/tree/_tree.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/tree/_utils.o",
+    "build/temp.linux-x86_64-3.6/sklearn/tree/_utils.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/_logistic_sigmoid.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/_logistic_sigmoid.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/_random.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/_random.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/arrayfuncs.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/arrayfuncs.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/fast_dict.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/fast_dict.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/graph_shortest_path.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/graph_shortest_path.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/lgamma.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/lgamma.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/murmurhash.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/murmurhash.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/seq_dataset.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/seq_dataset.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/sparsefuncs_fast.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/sparsefuncs_fast.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/src/MurmurHash3.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/src/MurmurHash3.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/src/gamma.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/src/gamma.o.d",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/weight_vector.o",
+    "build/temp.linux-x86_64-3.6/sklearn/utils/weight_vector.o.d",
+    "sklearn/__check_build/_check_build.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/_isotonic.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/cluster/_dbscan_inner.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/cluster/_hierarchical.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/cluster/_k_means.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/cluster/_k_means_elkan.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/datasets/_svmlight_format.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/decomposition/_online_lda.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/decomposition/cdnmf_fast.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/ensemble/_gradient_boosting.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/feature_extraction/_hashing.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/linear_model/cd_fast.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/linear_model/sag_fast.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/linear_model/sgd_fast.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/manifold/_barnes_hut_tsne.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/manifold/_utils.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/metrics/pairwise_fast.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/neighbors/ball_tree.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/neighbors/dist_metrics.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/neighbors/kd_tree.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/neighbors/quad_tree.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/neighbors/typedefs.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/preprocessing/_csr_polynomial_expansion.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/svm/liblinear.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/svm/libsvm.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/svm/libsvm_sparse.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/tree/_criterion.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/tree/_splitter.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/tree/_tree.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/tree/_utils.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/utils/_logistic_sigmoid.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/utils/_random.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/utils/arrayfuncs.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/utils/fast_dict.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/utils/graph_shortest_path.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/utils/lgamma.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/utils/murmurhash.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/utils/seq_dataset.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/utils/sparsefuncs_fast.cpython-36m-x86_64-linux-gnu.so",
+    "sklearn/utils/weight_vector.cpython-36m-x86_64-linux-gnu.so"
+   ]
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": [
+    "sklearn/linear_model/least_angle.py.backup"
+   ]
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": [
+    "fix_copy_x.py",
+    "sklearn/linear_model/least_angle.py"
+   ]
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": [
+    "fix_copy_x2.py",
+    "sklearn/linear_model/least_angle.py"
+   ]
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": [
+    "fix_copy_x3.py"
+   ]
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": [
+    "sklearn/linear_model/least_angle.py"
+   ]
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 1,
+   "changed": [
+    "test_fix.py"
+   ]
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": [
+    "verify_fix.py"
+   ]
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": [
+    "demonstrate_fix.py"
+   ]
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 3,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 4,
+   "last": 10,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 11,
+   "last": 13,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 14,
+   "last": 17,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 18,
+   "last": 18,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 19,
+   "last": 21,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 22,
+   "last": 23,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 24,
+   "last": 27,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 28,
+   "last": 30,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 31,
+   "last": 31,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 32,
+   "last": 34,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 35,
+   "last": 41,
+   "outcome": "commit",
+   "id": 11
+  },
+  {
+   "first": 42,
+   "last": 44,
+   "outcome": "none",
+   "id": 12
+  }
+ ],
+ "seconds": 144
+}

@@ -1,0 +1,14 @@
+instance,backend,policy,tx,outcome,step,op,kind,ms,rc,recorded_rc,tree
+scikit-learn__scikit-learn-25232,git,per_write,0,commit,0,exec,,9.231,0,0,77790aa9520ebbf7
+scikit-learn__scikit-learn-25232,git,per_write,0,commit,1,exec,,5.243,0,0,77790aa9520ebbf7
+scikit-learn__scikit-learn-25232,git,per_write,0,commit,2,exec,,3.967,0,0,77790aa9520ebbf7
+scikit-learn__scikit-learn-25232,git,per_write,0,commit,3,exec,,4.168,0,0,77790aa9520ebbf7
+scikit-learn__scikit-learn-25232,git,per_write,0,commit,4,exec,,4.118,0,0,77790aa9520ebbf7
+scikit-learn__scikit-learn-25232,git,per_write,0,commit,5,exec,,3.976,0,0,77790aa9520ebbf7
+scikit-learn__scikit-learn-25232,git,per_write,0,commit,6,exec,,4.008,0,0,77790aa9520ebbf7
+scikit-learn__scikit-learn-25232,git,per_write,0,commit,7,exec,,4.256,0,0,77790aa9520ebbf7
+scikit-learn__scikit-learn-25232,git,per_write,0,commit,8,exec,,4.249,0,0,77790aa9520ebbf7
+scikit-learn__scikit-learn-25232,git,per_write,0,commit,9,exec,change,16.033,1,1,52acea2ea29564e6
+scikit-learn__scikit-learn-25232,git,per_write,0,commit,,commit,,17.97,,,52acea2ea29564e6
+scikit-learn__scikit-learn-25232,git,per_write,1,commit,10,exec,,14.82,1,1,52acea2ea29564e6
+scikit-learn__scikit-learn-25232,git,per_write,1,commit,11,exec,change,60060.335,-9,-1,4986306c34eb0411

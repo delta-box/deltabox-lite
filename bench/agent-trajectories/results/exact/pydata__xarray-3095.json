@@ -1,0 +1,446 @@
+{
+ "instance_id": "pydata__xarray-3095",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "81d993890c1eb7bb0ac58c32f67e2d3d244e4736a561eb908389845a241034ea",
+ "image": "swebench/sweb.eval.x86_64.pydata_1776_xarray-3095",
+ "image_digest": "sha256:fb721923cba0d05faafdafb2fb76e6caa3adc22fd4fdcbf2de45741312f91c74",
+ "resolved": true,
+ "pypi_as_of": 1771247701.0117948,
+ "steps": 53,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 9,
+ "aborts": 3,
+ "aborted_steps": 4,
+ "rc_match_recording": 52,
+ "rc_recorded": 52,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [
+  {
+   "step": 44,
+   "span": [
+    40,
+    43
+   ],
+   "reason": "overlaps an earlier abort"
+  },
+  {
+   "step": 47,
+   "span": [
+    45,
+    46
+   ],
+   "reason": "overlaps an earlier abort"
+  }
+ ],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 1,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": [
+    "test_pandas_copy.py"
+   ]
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": [
+    "test_adapter.py"
+   ]
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": [
+    "test_fix.py"
+   ]
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": [
+    "xarray/core/variable.py.backup"
+   ]
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": [
+    "apply_fix.py",
+    "xarray/core/variable.py"
+   ]
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": [
+    "test_edge_cases.py"
+   ]
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": [
+    "test_special_cases.py"
+   ]
+  },
+  {
+   "i": 32,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": [
+    "xarray/core/variable.py"
+   ]
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": [
+    "xarray/core/variable.py"
+   ]
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": [
+    "xarray/core/variable.py"
+   ]
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": [
+    "xarray/core/variable.py"
+   ]
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": [
+    "xarray/core/variable.py"
+   ]
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": [
+    "xarray/core/variable.py"
+   ]
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 4,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 5,
+   "last": 19,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 20,
+   "last": 23,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 24,
+   "last": 24,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 25,
+   "last": 26,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 27,
+   "last": 27,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 28,
+   "last": 30,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 31,
+   "last": 31,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 32,
+   "last": 37,
+   "outcome": "none",
+   "id": 8
+  },
+  {
+   "first": 38,
+   "last": 39,
+   "outcome": "abort",
+   "replaces": [
+    40
+   ],
+   "id": 9
+  },
+  {
+   "first": 41,
+   "last": 43,
+   "outcome": "none",
+   "id": 10
+  },
+  {
+   "first": 44,
+   "last": 44,
+   "outcome": "abort",
+   "replaces": [
+    45
+   ],
+   "id": 11
+  },
+  {
+   "first": 46,
+   "last": 46,
+   "outcome": "none",
+   "id": 12
+  },
+  {
+   "first": 47,
+   "last": 47,
+   "outcome": "abort",
+   "replaces": [
+    48
+   ],
+   "id": 13
+  },
+  {
+   "first": 49,
+   "last": 50,
+   "outcome": "commit",
+   "id": 14
+  },
+  {
+   "first": 51,
+   "last": 52,
+   "outcome": "none",
+   "id": 15
+  }
+ ],
+ "seconds": 322
+}

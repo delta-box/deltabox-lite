@@ -1,0 +1,786 @@
+{
+ "instance_id": "scikit-learn__scikit-learn-26194",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "e98a03d79cc3237782fdd90bfa8c914b9a9e130ddec6d0e24d1a403e389a0816",
+ "image": "swebench/sweb.eval.x86_64.scikit-learn_1776_scikit-learn-26194",
+ "image_digest": "sha256:fca1ded18212c7cf74a6b741c4a42cc58b7c0f7e48f5885b625780045b1c2163",
+ "resolved": false,
+ "pypi_as_of": 1771251040.671947,
+ "steps": 79,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 11,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 78,
+ "rc_recorded": 78,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": [
+    "test_roc_issue.py"
+   ]
+  },
+  {
+   "i": 6,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": [
+    "sklearn/__check_build/_check_build.c",
+    "sklearn/_isotonic.c",
+    "sklearn/_loss/_loss.c",
+    "sklearn/cluster/_dbscan_inner.cpp",
+    "sklearn/cluster/_hierarchical_fast.cpp",
+    "sklearn/cluster/_k_means_common.c",
+    "sklearn/cluster/_k_means_elkan.c",
+    "sklearn/cluster/_k_means_lloyd.c",
+    "sklearn/cluster/_k_means_minibatch.c",
+    "sklearn/datasets/_svmlight_format_fast.c",
+    "sklearn/decomposition/_cdnmf_fast.c",
+    "sklearn/decomposition/_online_lda_fast.c",
+    "sklearn/ensemble/_gradient_boosting.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_binning.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_bitset.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_gradient_boosting.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_predictor.c",
+    "sklearn/ensemble/_hist_gradient_boosting/common.c",
+    "sklearn/ensemble/_hist_gradient_boosting/histogram.c",
+    "sklearn/ensemble/_hist_gradient_boosting/splitting.c",
+    "sklearn/ensemble/_hist_gradient_boosting/utils.c",
+    "sklearn/feature_extraction/_hashing_fast.cpp",
+    "sklearn/linear_model/_cd_fast.c",
+    "sklearn/linear_model/_sag_fast.c",
+    "sklearn/linear_model/_sgd_fast.c",
+    "sklearn/manifold/_barnes_hut_tsne.c"
+   ]
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": [
+    "sklearn/manifold/_utils.c",
+    "sklearn/metrics/_dist_metrics.c",
+    "sklearn/metrics/_pairwise_distances_reduction/_argkmin.cpp"
+   ]
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": [
+    "build/lib.linux-x86_64-cpython-39/sklearn/__check_build/_check_build.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/_isotonic.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/_loss/_loss.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/cluster/_dbscan_inner.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/cluster/_hierarchical_fast.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/cluster/_k_means_common.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/cluster/_k_means_elkan.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/cluster/_k_means_lloyd.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/cluster/_k_means_minibatch.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/datasets/_svmlight_format_fast.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/decomposition/_cdnmf_fast.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/decomposition/_online_lda_fast.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/ensemble/_gradient_boosting.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/ensemble/_hist_gradient_boosting/_binning.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/ensemble/_hist_gradient_boosting/_bitset.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/ensemble/_hist_gradient_boosting/_gradient_boosting.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/ensemble/_hist_gradient_boosting/_predictor.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/ensemble/_hist_gradient_boosting/common.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/ensemble/_hist_gradient_boosting/histogram.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/ensemble/_hist_gradient_boosting/splitting.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/ensemble/_hist_gradient_boosting/utils.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/feature_extraction/_hashing_fast.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/linear_model/_cd_fast.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/linear_model/_sag_fast.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/linear_model/_sgd_fast.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/manifold/_barnes_hut_tsne.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/manifold/_utils.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/metrics/_dist_metrics.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/metrics/_pairwise_distances_reduction/_argkmin.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/metrics/_pairwise_distances_reduction/_argkmin_classmode.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/metrics/_pairwise_distances_reduction/_base.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/metrics/_pairwise_distances_reduction/_datasets_pair.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/metrics/_pairwise_distances_reduction/_middle_term_computer.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/metrics/_pairwise_distances_reduction/_radius_neighbors.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/metrics/_pairwise_fast.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/metrics/cluster/_expected_mutual_info_fast.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/neighbors/_ball_tree.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/neighbors/_kd_tree.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/neighbors/_partition_nodes.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/neighbors/_quad_tree.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/preprocessing/_csr_polynomial_expansion.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/preprocessing/_target_encoder_fast.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/svm/_liblinear.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/svm/_libsvm.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/svm/_libsvm_sparse.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/svm/_newrand.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/tree/_criterion.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/tree/_splitter.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/tree/_tree.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/tree/_utils.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/utils/_cython_blas.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/utils/_fast_dict.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/utils/_heap.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/utils/_isfinite.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/utils/_logistic_sigmoid.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/utils/_openmp_helpers.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/utils/_random.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/utils/_seq_dataset.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/utils/_sorting.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/utils/_typedefs.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/utils/_vector_sentinel.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/utils/_weight_vector.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/utils/arrayfuncs.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/utils/murmurhash.cpython-39-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-39/sklearn/utils/sparsefuncs_fast.cpython-39-x86_64-linux-gnu.so",
+    "build/temp.linux-x86_64-cpython-39/libliblinear-skl.a",
+    "build/temp.linux-x86_64-cpython-39/liblibsvm-skl.a",
+    "build/temp.linux-x86_64-cpython-39/sklearn/__check_build/_check_build.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/_isotonic.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/_loss/_loss.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/cluster/_dbscan_inner.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/cluster/_hierarchical_fast.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/cluster/_k_means_common.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/cluster/_k_means_elkan.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/cluster/_k_means_lloyd.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/cluster/_k_means_minibatch.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/datasets/_svmlight_format_fast.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/decomposition/_cdnmf_fast.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/decomposition/_online_lda_fast.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/ensemble/_gradient_boosting.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/ensemble/_hist_gradient_boosting/_binning.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/ensemble/_hist_gradient_boosting/_bitset.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/ensemble/_hist_gradient_boosting/_gradient_boosting.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/ensemble/_hist_gradient_boosting/_predictor.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/ensemble/_hist_gradient_boosting/common.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/ensemble/_hist_gradient_boosting/histogram.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/ensemble/_hist_gradient_boosting/splitting.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/ensemble/_hist_gradient_boosting/utils.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/feature_extraction/_hashing_fast.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/linear_model/_cd_fast.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/linear_model/_sag_fast.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/linear_model/_sgd_fast.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/manifold/_barnes_hut_tsne.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/manifold/_utils.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/metrics/_dist_metrics.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/metrics/_pairwise_distances_reduction/_argkmin.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/metrics/_pairwise_distances_reduction/_argkmin_classmode.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/metrics/_pairwise_distances_reduction/_base.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/metrics/_pairwise_distances_reduction/_datasets_pair.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/metrics/_pairwise_distances_reduction/_middle_term_computer.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/metrics/_pairwise_distances_reduction/_radius_neighbors.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/metrics/_pairwise_fast.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/metrics/cluster/_expected_mutual_info_fast.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/neighbors/_ball_tree.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/neighbors/_kd_tree.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/neighbors/_partition_nodes.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/neighbors/_quad_tree.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/preprocessing/_csr_polynomial_expansion.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/preprocessing/_target_encoder_fast.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/svm/_liblinear.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/svm/_libsvm.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/svm/_libsvm_sparse.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/svm/_newrand.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/svm/src/liblinear/linear.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/svm/src/liblinear/tron.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/svm/src/libsvm/libsvm_template.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/tree/_criterion.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/tree/_splitter.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/tree/_tree.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/tree/_utils.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/utils/_cython_blas.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/utils/_fast_dict.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/utils/_heap.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/utils/_isfinite.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/utils/_logistic_sigmoid.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/utils/_openmp_helpers.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/utils/_random.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/utils/_seq_dataset.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/utils/_sorting.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/utils/_typedefs.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/utils/_vector_sentinel.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/utils/_weight_vector.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/utils/arrayfuncs.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/utils/murmurhash.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/utils/sparsefuncs_fast.o",
+    "build/temp.linux-x86_64-cpython-39/sklearn/utils/src/MurmurHash3.o",
+    "sklearn/__check_build/_check_build.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/_isotonic.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/_loss/_loss.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/cluster/_dbscan_inner.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/cluster/_hierarchical_fast.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/cluster/_k_means_common.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/cluster/_k_means_elkan.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/cluster/_k_means_lloyd.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/cluster/_k_means_minibatch.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/datasets/_svmlight_format_fast.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/decomposition/_cdnmf_fast.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/decomposition/_online_lda_fast.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/ensemble/_gradient_boosting.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/ensemble/_hist_gradient_boosting/_binning.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/ensemble/_hist_gradient_boosting/_bitset.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/ensemble/_hist_gradient_boosting/_gradient_boosting.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/ensemble/_hist_gradient_boosting/_predictor.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/ensemble/_hist_gradient_boosting/common.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/ensemble/_hist_gradient_boosting/histogram.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/ensemble/_hist_gradient_boosting/splitting.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/ensemble/_hist_gradient_boosting/utils.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/feature_extraction/_hashing_fast.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/linear_model/_cd_fast.c",
+    "sklearn/linear_model/_cd_fast.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/linear_model/_sag_fast.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/linear_model/_sgd_fast.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/manifold/_barnes_hut_tsne.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/manifold/_utils.c",
+    "sklearn/manifold/_utils.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/metrics/_dist_metrics.c",
+    "sklearn/metrics/_dist_metrics.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/metrics/_pairwise_distances_reduction/_argkmin.cpp",
+    "sklearn/metrics/_pairwise_distances_reduction/_argkmin.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/metrics/_pairwise_distances_reduction/_argkmin_classmode.cpp",
+    "sklearn/metrics/_pairwise_distances_reduction/_argkmin_classmode.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/metrics/_pairwise_distances_reduction/_base.cpp",
+    "sklearn/metrics/_pairwise_distances_reduction/_base.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/metrics/_pairwise_distances_reduction/_datasets_pair.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/metrics/_pairwise_distances_reduction/_middle_term_computer.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/metrics/_pairwise_distances_reduction/_radius_neighbors.cpp",
+    "sklearn/metrics/_pairwise_distances_reduction/_radius_neighbors.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/metrics/_pairwise_fast.c",
+    "sklearn/metrics/_pairwise_fast.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/metrics/cluster/_expected_mutual_info_fast.c",
+    "sklearn/metrics/cluster/_expected_mutual_info_fast.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/neighbors/_ball_tree.c",
+    "sklearn/neighbors/_ball_tree.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/neighbors/_kd_tree.c",
+    "sklearn/neighbors/_kd_tree.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/neighbors/_partition_nodes.cpp",
+    "sklearn/neighbors/_partition_nodes.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/neighbors/_quad_tree.c",
+    "sklearn/neighbors/_quad_tree.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/preprocessing/_csr_polynomial_expansion.c",
+    "sklearn/preprocessing/_csr_polynomial_expansion.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/preprocessing/_target_encoder_fast.cpp",
+    "sklearn/preprocessing/_target_encoder_fast.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/svm/_liblinear.c",
+    "sklearn/svm/_liblinear.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/svm/_libsvm.c",
+    "sklearn/svm/_libsvm.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/svm/_libsvm_sparse.c",
+    "sklearn/svm/_libsvm_sparse.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/svm/_newrand.cpp",
+    "sklearn/svm/_newrand.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/tree/_criterion.c",
+    "sklearn/tree/_criterion.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/tree/_splitter.c",
+    "sklearn/tree/_splitter.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/tree/_tree.cpp",
+    "sklearn/tree/_tree.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/tree/_utils.c",
+    "sklearn/tree/_utils.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/utils/_cython_blas.c",
+    "sklearn/utils/_cython_blas.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/utils/_fast_dict.cpp",
+    "sklearn/utils/_fast_dict.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/utils/_heap.c",
+    "sklearn/utils/_heap.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/utils/_isfinite.c",
+    "sklearn/utils/_isfinite.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/utils/_logistic_sigmoid.c",
+    "sklearn/utils/_logistic_sigmoid.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/utils/_openmp_helpers.c",
+    "sklearn/utils/_openmp_helpers.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/utils/_random.c",
+    "sklearn/utils/_random.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/utils/_seq_dataset.c",
+    "sklearn/utils/_seq_dataset.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/utils/_sorting.c",
+    "sklearn/utils/_sorting.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/utils/_typedefs.c",
+    "sklearn/utils/_typedefs.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/utils/_vector_sentinel.cpp",
+    "sklearn/utils/_vector_sentinel.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/utils/_weight_vector.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/utils/arrayfuncs.c",
+    "sklearn/utils/arrayfuncs.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/utils/murmurhash.c",
+    "sklearn/utils/murmurhash.cpython-39-x86_64-linux-gnu.so",
+    "sklearn/utils/sparsefuncs_fast.c",
+    "sklearn/utils/sparsefuncs_fast.cpython-39-x86_64-linux-gnu.so"
+   ]
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": [
+    "fix_roc_curve.py",
+    "sklearn/metrics/_ranking.py"
+   ]
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 53,
+   "rc": 2,
+   "changed": [
+    "test_nextafter.py"
+   ]
+  },
+  {
+   "i": 54,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": [
+    "sklearn/metrics/_ranking.py"
+   ]
+  },
+  {
+   "i": 56,
+   "rc": 0,
+   "changed": [
+    "apply_fix.py",
+    "sklearn/metrics/_ranking.py"
+   ]
+  },
+  {
+   "i": 57,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 58,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 59,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 60,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 61,
+   "rc": 0,
+   "changed": [
+    "build/lib.linux-x86_64-cpython-311/sklearn/__check_build/_check_build.cpython-311-x86_64-linux-gnu.so",
+    "build/temp.linux-x86_64-cpython-311/sklearn/__check_build/_check_build.o",
+    "sklearn/__check_build/_check_build.cpython-311-x86_64-linux-gnu.so"
+   ]
+  },
+  {
+   "i": 62,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 63,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 64,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 65,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 66,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 67,
+   "rc": 0,
+   "changed": [
+    "sklearn/metrics/_ranking.py",
+    "update_docstring.py"
+   ]
+  },
+  {
+   "i": 68,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 69,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 70,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 71,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 72,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 73,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 74,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 75,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 76,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 77,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 78,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 5,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 6,
+   "last": 12,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 13,
+   "last": 13,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 14,
+   "last": 16,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 17,
+   "last": 44,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 45,
+   "last": 53,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 54,
+   "last": 55,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 56,
+   "last": 56,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 57,
+   "last": 61,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 62,
+   "last": 67,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 68,
+   "last": 76,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 77,
+   "last": 78,
+   "outcome": "none",
+   "id": 11
+  }
+ ],
+ "seconds": 356
+}

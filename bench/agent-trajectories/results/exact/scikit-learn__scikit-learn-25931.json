@@ -1,0 +1,505 @@
+{
+ "instance_id": "scikit-learn__scikit-learn-25931",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "e3dd06c2cf3747165c6825ceadde4c8f212a178aca7b7cc434509b511bb45226",
+ "image": "swebench/sweb.eval.x86_64.scikit-learn_1776_scikit-learn-25931",
+ "image_digest": "sha256:ddec546aa1fa04ece4083d1d65eee4115ce72d2233b06e58250bb33a7a0c8aa7",
+ "resolved": true,
+ "pypi_as_of": 1771250883.0145123,
+ "steps": 56,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 13,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 55,
+ "rc_recorded": 55,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 6,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 1,
+   "changed": [
+    "sklearn/__check_build/_check_build.c",
+    "sklearn/_isotonic.c",
+    "sklearn/_loss/_loss.c",
+    "sklearn/cluster/_dbscan_inner.cpp",
+    "sklearn/cluster/_hierarchical_fast.cpp",
+    "sklearn/cluster/_k_means_common.c",
+    "sklearn/cluster/_k_means_elkan.c",
+    "sklearn/cluster/_k_means_lloyd.c",
+    "sklearn/cluster/_k_means_minibatch.c",
+    "sklearn/datasets/_svmlight_format_fast.c",
+    "sklearn/decomposition/_cdnmf_fast.c",
+    "sklearn/decomposition/_online_lda_fast.c",
+    "sklearn/ensemble/_gradient_boosting.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_binning.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_bitset.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_gradient_boosting.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_predictor.c",
+    "sklearn/ensemble/_hist_gradient_boosting/common.c",
+    "sklearn/ensemble/_hist_gradient_boosting/histogram.c",
+    "sklearn/ensemble/_hist_gradient_boosting/splitting.c",
+    "sklearn/ensemble/_hist_gradient_boosting/utils.c",
+    "sklearn/feature_extraction/_hashing_fast.cpp",
+    "sklearn/linear_model/_cd_fast.c",
+    "sklearn/linear_model/_sag_fast.c",
+    "sklearn/linear_model/_sgd_fast.c",
+    "sklearn/manifold/_barnes_hut_tsne.c"
+   ]
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": [
+    "sklearn/manifold/_utils.c",
+    "sklearn/metrics/_dist_metrics.c",
+    "sklearn/metrics/_pairwise_distances_reduction/_argkmin.cpp"
+   ]
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": [
+    "sklearn/_isotonic.c",
+    "sklearn/_loss/_loss.c",
+    "sklearn/cluster/_dbscan_inner.cpp",
+    "sklearn/cluster/_hierarchical_fast.cpp",
+    "sklearn/cluster/_k_means_common.c",
+    "sklearn/cluster/_k_means_elkan.c",
+    "sklearn/cluster/_k_means_lloyd.c",
+    "sklearn/cluster/_k_means_minibatch.c",
+    "sklearn/datasets/_svmlight_format_fast.c",
+    "sklearn/decomposition/_cdnmf_fast.c",
+    "sklearn/decomposition/_online_lda_fast.c",
+    "sklearn/ensemble/_gradient_boosting.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_binning.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_bitset.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_gradient_boosting.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_predictor.c",
+    "sklearn/ensemble/_hist_gradient_boosting/common.c",
+    "sklearn/ensemble/_hist_gradient_boosting/histogram.c",
+    "sklearn/ensemble/_hist_gradient_boosting/splitting.c",
+    "sklearn/ensemble/_hist_gradient_boosting/utils.c",
+    "sklearn/feature_extraction/_hashing_fast.cpp",
+    "sklearn/linear_model/_sag_fast.c",
+    "sklearn/linear_model/_sgd_fast.c",
+    "sklearn/manifold/_barnes_hut_tsne.c",
+    "sklearn/manifold/_utils.c",
+    "sklearn/metrics/_dist_metrics.c",
+    "sklearn/metrics/_pairwise_distances_reduction/_argkmin.cpp",
+    "sklearn/metrics/_pairwise_distances_reduction/_argkmin_classmode.cpp",
+    "sklearn/metrics/_pairwise_distances_reduction/_base.cpp",
+    "sklearn/metrics/_pairwise_distances_reduction/_datasets_pair.cpp",
+    "sklearn/metrics/_pairwise_distances_reduction/_middle_term_computer.cpp",
+    "sklearn/metrics/_pairwise_distances_reduction/_radius_neighbors.cpp",
+    "sklearn/metrics/_pairwise_fast.c",
+    "sklearn/metrics/cluster/_expected_mutual_info_fast.c",
+    "sklearn/neighbors/_ball_tree.c",
+    "sklearn/neighbors/_kd_tree.c",
+    "sklearn/neighbors/_partition_nodes.cpp",
+    "sklearn/neighbors/_quad_tree.c",
+    "sklearn/preprocessing/_csr_polynomial_expansion.c",
+    "sklearn/preprocessing/_target_encoder_fast.cpp",
+    "sklearn/svm/_liblinear.c",
+    "sklearn/svm/_libsvm.c",
+    "sklearn/svm/_libsvm_sparse.c",
+    "sklearn/tree/_criterion.c",
+    "sklearn/tree/_splitter.c",
+    "sklearn/tree/_tree.cpp",
+    "sklearn/utils/_cython_blas.c",
+    "sklearn/utils/_fast_dict.cpp",
+    "sklearn/utils/_heap.c",
+    "sklearn/utils/_isfinite.c",
+    "sklearn/utils/_logistic_sigmoid.c",
+    "sklearn/utils/_sorting.c",
+    "sklearn/utils/_typedefs.c",
+    "sklearn/utils/_vector_sentinel.cpp",
+    "sklearn/utils/_weight_vector.c",
+    "sklearn/utils/arrayfuncs.c",
+    "sklearn/utils/murmurhash.c",
+    "sklearn/utils/sparsefuncs_fast.c"
+   ]
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": [
+    "fix_iforest.patch"
+   ]
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": [
+    "sklearn/ensemble/_iforest.py",
+    "sklearn/ensemble/_iforest.py.orig"
+   ]
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": [
+    "sklearn/tree/_utils.c",
+    "sklearn/utils/_random.c",
+    "sklearn/utils/_seq_dataset.c"
+   ]
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 1,
+   "changed": [
+    "test_fix.py"
+   ]
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": [
+    "verify_fix.py"
+   ]
+  },
+  {
+   "i": 43,
+   "rc": 1,
+   "changed": [
+    "test_logic.py"
+   ]
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": [
+    "test_logic2.py"
+   ]
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 48,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": [
+    "demonstrate_fix.py"
+   ]
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 53,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 54,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 5,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 6,
+   "last": 9,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 10,
+   "last": 10,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 11,
+   "last": 12,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 13,
+   "last": 24,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 25,
+   "last": 25,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 26,
+   "last": 37,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 38,
+   "last": 39,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 40,
+   "last": 42,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 43,
+   "last": 43,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 44,
+   "last": 44,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 45,
+   "last": 50,
+   "outcome": "commit",
+   "id": 11
+  },
+  {
+   "first": 51,
+   "last": 52,
+   "outcome": "commit",
+   "id": 12
+  },
+  {
+   "first": 53,
+   "last": 55,
+   "outcome": "none",
+   "id": 13
+  }
+ ],
+ "seconds": 514
+}
