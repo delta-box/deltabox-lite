@@ -5,10 +5,12 @@
 //! commands without re-creating the sandbox.
 
 use crate::error::{Error, Result};
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const MAX_EXEC_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
@@ -40,12 +42,19 @@ pub struct WorkerExec {
     pub cwd: Option<PathBuf>,
     #[serde(default)]
     pub env: Vec<(String, String)>,
+    #[serde(default)]
+    pub stream_output: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", content = "payload", rename_all = "snake_case")]
 pub enum WorkerEvent {
     Ready,
+    Output {
+        id: u64,
+        stream: crate::output::OutputStream,
+        data_base64: String,
+    },
     Ok { id: u64, result: serde_json::Value },
     Err { id: u64, message: String },
     Fatal(String),
@@ -97,10 +106,8 @@ pub fn run_worker(root: &Path, runtime: &Path) -> Result<()> {
     #[cfg(unix)]
     install_cancel_handler()?;
     configure_parent_death_signal()?;
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-    writeln!(out, "{}", serde_json::to_string(&WorkerEvent::Ready)?)?;
-    out.flush()?;
+    let out = Arc::new(Mutex::new(std::io::stdout()));
+    write_worker_event(&out, &WorkerEvent::Ready)?;
 
     let stdin = std::io::stdin();
     for line in BufReader::new(stdin.lock()).lines() {
@@ -115,8 +122,7 @@ pub fn run_worker(root: &Path, runtime: &Path) -> Result<()> {
                     id: 0,
                     message: format!("invalid command: {e}"),
                 };
-                writeln!(out, "{}", serde_json::to_string(&event)?)?;
-                out.flush()?;
+                write_worker_event(&out, &event)?;
                 continue;
             }
         };
@@ -125,16 +131,28 @@ pub fn run_worker(root: &Path, runtime: &Path) -> Result<()> {
                 id,
                 result: serde_json::json!(true),
             },
-            WorkerCommand::Exec { id, exec } => match run_exec(root, runtime, &exec) {
-                Ok(result) => WorkerEvent::Ok {
-                    id,
-                    result: serde_json::to_value(&result)?,
-                },
-                Err(e) => WorkerEvent::Err {
-                    id,
-                    message: e.to_string(),
-                },
-            },
+            WorkerCommand::Exec { id, exec } => {
+                let worker_sink = exec.stream_output.then(|| {
+                    Arc::new(WorkerOutputSink::new(id, Arc::clone(&out)))
+                });
+                let sink = worker_sink
+                    .as_ref()
+                    .map(|sink| Arc::clone(sink) as Arc<dyn crate::output::OutputSink>);
+                let outcome = run_exec(root, runtime, &exec, sink);
+                if let Some(sink) = worker_sink {
+                    sink.close();
+                }
+                match outcome {
+                    Ok(result) => WorkerEvent::Ok {
+                        id,
+                        result: serde_json::to_value(&result)?,
+                    },
+                    Err(e) => WorkerEvent::Err {
+                        id,
+                        message: e.to_string(),
+                    },
+                }
+            }
             WorkerCommand::Scan { id } => match scan_root(root) {
                 Ok(paths) => WorkerEvent::Ok {
                     id,
@@ -160,10 +178,52 @@ pub fn run_worker(root: &Path, runtime: &Path) -> Result<()> {
                 },
             },
         };
-        writeln!(out, "{}", serde_json::to_string(&event)?)?;
-        out.flush()?;
+        write_worker_event(&out, &event)?;
     }
     Ok(())
+}
+
+fn write_worker_event(out: &Mutex<std::io::Stdout>, event: &WorkerEvent) -> Result<()> {
+    let mut guard = out.lock().unwrap_or_else(|e| e.into_inner());
+    writeln!(guard, "{}", serde_json::to_string(event)?)?;
+    guard.flush()?;
+    Ok(())
+}
+
+struct WorkerOutputSink {
+    id: u64,
+    out: Mutex<Option<Arc<Mutex<std::io::Stdout>>>>,
+}
+
+impl WorkerOutputSink {
+    fn new(id: u64, out: Arc<Mutex<std::io::Stdout>>) -> Self {
+        Self {
+            id,
+            out: Mutex::new(Some(out)),
+        }
+    }
+
+    fn close(&self) {
+        let _ = self.out.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+}
+
+impl crate::output::OutputSink for WorkerOutputSink {
+    fn write(&self, stream: crate::output::OutputStream, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let guard = self.out.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(out) = guard.as_ref() else {
+            return;
+        };
+        let event = WorkerEvent::Output {
+            id: self.id,
+            stream,
+            data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        };
+        let _ = write_worker_event(out, &event);
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -209,7 +269,12 @@ fn install_cancel_handler() -> Result<()> {
     Ok(())
 }
 
-fn run_exec(root: &Path, runtime: &Path, exec: &WorkerExec) -> Result<WorkerExecResult> {
+fn run_exec(
+    root: &Path,
+    runtime: &Path,
+    exec: &WorkerExec,
+    sink: Option<Arc<dyn crate::output::OutputSink>>,
+) -> Result<WorkerExecResult> {
     let argv = &exec.argv;
     if argv.is_empty() {
         return Err(Error::InvalidPolicy("empty argv".into()));
@@ -255,9 +320,9 @@ fn run_exec(root: &Path, runtime: &Path, exec: &WorkerExec) -> Result<WorkerExec
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
     let out_reader =
-        crate::output::PipeReader::spawn(stdout, crate::output::OutputStream::Stdout, None);
+        crate::output::PipeReader::spawn(stdout, crate::output::OutputStream::Stdout, sink.clone());
     let err_reader =
-        crate::output::PipeReader::spawn(stderr, crate::output::OutputStream::Stderr, None);
+        crate::output::PipeReader::spawn(stderr, crate::output::OutputStream::Stderr, sink);
     let status = child
         .wait()
         .map_err(|error| Error::Backend(format!("exec wait failed: {error}")));
@@ -389,6 +454,7 @@ mod tests {
                 argv: vec!["npm".into(), "install".into()],
                 cwd: None,
                 env: vec![("PATH".into(), "/usr/bin".into())],
+                stream_output: true,
             },
         };
         let json = serde_json::to_string(&cmd).unwrap();
