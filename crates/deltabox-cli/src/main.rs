@@ -4,7 +4,7 @@ use deltabox_core::backend::DefaultBackend;
 use deltabox_core::coordinator::SessionCoordinator;
 use deltabox_core::protocol::{
     AbortParams, CheckpointParams, CommitParams, DiffParams, DurabilityMode, ExecParams,
-    ExecutionProfile, FilesystemMode, Request, ReviewBeginParams, ReviewKind,
+    ExecutionProfile, FilesystemMode, Request, ReviewBeginParams, ReviewKind, SessionStatus,
 };
 use deltabox_core::server::Server;
 use std::io::{BufRead, IsTerminal, Write};
@@ -84,6 +84,19 @@ enum SessionCmd {
     Stop(StopArgs),
     /// Show session status.
     Status(StatusArgs),
+    /// List recorded sessions for this project without recovering or starting helpers.
+    List(SessionListArgs),
+}
+
+#[derive(clap::Args)]
+struct SessionListArgs {
+    #[arg(long, default_value = ".")]
+    project: PathBuf,
+    /// Filter by displayed status (`running` excludes `orphaned`).
+    #[arg(long, value_parser = ["running", "orphaned", "stopped"])]
+    status: Option<String>,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Subcommand)]
@@ -417,6 +430,33 @@ fn main() -> anyhow::Result<()> {
                 let manager = SessionCoordinator::new(&args.project, None)?;
                 let info = manager.status(&args.session)?;
                 println!("{}", serde_json::to_string_pretty(&info)?);
+            }
+            SessionCmd::List(args) => {
+                let mut sessions = SessionCoordinator::list_project_sessions(&args.project)?;
+                if let Some(status) = args.status.as_deref() {
+                    sessions.retain(|s| match status {
+                        "running" => s.status == SessionStatus::Running && !s.orphaned,
+                        "orphaned" => s.orphaned,
+                        "stopped" => s.status == SessionStatus::Stopped,
+                        _ => unreachable!(),
+                    });
+                }
+                if args.json {
+                    println!("{}", serde_json::to_string_pretty(&sessions)?);
+                } else if sessions.is_empty() {
+                    println!("No recorded sessions.");
+                } else {
+                    println!("{:<36} {:<8} {:<13} {:>13}", "SESSION", "STATUS", "FS_MODE", "STARTED_AT_MS");
+                    for s in sessions {
+                        let mode = serde_json::to_value(&s.resolved_fs_mode)?;
+                        let status = match (s.orphaned, &s.status) {
+                            (true, _) => "orphaned",
+                            (false, SessionStatus::Running) => "running",
+                            (false, SessionStatus::Stopped) => "stopped",
+                        };
+                        println!("{:<36} {:<8} {:<13} {:>13}", s.session_id, status, mode.as_str().unwrap_or("unknown"), s.started_at_ms);
+                    }
+                }
             }
         },
         Command::Run(args) => {

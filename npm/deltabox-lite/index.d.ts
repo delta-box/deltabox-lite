@@ -28,6 +28,7 @@ export interface NativeSessionInfo {
   project: string
   started_at_ms: number
   status: 'running' | 'stopped'
+  orphaned: boolean
   checkpoint_count: number
   pending_changes: number
   requested_fs_mode: 'cbcow-through' | 'cbcow-private' | 'copy-private'

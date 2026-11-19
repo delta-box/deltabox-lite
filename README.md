@@ -259,7 +259,9 @@ deltabox session stop "$session_id"
 
 Session records live in `<project>/.deltabox` by default, so each project stays
 self-contained. Set `DELTABOX_STATE_DIR=/path/to/state` to relocate session
-records and engine state to an arbitrary path instead.
+records and engine state to an arbitrary path instead. Use
+`deltabox session list` (`--status running|orphaned|stopped`, `--json`) to
+discover recorded sessions and spot orphaned ones without starting helpers.
 
 ### Shell command syntax
 

@@ -911,6 +911,7 @@ impl Session {
             project: self.manifest.source.clone(),
             started_at_ms: self.manifest.started_at_ms,
             status: self.manifest.status.clone(),
+            orphaned: false,
             checkpoint_count: self.manifest.checkpoints.len(),
             pending_changes,
             filesystem,

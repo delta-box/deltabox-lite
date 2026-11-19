@@ -278,10 +278,24 @@ pub struct SessionInfo {
     pub project: PathBuf,
     pub started_at_ms: u64,
     pub status: SessionStatus,
+    #[serde(default)]
+    pub orphaned: bool,
     pub checkpoint_count: usize,
     pub pending_changes: usize,
     #[serde(flatten)]
     pub filesystem: FilesystemInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionSummary {
+    pub session_id: String,
+    pub project: PathBuf,
+    pub started_at_ms: u64,
+    pub status: SessionStatus,
+    #[serde(default)]
+    pub orphaned: bool,
+    pub resolved_fs_mode: FilesystemMode,
+    pub durability: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

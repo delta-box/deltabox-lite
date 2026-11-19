@@ -14,6 +14,19 @@ use std::time::{Duration,Instant};
 use crate::coordinator::{CommandExecutionMode, CoordinatorOptions};
 pub struct Manager { project: PathBuf,state: PathBuf,runtime: PathBuf,helper_bin: PathBuf,command_execution: CommandExecutionMode,created_state_dirs: Vec<PathBuf> }
 
+pub(crate) fn existing_sessions_root(project: &Path) -> Result<Option<PathBuf>> {
+    let base = match std::env::var_os("DELTABOX_STATE_DIR") {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or_else(|| Error::Backend("LOCALAPPDATA unavailable".into()))?).join("deltabox-lite").join("state"),
+    };
+    if !base.exists() { return Ok(None); }
+    let base = base.canonicalize()?;
+    let (a, b) = (base.to_string_lossy().to_lowercase(), project.to_string_lossy().to_lowercase());
+    if a == b || a.starts_with(&(b + "\\")) { return Err(Error::Backend("Windows state and runtime must be outside the project".into())); }
+    let key = format!("{:x}", Sha256::digest(project.to_string_lossy().to_lowercase().as_bytes()));
+    Ok(Some(base.join("projects").join(&key[..32])))
+}
+
 impl Manager {
     pub fn new_with_options(project: &Path,options: CoordinatorOptions) -> Result<Self> {
         let project=project.canonicalize()?;

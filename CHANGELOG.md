@@ -9,6 +9,13 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+### Added
+
+- `deltabox session list` (`SessionCoordinator::list_sessions`) with
+  `--status running|orphaned|stopped` and `--json` output, plus `orphaned` on
+  `SessionInfo` (`session status`) so dead attached owners are visible without
+  recovering state or starting helpers.
+
 ## [0.4.3] - 2026-11-18
 
 ### Added

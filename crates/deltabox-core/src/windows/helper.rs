@@ -103,6 +103,7 @@ pub fn session_info(engine: &Engine, pid: Option<u32>) -> Result<SessionInfo> {
         project: engine.manifest.source.clone(),
         started_at_ms: engine.manifest.started_at_ms,
         status: engine.manifest.status.clone(),
+        orphaned: false,
         checkpoint_count: engine.manifest.checkpoints.len(),
         pending_changes: engine.diff(None, None)?.pending_changes,
         filesystem,

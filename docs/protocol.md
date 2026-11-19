@@ -59,11 +59,13 @@ The CLI form `deltabox session start PROJECT --json` prints the same structured
 `SessionInfo` returned by `session.start`. Without `--json`, it retains the
 original session-ID stdout format for shell compatibility.
 
-`SessionInfo` = `{session_id, project, started_at_ms, status, checkpoint_count,
-pending_changes, requested_fs_mode, resolved_fs_mode, host_visibility,
-durability, group_commit_ms?, isolation, isolation_provider?, state_provider,
-fallback_reason, rollback_guarantee, tainted, mountpoint?, helper_pid?,
-helper_restarts, mount_namespace, degraded_protections?}`. `isolation` names the
+`SessionInfo` = `{session_id, project, started_at_ms, status, orphaned,
+checkpoint_count, pending_changes, requested_fs_mode, resolved_fs_mode,
+host_visibility, durability, group_commit_ms?, isolation, isolation_provider?,
+state_provider, fallback_reason, rollback_guarantee, tainted, mountpoint?,
+helper_pid?, helper_restarts, mount_namespace, degraded_protections?}`. `orphaned`
+is `true` when an attached owner process died while `status` remained `running`.
+`isolation` names the
 session's isolation profile and `isolation_provider` the OS mechanism behind it
 (`sandlock` or `seatbelt`), so a consumer can tell which confinement it relies
 on without parsing the platform. On Linux kernels that cannot enforce every
