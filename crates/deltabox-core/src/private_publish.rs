@@ -350,6 +350,7 @@ impl AcceptedIndex {
                     mode: expected_mode,
                     uid: expected_uid,
                     gid: expected_gid,
+                    inode: expected_inode,
                     xattrs: expected_xattrs,
                     ..
                 }),
@@ -357,17 +358,20 @@ impl AcceptedIndex {
                     mode: actual_mode,
                     uid: actual_uid,
                     gid: actual_gid,
+                    inode: actual_inode,
                     xattrs: actual_xattrs,
                     ..
                 }),
             ) if !strict =>
             {
                 // Ancestor directories: sibling publications legitimately bump
-                // membership and timestamps; identity, permissions, and ACLs
-                // (xattrs) are load-bearing. Targets never take this arm.
+                // membership and timestamps; inode identity, ownership,
+                // permissions, and ACLs (xattrs) are load-bearing. Targets
+                // never take this arm.
                 expected_mode == actual_mode
                     && expected_uid == actual_uid
                     && expected_gid == actual_gid
+                    && expected_inode == actual_inode
                     && expected_xattrs == actual_xattrs
             }
             (Some(Fingerprint::Directory { .. }), Some(actual)) => self
@@ -396,9 +400,49 @@ impl AcceptedIndex {
     }
 
     pub fn refresh(&mut self, project: &Path, changes: &[PublishChange]) -> Result<()> {
-        let mut parents = BTreeSet::new();
-        let mut namespace_parents = BTreeSet::new();
-        for change in changes {
+        let mut ordered: Vec<&PublishChange> = changes.iter().collect();
+        ordered.sort_by_key(|change| (depth(&change.path), change.path.as_str()));
+
+        let change_paths: BTreeSet<&str> = ordered.iter().map(|c| c.path.as_str()).collect();
+        let mut ancestors = BTreeSet::new();
+        let mut root_touched = false;
+        let mut root_namespace_changed = false;
+
+        for change in &ordered {
+            let mut cursor = Path::new(&change.path).parent();
+            let mut direct = true;
+            while let Some(parent) = cursor {
+                let parent_str = path_string(parent)?;
+                if parent_str.is_empty() {
+                    if direct {
+                        root_touched = true;
+                        if change.namespace_changed {
+                            root_namespace_changed = true;
+                        }
+                    }
+                    break;
+                }
+                direct = false;
+                // Ancestors that are themselves in `changes` are replaced in
+                // Phase 2 before any descendant is captured.
+                if !change_paths.contains(parent_str.as_str()) {
+                    ancestors.insert((depth(&parent_str), parent_str));
+                }
+                cursor = parent.parent();
+            }
+        }
+
+        // Phase 1: Refresh or materialize ancestor directories top-down before
+        // capturing children, so every child binds to its parent's final
+        // generation and in-place metadata updates preserve untouched siblings.
+        for (_, ancestor) in ancestors {
+            let host = project.join(&ancestor);
+            self.refresh_parent_entry(&ancestor, fingerprint(&host, false)?)?;
+        }
+
+        // Phase 2: Apply path changes top-down so a newly added or replaced
+        // directory is indexed before any descendant change under it.
+        for change in &ordered {
             for paths in self.manifest.hardlinks.values_mut() {
                 paths.retain(|path| {
                     path != &change.path
@@ -412,36 +456,18 @@ impl AcceptedIndex {
             if fs::symlink_metadata(&path).is_ok() {
                 self.capture_path(project, &path)?;
             }
-            let parent = path_string(
-                Path::new(&change.path)
-                    .parent()
-                    .expect("relative path has a parent"),
-            )?;
-            parents.insert(parent.clone());
-            if change.namespace_changed {
-                namespace_parents.insert(parent);
-            }
         }
-        for parent in parents {
-            let path = if parent.is_empty() {
-                project.to_path_buf()
-            } else {
-                project.join(&parent)
-            };
-            if namespace_parents.contains(&parent) {
-                if parent.is_empty() {
-                    self.manifest.root = fingerprint(project, true)?
-                        .ok_or_else(|| Error::Backend("project root is unavailable".into()))?;
-                } else {
-                    self.refresh_parent_entry(&parent, fingerprint(&path, false)?)?;
-                }
+
+        // Phase 3: Refresh the project root entry/stamp when direct children
+        // of the root changed (without rotating `root_generation`).
+        if root_touched {
+            let current = fingerprint(project, true)?
+                .ok_or_else(|| Error::Backend("project root is unavailable".into()))?;
+            if let Some(stamp) = current.directory_stamp() {
+                self.manifest.directories.insert(String::new(), stamp);
             }
-            if let Some(stamp) = fingerprint_shallow(&path, parent.is_empty())?
-                .and_then(|fingerprint| fingerprint.directory_stamp())
-            {
-                self.manifest.directories.insert(parent, stamp);
-            } else if !parent.is_empty() {
-                self.manifest.directories.remove(&parent);
+            if root_namespace_changed {
+                self.manifest.root = current;
             }
         }
         self.manifest.hardlinks.retain(|_, paths| paths.len() > 1);
@@ -449,19 +475,8 @@ impl AcceptedIndex {
     }
 
     fn refresh_parent_entry(&mut self, path: &str, value: Option<Fingerprint>) -> Result<()> {
-        // A membership change updates directory metadata. Keep the generation
-        // referenced by both the just-published child and untouched siblings.
-        if let (Some(mut entry), Some(current)) = (self.stored_entry(path)?, value.as_ref()) {
-            if let (
-                Fingerprint::Directory { inode: old, .. },
-                Fingerprint::Directory { inode: new, .. },
-            ) = (&entry.fingerprint, current)
-            {
-                if old == new {
-                    entry.fingerprint = current.clone();
-                    return save_json(&entry_path(&self.directory, path), &entry, self.durable);
-                }
-            }
+        if self.update_parent_metadata_in_place(path, value.as_ref())? {
+            return Ok(());
         }
 
         self.remove_entry(path)?;
@@ -469,6 +484,35 @@ impl AcceptedIndex {
             self.add_entry(path, current)?;
         }
         Ok(())
+    }
+
+    fn update_parent_metadata_in_place(
+        &mut self,
+        path: &str,
+        value: Option<&Fingerprint>,
+    ) -> Result<bool> {
+        // A membership or timestamp change updates directory metadata without
+        // replacing the directory itself. Keep the generation referenced by
+        // both newly published children and untouched siblings.
+        if let (Some(mut entry), Some(current)) = (self.stored_entry(path)?, value) {
+            if entry.generation.is_some() {
+                if let (
+                    Fingerprint::Directory { inode: old, .. },
+                    Fingerprint::Directory { inode: new, .. },
+                ) = (&entry.fingerprint, current)
+                {
+                    if old == new {
+                        if let Some(stamp) = current.directory_stamp() {
+                            self.manifest.directories.insert(path.into(), stamp);
+                        }
+                        entry.fingerprint = current.clone();
+                        save_json(&entry_path(&self.directory, path), &entry, self.durable)?;
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        Ok(false)
     }
 
     fn entry(&self, path: &str) -> Result<Option<Fingerprint>> {
@@ -1408,6 +1452,130 @@ mod tests {
         };
         accepted.refresh(&project, &[replacement]).unwrap();
         assert!(accepted.entry("work/old").unwrap().is_none());
+    }
+
+    #[test]
+    fn deleting_child_preserves_sibling_and_detects_external_deletion() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let index = root.path().join("accepted");
+        fs::create_dir_all(project.join("work")).unwrap();
+        fs::write(project.join("work/one"), "first").unwrap();
+        fs::write(project.join("work/two"), "second").unwrap();
+        let mut accepted =
+            AcceptedIndex::create(&index, AcceptedState::capture(&project).unwrap()).unwrap();
+
+        fs::remove_file(project.join("work/two")).unwrap();
+        let deletion = PublishChange {
+            path: "work/two".into(),
+            kind: ChangeKind::Deleted,
+            existed: true,
+            namespace_changed: true,
+        };
+        accepted.refresh(&project, &[deletion]).unwrap();
+        assert!(accepted.entry("work/two").unwrap().is_none());
+        accepted.validate(&project, ["work/one".into()]).unwrap();
+
+        fs::remove_file(project.join("work/one")).unwrap();
+        let Err(Error::ProjectConflict(report)) = accepted.validate(&project, ["work/one".into()])
+        else {
+            panic!("expected a conflict on the externally deleted sibling");
+        };
+        assert_eq!(report.conflicts.len(), 1);
+        assert_eq!(report.conflicts[0].path, "work/one");
+        assert_eq!(report.conflicts[0].host_change, HostChangeKind::Deleted);
+    }
+
+    #[test]
+    fn external_ancestor_directory_replacement_is_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let index = root.path().join("accepted");
+        fs::create_dir_all(project.join("work")).unwrap();
+        fs::write(project.join("work/one"), "first").unwrap();
+        let accepted =
+            AcceptedIndex::create(&index, AcceptedState::capture(&project).unwrap()).unwrap();
+
+        // Replace `work` with a fresh directory that has the same mode/uid/gid
+        // but a new inode, simulating an external `rm -rf work && mkdir work`.
+        fs::rename(project.join("work"), root.path().join("retired")).unwrap();
+        fs::create_dir(project.join("work")).unwrap();
+
+        let Err(Error::ProjectConflict(report)) = accepted.validate(&project, ["work/two".into()])
+        else {
+            panic!("expected a conflict when an ancestor directory is externally replaced");
+        };
+        assert_eq!(report.conflicts.len(), 1);
+        assert_eq!(report.conflicts[0].path, "work");
+        assert_eq!(report.conflicts[0].host_change, HostChangeKind::Modified);
+    }
+
+    #[test]
+    fn parent_inode_change_during_refresh_keeps_new_child_and_invalidates_old() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let index = root.path().join("accepted");
+        fs::create_dir_all(project.join("work")).unwrap();
+        fs::write(project.join("work/old"), "old").unwrap();
+        let mut accepted =
+            AcceptedIndex::create(&index, AcceptedState::capture(&project).unwrap()).unwrap();
+
+        fs::rename(project.join("work"), root.path().join("retired")).unwrap();
+        fs::create_dir(project.join("work")).unwrap();
+        fs::write(project.join("work/new"), "new").unwrap();
+        let addition = PublishChange {
+            path: "work/new".into(),
+            kind: ChangeKind::Added,
+            existed: false,
+            namespace_changed: true,
+        };
+        accepted.refresh(&project, &[addition]).unwrap();
+
+        assert!(accepted.entry("work/old").unwrap().is_none());
+        assert!(accepted.entry("work/new").unwrap().is_some());
+        accepted.validate(&project, ["work/new".into()]).unwrap();
+    }
+
+    #[test]
+    fn refresh_handles_unsorted_changes_and_unindexed_ancestors() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let index = root.path().join("accepted");
+        fs::create_dir(&project).unwrap();
+        let mut accepted =
+            AcceptedIndex::create(&index, AcceptedState::capture(&project).unwrap()).unwrap();
+
+        // Simulate a sibling creating `a/b` before this session publishes `a/b/c`,
+        // plus an unsorted pair `[d/file, d]` (as produced by reversed publog scans).
+        fs::create_dir_all(project.join("a/b")).unwrap();
+        fs::write(project.join("a/b/c"), "nested").unwrap();
+        fs::create_dir_all(project.join("d")).unwrap();
+        fs::write(project.join("d/file"), "out-of-order").unwrap();
+
+        let changes = vec![
+            PublishChange {
+                path: "a/b/c".into(),
+                kind: ChangeKind::Added,
+                existed: false,
+                namespace_changed: true,
+            },
+            PublishChange {
+                path: "d/file".into(),
+                kind: ChangeKind::Added,
+                existed: false,
+                namespace_changed: true,
+            },
+            PublishChange {
+                path: "d".into(),
+                kind: ChangeKind::Added,
+                existed: false,
+                namespace_changed: true,
+            },
+        ];
+        accepted.refresh(&project, &changes).unwrap();
+        accepted
+            .validate(&project, ["a/b/c".into(), "d/file".into()])
+            .unwrap();
     }
 
     #[test]
