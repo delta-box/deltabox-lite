@@ -249,20 +249,16 @@ fn run_exec(root: &Path, runtime: &Path, exec: &WorkerExec) -> Result<WorkerExec
         .spawn()
         .map_err(|error| Error::Backend(format!("exec spawn failed: {error}")))?;
     #[cfg(unix)]
-    ACTIVE_COMMAND_PGID.store(child.id() as i32, std::sync::atomic::Ordering::SeqCst);
-    let stdout = child.stdout.take().expect("stdout piped");
-    let stderr = child.stderr.take().expect("stderr piped");
-    let err_thread = std::thread::spawn(move || read_capped(stderr));
-    let (out_text, out_trunc) = read_capped(stdout);
-    let (err_text, err_trunc) = err_thread
-        .join()
-        .map_err(|_| Error::Backend("output thread join failed".into()))?;
-    let status = child
-        .wait()
-        .map_err(|error| Error::Backend(format!("exec wait failed: {error}")));
+    let pgid = child.id() as i32;
+    #[cfg(unix)]
+    ACTIVE_COMMAND_PGID.store(pgid, std::sync::atomic::Ordering::SeqCst);
+    let output = wait_with_output(&mut child, || {
+        #[cfg(unix)]
+        crate::cancel::kill_process_group(pgid);
+    });
     #[cfg(unix)]
     ACTIVE_COMMAND_PGID.store(0, std::sync::atomic::Ordering::SeqCst);
-    let status = status?;
+    let (status, (out_text, out_trunc), (err_text, err_trunc)) = output?;
     Ok(WorkerExecResult {
         exit_code: status.code(),
         stdout: out_text,
@@ -272,6 +268,193 @@ fn run_exec(root: &Path, runtime: &Path, exec: &WorkerExec) -> Result<WorkerExec
     })
 }
 
+pub(crate) type CapturedOutput = (std::process::ExitStatus, (String, bool), (String, bool));
+
+#[cfg(unix)]
+const POST_EXIT_DRAIN_CAP: std::time::Duration = std::time::Duration::from_millis(500);
+
+#[cfg(unix)]
+fn set_nonblocking(fd: std::os::unix::io::RawFd) -> std::io::Result<()> {
+    // SAFETY: fcntl(F_GETFL/F_SETFL) on a live pipe fd has no memory-safety preconditions.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn drain_pipe(
+    reader: &mut impl Read,
+    buf: &mut Vec<u8>,
+    truncated: &mut bool,
+    chunk: &mut [u8],
+) -> Result<bool> {
+    loop {
+        match reader.read(chunk) {
+            Ok(0) => return Ok(true),
+            Ok(size) => {
+                let keep = size.min(MAX_EXEC_OUTPUT_BYTES - buf.len());
+                buf.extend_from_slice(&chunk[..keep]);
+                *truncated |= keep < size;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+/// Wait for `child` to exit, terminate any lingering descendants via
+/// `cleanup_descendants`, and capture capped stdout/stderr.
+///
+/// Driving completion from the main process exit rather than pipe EOF ensures
+/// commands that launch background children (e.g. `sleep 30 & echo started`)
+/// do not hang the exec call or leave unmanaged processes modifying the
+/// sandbox. A short post-exit drain cap also bounds descendants that detached
+/// into a new session while still holding the inherited pipes open.
+#[cfg(unix)]
+pub(crate) fn wait_with_output(
+    child: &mut std::process::Child,
+    cleanup_descendants: impl FnOnce(),
+) -> Result<CapturedOutput> {
+    use std::os::unix::io::AsRawFd;
+    use std::time::Instant;
+
+    let mut stdout = child.stdout.take().expect("stdout piped");
+    let mut stderr = child.stderr.take().expect("stderr piped");
+    set_nonblocking(stdout.as_raw_fd())?;
+    set_nonblocking(stderr.as_raw_fd())?;
+
+    let mut pipes = [
+        libc::pollfd {
+            fd: stdout.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: stderr.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    let mut out_buf = Vec::with_capacity(64 * 1024);
+    let mut err_buf = Vec::with_capacity(64 * 1024);
+    let mut out_truncated = false;
+    let mut err_truncated = false;
+    let mut chunk = [0u8; 64 * 1024];
+
+    let mut cleanup = Some(cleanup_descendants);
+    let mut exit_status: Option<std::process::ExitStatus> = None;
+    let mut drain_deadline: Option<Instant> = None;
+
+    while pipes[0].fd != -1 || pipes[1].fd != -1 {
+        if exit_status.is_none() {
+            if let Some(status) = child.try_wait()? {
+                exit_status = Some(status);
+                if let Some(kill) = cleanup.take() {
+                    kill();
+                }
+                drain_deadline = Some(Instant::now() + POST_EXIT_DRAIN_CAP);
+            }
+        }
+
+        let timeout_ms = match drain_deadline {
+            Some(deadline) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    if pipes[0].fd != -1
+                        && !drain_pipe(&mut stdout, &mut out_buf, &mut out_truncated, &mut chunk)?
+                    {
+                        out_truncated = true;
+                    }
+                    if pipes[1].fd != -1
+                        && !drain_pipe(&mut stderr, &mut err_buf, &mut err_truncated, &mut chunk)?
+                    {
+                        err_truncated = true;
+                    }
+                    break;
+                }
+                remaining.as_millis().min(10) as libc::c_int
+            }
+            None => 10,
+        };
+
+        for pipe in &mut pipes {
+            pipe.revents = 0;
+        }
+        // SAFETY: `pipes` is a valid array of two `pollfd` entries.
+        let ready =
+            unsafe { libc::poll(pipes.as_mut_ptr(), pipes.len() as libc::nfds_t, timeout_ms) };
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error.into());
+        }
+        if ready == 0 {
+            continue;
+        }
+
+        if pipes[0].fd != -1 && pipes[0].revents != 0 {
+            if pipes[0].revents & libc::POLLNVAL != 0
+                || drain_pipe(&mut stdout, &mut out_buf, &mut out_truncated, &mut chunk)?
+            {
+                pipes[0].fd = -1;
+            }
+        }
+        if pipes[1].fd != -1 && pipes[1].revents != 0 {
+            if pipes[1].revents & libc::POLLNVAL != 0
+                || drain_pipe(&mut stderr, &mut err_buf, &mut err_truncated, &mut chunk)?
+            {
+                pipes[1].fd = -1;
+            }
+        }
+    }
+
+    let status = match exit_status {
+        Some(status) => status,
+        None => {
+            let status = child.wait()?;
+            if let Some(kill) = cleanup.take() {
+                kill();
+            }
+            status
+        }
+    };
+
+    Ok((
+        status,
+        (String::from_utf8_lossy(&out_buf).into_owned(), out_truncated),
+        (String::from_utf8_lossy(&err_buf).into_owned(), err_truncated),
+    ))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn wait_with_output(
+    child: &mut std::process::Child,
+    cleanup_descendants: impl FnOnce(),
+) -> Result<CapturedOutput> {
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+    let out = std::thread::spawn(move || read_capped(stdout));
+    let err = std::thread::spawn(move || read_capped(stderr));
+    let status = child.wait()?;
+    cleanup_descendants();
+    let stdout = out
+        .join()
+        .map_err(|_| Error::Backend("stdout reader failed".into()))?;
+    let stderr = err
+        .join()
+        .map_err(|_| Error::Backend("stderr reader failed".into()))?;
+    Ok((status, stdout, stderr))
+}
+
+#[cfg(any(not(unix), test))]
 pub(crate) fn read_capped(mut reader: impl Read) -> (String, bool) {
     let mut buf = Vec::with_capacity(64 * 1024);
     let mut chunk = [0u8; 64 * 1024];
@@ -412,6 +595,102 @@ mod tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    fn capture(command: &str) -> CapturedOutput {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", command])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0);
+        let mut child = cmd.spawn().unwrap();
+        let pgid = child.id() as i32;
+        wait_with_output(&mut child, || crate::cancel::kill_process_group(pgid)).unwrap()
+    }
+
+    #[cfg(unix)]
+    fn process_is_alive(pid: i32) -> bool {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat
+                .rsplit(')')
+                .next()
+                .and_then(|rest| rest.split_whitespace().next())
+                .is_some_and(|state| state != "Z"),
+            Err(_) => unsafe { libc::kill(pid, 0) == 0 },
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_eventually_dead(pid: i32) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while process_is_alive(pid) {
+            if std::time::Instant::now() >= deadline {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+                panic!("background descendant {pid} survived exec exit");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_capture_returns_promptly_for_foreground_command() {
+        let start = std::time::Instant::now();
+        let (status, out, err) = capture("printf hello; printf error >&2; exit 7");
+        assert_eq!(status.code(), Some(7));
+        assert_eq!(out, ("hello".into(), false));
+        assert_eq!(err, ("error".into(), false));
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_capture_terminates_background_descendants_holding_pipes() {
+        let start = std::time::Instant::now();
+        let (status, out, err) = capture("sleep 30 & echo $!; printf started >&2");
+        let pid: i32 = out.0.trim().parse().unwrap();
+        assert_eventually_dead(pid);
+        assert!(status.success());
+        assert_eq!(err, ("started".into(), false));
+        assert!(!out.1, "stdout should drain cleanly once descendant is killed");
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_capture_terminates_background_descendants_with_closed_pipes() {
+        let start = std::time::Instant::now();
+        let (status, out, err) = capture("sleep 30 >/dev/null 2>&1 & echo $!; printf started >&2");
+        let pid: i32 = out.0.trim().parse().unwrap();
+        assert_eventually_dead(pid);
+        assert!(status.success());
+        assert_eq!(err, ("started".into(), false));
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_capture_preserves_foreground_wait_for_background_jobs() {
+        let (status, out, err) = capture("(sleep 0.1; printf late) & wait; printf done");
+        assert!(status.success());
+        assert_eq!(out, ("latedone".into(), false));
+        assert_eq!(err, ("".into(), false));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_capture_drains_both_streams_beyond_output_cap() {
+        let (status, out, err) =
+            capture("head -c 9000000 /dev/zero & head -c 9000000 /dev/zero >&2; wait");
+        assert!(status.success());
+        assert_eq!(out.0.len(), MAX_EXEC_OUTPUT_BYTES);
+        assert_eq!(err.0.len(), MAX_EXEC_OUTPUT_BYTES);
+        assert!(out.1 && err.1);
     }
 
     #[test]

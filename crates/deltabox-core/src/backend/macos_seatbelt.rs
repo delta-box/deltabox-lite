@@ -9,7 +9,7 @@ use crate::protocol::{AbortResult, CommitResult, ExecRequest, ExecResult, Sessio
 use crate::snapshot::{
     build_scan_entries, clone_or_copy_file, diff_snapshots, preserve_symlink_times,
 };
-use crate::worker::{read_capped, scan_root, ScanEntry};
+use crate::worker::{scan_root, wait_with_output, ScanEntry};
 use base64::Engine;
 use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
@@ -528,21 +528,10 @@ impl SandboxBackend for SeatbeltBackend {
         // its children, not only the direct child.
         std::os::unix::process::CommandExt::process_group(&mut command, 0);
         let mut child = command.spawn()?;
-        let _cancel = {
-            let pgid = child.id() as i32;
-            crate::cancel::register(move || crate::cancel::kill_process_group(pgid))
-        };
-        let stdout = child.stdout.take().expect("stdout piped");
-        let stderr = child.stderr.take().expect("stderr piped");
-        let out_thread = std::thread::spawn(move || read_capped(stdout));
-        let err_thread = std::thread::spawn(move || read_capped(stderr));
-        let status = child.wait()?;
-        let (stdout, out_truncated) = out_thread
-            .join()
-            .map_err(|_| Error::Backend("stdout reader failed".into()))?;
-        let (stderr, err_truncated) = err_thread
-            .join()
-            .map_err(|_| Error::Backend("stderr reader failed".into()))?;
+        let pgid = child.id() as i32;
+        let _cancel = crate::cancel::register(move || crate::cancel::kill_process_group(pgid));
+        let (status, (stdout, out_truncated), (stderr, err_truncated)) =
+            wait_with_output(&mut child, || crate::cancel::kill_process_group(pgid))?;
         Ok(ExecResult {
             exit_code: status.code(),
             stdout,

@@ -6,7 +6,7 @@
 
 use crate::error::{Error, Result};
 use crate::protocol::{ExecRequest, ExecResult};
-use crate::worker::{read_capped, MAX_EXEC_OUTPUT_BYTES};
+use crate::worker::{wait_with_output, MAX_EXEC_OUTPUT_BYTES};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -404,34 +404,32 @@ pub fn exec(request: ExecRequest) -> Result<ExecResult> {
         .spawn()
         .map_err(|error| Error::Backend(format!("exec spawn failed: {error}")))?;
     #[cfg(unix)]
-    let _cancel = {
-        let pgid = child.id() as i32;
-        crate::cancel::register(move || crate::cancel::kill_process_group(pgid))
-    };
+    let pgid = child.id() as i32;
+    #[cfg(unix)]
+    let _cancel = crate::cancel::register(move || crate::cancel::kill_process_group(pgid));
     // Windows has no process groups; a job object plays the same role. If the
     // job cannot be created the command still runs, it just cannot be
     // cancelled as a tree.
     #[cfg(windows)]
-    let _cancel = job::Job::containing(&child)
-        .map(std::sync::Arc::new)
-        .map(|job| crate::cancel::register(move || job.terminate()));
-    let stdout = child.stdout.take().expect("stdout is piped");
-    let stderr = child.stderr.take().expect("stderr is piped");
-    let stdout_reader = thread::spawn(move || read_capped(stdout));
-    let stderr_reader = thread::spawn(move || read_capped(stderr));
+    let job = job::Job::containing(&child).map(std::sync::Arc::new);
+    #[cfg(windows)]
+    let _cancel = job.as_ref().map(|job| {
+        let job = std::sync::Arc::clone(job);
+        crate::cancel::register(move || job.terminate())
+    });
 
     // The command lives exactly as long as this call; there is no wall-clock
-    // limit here. Callers end it through their cancel scope.
-    let status = child
-        .wait()
-        .map_err(|error| Error::Backend(format!("exec wait failed: {error}")))?;
-
-    let (stdout, stdout_truncated) = stdout_reader
-        .join()
-        .map_err(|_| Error::Backend("stdout reader failed".into()))?;
-    let (stderr, stderr_truncated) = stderr_reader
-        .join()
-        .map_err(|_| Error::Backend("stderr reader failed".into()))?;
+    // limit here. Callers end it through their cancel scope, and any lingering
+    // descendants in the process group / job object are cleaned up on exit.
+    let (status, (stdout, stdout_truncated), (stderr, stderr_truncated)) =
+        wait_with_output(&mut child, || {
+            #[cfg(unix)]
+            crate::cancel::kill_process_group(pgid);
+            #[cfg(windows)]
+            if let Some(job) = &job {
+                job.terminate();
+            }
+        })?;
     Ok(ExecResult {
         exit_code: status.code(),
         stdout,
@@ -582,6 +580,34 @@ mod tests {
                 .and_then(|rest| rest.split_whitespace().next())
                 .is_some_and(|state| state != "Z"),
             Err(_) => unsafe { libc::kill(pid, 0) == 0 },
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exec_cleans_up_lingering_background_descendants_on_exit() {
+        let started = Instant::now();
+        let result = exec(ExecRequest {
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "sleep 30 & echo $!; printf started >&2".into(),
+            ],
+            cwd: None,
+            env: None,
+        })
+        .unwrap();
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(result.stderr, "started");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let child: i32 = result.stdout.trim().parse().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while process_is_alive(child) {
+            assert!(
+                Instant::now() < deadline,
+                "background child survived exec exit"
+            );
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 
