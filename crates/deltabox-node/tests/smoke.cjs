@@ -39,6 +39,8 @@ async function main() {
     assert.ok(session.mountpoint)
     assert.equal(await native.reviewStatus(session.session_id), null)
 
+    await assert.rejects(native.sync(session.session_id), /cbcow-private/)
+
     const baseline = await native.checkpoint(session.session_id, 'baseline')
     assert.equal(baseline.label, 'baseline')
 
