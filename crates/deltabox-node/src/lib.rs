@@ -8,6 +8,8 @@ use deltabox_core::protocol::{
     FilesystemMode, ReviewBeginParams, ReviewKind, SessionInfo, SessionStatus,
 };
 use napi::bindgen_prelude::*;
+use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use napi::JsFunction;
 use napi_derive::napi;
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
@@ -127,10 +129,216 @@ pub struct NativeSessionInfo {
     pub mountpoint: Option<String>,
 }
 
+#[derive(Clone)]
 #[napi(object)]
 pub struct NativeNetworkDenial {
     pub target: String,
     pub reason: String,
+}
+
+#[derive(Clone)]
+#[napi(object)]
+pub struct NativeExitResult {
+    #[napi(js_name = "exit_code")]
+    pub exit_code: Either<i32, Null>,
+    #[napi(js_name = "duration_ms")]
+    pub duration_ms: f64,
+    pub truncated: bool,
+    #[napi(js_name = "network_denials")]
+    pub network_denials: Vec<NativeNetworkDenial>,
+}
+
+#[napi(object)]
+pub struct NativeSpawnOptions {
+    pub argv: Vec<String>,
+    pub cwd: Option<String>,
+    pub environment: Option<Vec<NativeEnvironmentEntry>>,
+    pub label: Option<String>,
+    #[napi(js_name = "executionProfile")]
+    pub execution_profile: Option<String>,
+    #[napi(js_name = "networkAllow")]
+    pub network_allow: Option<Vec<String>>,
+    #[napi(js_name = "fsReadAllow")]
+    pub fs_read_allow: Option<Vec<String>>,
+    #[napi(js_name = "fsWriteAllow")]
+    pub fs_write_allow: Option<Vec<String>>,
+}
+
+type ChunkCallback = ThreadsafeFunction<Vec<u8>, ErrorStrategy::Fatal>;
+
+#[derive(Default)]
+struct StreamChannel {
+    callback: Option<ChunkCallback>,
+    pending: Vec<Vec<u8>>,
+    closed: bool,
+}
+
+impl StreamChannel {
+    fn push(&mut self, bytes: &[u8]) {
+        if self.closed || bytes.is_empty() {
+            return;
+        }
+        if let Some(callback) = &self.callback {
+            callback.call(bytes.to_vec(), ThreadsafeFunctionCallMode::Blocking);
+        } else {
+            self.pending.push(bytes.to_vec());
+        }
+    }
+
+    fn attach(&mut self, callback: ChunkCallback) {
+        if self.closed {
+            return;
+        }
+        for chunk in self.pending.drain(..) {
+            callback.call(chunk, ThreadsafeFunctionCallMode::Blocking);
+        }
+        self.callback = Some(callback);
+    }
+
+    fn close(&mut self) {
+        self.closed = true;
+        self.pending.clear();
+        self.callback = None;
+    }
+}
+
+#[derive(Default)]
+struct StreamDispatcher {
+    stdout: Mutex<StreamChannel>,
+    stderr: Mutex<StreamChannel>,
+}
+
+impl StreamDispatcher {
+    fn attach(&self, stream: deltabox_core::output::OutputStream, callback: ChunkCallback) {
+        let channel = match stream {
+            deltabox_core::output::OutputStream::Stdout => &self.stdout,
+            deltabox_core::output::OutputStream::Stderr => &self.stderr,
+        };
+        channel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .attach(callback);
+    }
+
+    fn close(&self) {
+        self.stdout
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .close();
+        self.stderr
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .close();
+    }
+}
+
+impl deltabox_core::output::OutputSink for StreamDispatcher {
+    fn write(&self, stream: deltabox_core::output::OutputStream, bytes: &[u8]) {
+        let channel = match stream {
+            deltabox_core::output::OutputStream::Stdout => &self.stdout,
+            deltabox_core::output::OutputStream::Stderr => &self.stderr,
+        };
+        channel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(bytes);
+    }
+}
+
+#[derive(Default)]
+struct WaitState {
+    result: Mutex<Option<std::result::Result<NativeExitResult, String>>>,
+    notify: tokio::sync::Notify,
+}
+
+impl WaitState {
+    fn finish(&self, outcome: std::result::Result<NativeExitResult, String>) {
+        *self.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
+        self.notify.notify_waiters();
+    }
+
+    async fn wait(&self) -> napi::Result<NativeExitResult> {
+        loop {
+            let notified = self.notify.notified();
+            if let Some(outcome) = self
+                .result
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+            {
+                return outcome.map_err(napi::Error::from_reason);
+            }
+            notified.await;
+        }
+    }
+}
+
+/// Handle to a command started with [`NativeDeltabox::spawn`].
+#[napi]
+pub struct NativeChildProcess {
+    cancel: deltabox_core::cancel::CancelHandle,
+    streams: Arc<StreamDispatcher>,
+    wait_state: Arc<WaitState>,
+}
+
+#[napi]
+impl NativeChildProcess {
+    /// Register a listener for stdout chunks. Chunks emitted before attachment
+    /// are buffered and delivered in order.
+    #[napi]
+    pub fn on_stdout(&self, env: Env, callback: JsFunction) -> napi::Result<()> {
+        let mut tsfn: ChunkCallback = callback.create_threadsafe_function(0, |ctx| {
+            ctx.env
+                .create_buffer_with_data(ctx.value)
+                .map(|buffer| vec![buffer.into_raw()])
+        })?;
+        let _ = tsfn.unref(&env);
+        self.streams
+            .attach(deltabox_core::output::OutputStream::Stdout, tsfn);
+        Ok(())
+    }
+
+    /// Register a listener for stderr chunks. Chunks emitted before attachment
+    /// are buffered and delivered in order.
+    #[napi]
+    pub fn on_stderr(&self, env: Env, callback: JsFunction) -> napi::Result<()> {
+        let mut tsfn: ChunkCallback = callback.create_threadsafe_function(0, |ctx| {
+            ctx.env
+                .create_buffer_with_data(ctx.value)
+                .map(|buffer| vec![buffer.into_raw()])
+        })?;
+        let _ = tsfn.unref(&env);
+        self.streams
+            .attach(deltabox_core::output::OutputStream::Stderr, tsfn);
+        Ok(())
+    }
+
+    /// Wait for the command to exit. Resolves once the main process exits and
+    /// sandbox accounting completes, returning exit status and metadata.
+    #[napi]
+    pub async fn wait(&self) -> napi::Result<NativeExitResult> {
+        let wait_state = Arc::clone(&self.wait_state);
+        wait_state.wait().await
+    }
+
+    /// Terminate this command's whole process tree. Safe to call before the
+    /// command starts or after it has exited.
+    #[napi]
+    pub fn kill(&self) {
+        self.cancel.cancel();
+    }
+
+    /// Stop delivering output callbacks and release native stream listeners.
+    #[napi]
+    pub fn close(&self) {
+        self.streams.close();
+    }
+}
+
+impl Drop for NativeChildProcess {
+    fn drop(&mut self) {
+        self.streams.close();
+    }
 }
 
 #[napi(object)]
@@ -463,6 +671,70 @@ impl NativeDeltabox {
     #[napi]
     pub fn cancel_exec(&self, exec_id: String) -> bool {
         self.executions.cancel(&exec_id)
+    }
+
+    /// Start a command and return a streaming process handle.
+    #[napi]
+    pub fn spawn(
+        &self,
+        session_id: String,
+        options: NativeSpawnOptions,
+    ) -> napi::Result<NativeChildProcess> {
+        let coordinator = Arc::clone(&self.coordinator);
+        let execution_profile = parse_execution_profile(options.execution_profile.as_deref())?;
+        let cancel = deltabox_core::cancel::CancelHandle::default();
+        let streams = Arc::new(StreamDispatcher::default());
+        let wait_state = Arc::new(WaitState::default());
+
+        let params = ExecParams {
+            session_id,
+            argv: options.argv,
+            cwd: options.cwd.map(PathBuf::from),
+            env: options.environment.map(|values| {
+                values
+                    .into_iter()
+                    .map(|entry| (entry.key, entry.value))
+                    .collect()
+            }),
+            label: options.label,
+            execution_profile,
+            network_allow: options.network_allow.unwrap_or_default(),
+            fs_read_allow: options
+                .fs_read_allow
+                .unwrap_or_default()
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
+            fs_write_allow: options
+                .fs_write_allow
+                .unwrap_or_default()
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
+        };
+
+        let task_cancel = cancel.clone();
+        let task_streams = Arc::clone(&streams);
+        let task_wait = Arc::clone(&wait_state);
+        napi::bindgen_prelude::spawn(async move {
+            let outcome = tokio::task::spawn_blocking(move || {
+                let _cancel_scope = deltabox_core::cancel::enter(&task_cancel);
+                let _output_scope = deltabox_core::output::enter(task_streams);
+                coordinator
+                    .exec(params)
+                    .map(exit_result)
+                    .map_err(|error| error.to_string())
+            })
+            .await
+            .unwrap_or_else(|error| Err(error.to_string()));
+            task_wait.finish(outcome);
+        });
+
+        Ok(NativeChildProcess {
+            cancel,
+            streams,
+            wait_state,
+        })
     }
 
     #[napi]
@@ -844,6 +1116,22 @@ fn exec_result(value: ExecResult) -> NativeExecResult {
         exit_code: nullable(value.exit_code),
         stdout: value.stdout,
         stderr: value.stderr,
+        duration_ms: value.duration_ms as f64,
+        truncated: value.truncated,
+        network_denials: value
+            .network_denials
+            .into_iter()
+            .map(|v| NativeNetworkDenial {
+                target: v.target,
+                reason: v.reason,
+            })
+            .collect(),
+    }
+}
+
+fn exit_result(value: ExecResult) -> NativeExitResult {
+    NativeExitResult {
+        exit_code: nullable(value.exit_code),
         duration_ms: value.duration_ms as f64,
         truncated: value.truncated,
         network_denials: value

@@ -245,6 +245,8 @@ impl SandboxBackend for SandlockBackend {
         if let Some(proxy) = proxy {
             result.network_denials = proxy.denials();
         }
+        crate::output::emit(crate::output::OutputStream::Stdout, result.stdout.as_bytes());
+        crate::output::emit(crate::output::OutputStream::Stderr, result.stderr.as_bytes());
         Ok(result)
     }
 

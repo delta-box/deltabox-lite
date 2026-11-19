@@ -360,8 +360,13 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
     let stderr = process
         .take_stderr()
         .ok_or_else(|| Error::Backend("missing MXC stderr".into()))?;
-    let out = std::thread::spawn(move || crate::worker::read_capped(stdout));
-    let err = std::thread::spawn(move || crate::worker::read_capped(stderr));
+    let sink = crate::output::current();
+    let out = crate::output::PipeReader::spawn(
+        stdout,
+        crate::output::OutputStream::Stdout,
+        sink.clone(),
+    );
+    let err = crate::output::PipeReader::spawn(stderr, crate::output::OutputStream::Stderr, sink);
     // Bind the command to this call. MXC's `kill` terminates the whole job
     // object, so a cancel reaches every descendant. `kill` needs `&mut`, so
     // poll for exit instead of blocking in `wait` while a cancel can arrive.
@@ -386,12 +391,8 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
     // `wait` owns descendant termination and teardown, so it always runs.
     let exit = process.wait();
     drop(registration);
-    let (stdout, out_cut) = out
-        .join()
-        .map_err(|_| Error::Backend("stdout reader failed".into()))?;
-    let (stderr, err_cut) = err
-        .join()
-        .map_err(|_| Error::Backend("stderr reader failed".into()))?;
+    let (stdout, out_cut) = out.finish(crate::output::POST_EXIT_DRAIN_TIMEOUT);
+    let (stderr, err_cut) = err.finish(crate::output::POST_EXIT_DRAIN_TIMEOUT);
     // The proxy outlives the command (it is dropped on return), so its denials are complete here.
     let network_denials = proxy
         .as_ref()

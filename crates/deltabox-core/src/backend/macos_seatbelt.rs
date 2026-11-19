@@ -9,7 +9,8 @@ use crate::protocol::{AbortResult, CommitResult, ExecRequest, ExecResult, Sessio
 use crate::snapshot::{
     build_scan_entries, clone_or_copy_file, diff_snapshots, preserve_symlink_times,
 };
-use crate::worker::{read_capped, scan_root, ScanEntry};
+use crate::output::{OutputStream, PipeReader, POST_EXIT_DRAIN_TIMEOUT};
+use crate::worker::{scan_root, ScanEntry};
 use base64::Engine;
 use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
@@ -528,21 +529,20 @@ impl SandboxBackend for SeatbeltBackend {
         // its children, not only the direct child.
         std::os::unix::process::CommandExt::process_group(&mut command, 0);
         let mut child = command.spawn()?;
-        let _cancel = {
-            let pgid = child.id() as i32;
-            crate::cancel::register(move || crate::cancel::kill_process_group(pgid))
-        };
+        let pgid = child.id() as i32;
+        let _cancel = crate::cancel::register(move || crate::cancel::kill_process_group(pgid));
+        let sink = crate::output::current();
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
-        let out_thread = std::thread::spawn(move || read_capped(stdout));
-        let err_thread = std::thread::spawn(move || read_capped(stderr));
+        let out_reader = PipeReader::spawn(stdout, OutputStream::Stdout, sink.clone());
+        let err_reader = PipeReader::spawn(stderr, OutputStream::Stderr, sink);
         let status = child.wait()?;
-        let (stdout, out_truncated) = out_thread
-            .join()
-            .map_err(|_| Error::Backend("stdout reader failed".into()))?;
-        let (stderr, err_truncated) = err_thread
-            .join()
-            .map_err(|_| Error::Backend("stderr reader failed".into()))?;
+        // Clean up any descendants still in the command's process group so a
+        // background child holding stdout/stderr cannot keep the call blocked
+        // or keep writing to the sandbox after the command has exited.
+        crate::cancel::kill_process_group(pgid);
+        let (stdout, out_truncated) = out_reader.finish(POST_EXIT_DRAIN_TIMEOUT);
+        let (stderr, err_truncated) = err_reader.finish(POST_EXIT_DRAIN_TIMEOUT);
         Ok(ExecResult {
             exit_code: status.code(),
             stdout,

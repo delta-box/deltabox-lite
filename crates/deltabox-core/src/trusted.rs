@@ -5,13 +5,15 @@
 //! over process isolation; the default coordinator mode remains sandboxed.
 
 use crate::error::{Error, Result};
+use crate::output::{OutputSink, PipeReader, POST_EXIT_DRAIN_TIMEOUT};
 use crate::protocol::{ExecRequest, ExecResult};
-use crate::worker::{read_capped, MAX_EXEC_OUTPUT_BYTES};
+use crate::worker::MAX_EXEC_OUTPUT_BYTES;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 use uuid::Uuid;
@@ -151,8 +153,17 @@ impl PersistentBash {
             .map_err(|error| Error::Backend(format!("persistent bash write failed: {error}")))?;
         self.ambient_environment = ambient_environment;
 
-        let mut stdout = MarkerCollector::status(stdout_prefix);
-        let mut stderr = MarkerCollector::exact(stderr_marker);
+        let sink = crate::output::current();
+        let mut stdout = MarkerCollector::status(
+            stdout_prefix,
+            crate::output::OutputStream::Stdout,
+            sink.clone(),
+        );
+        let mut stderr = MarkerCollector::exact(
+            stderr_marker,
+            crate::output::OutputStream::Stderr,
+            sink,
+        );
         while !stdout.done() || !stderr.done() {
             match self.output.recv() {
                 Ok(OutputChunk {
@@ -204,6 +215,8 @@ impl Drop for PersistentBash {
 struct MarkerCollector {
     marker: Vec<u8>,
     parse_status: bool,
+    stream: crate::output::OutputStream,
+    sink: Option<Arc<dyn OutputSink>>,
     scan: Vec<u8>,
     output: Vec<u8>,
     status: Option<i32>,
@@ -212,10 +225,16 @@ struct MarkerCollector {
 }
 
 impl MarkerCollector {
-    fn exact(marker: Vec<u8>) -> Self {
+    fn exact(
+        marker: Vec<u8>,
+        stream: crate::output::OutputStream,
+        sink: Option<Arc<dyn OutputSink>>,
+    ) -> Self {
         Self {
             marker,
             parse_status: false,
+            stream,
+            sink,
             scan: Vec::new(),
             output: Vec::new(),
             status: None,
@@ -224,10 +243,16 @@ impl MarkerCollector {
         }
     }
 
-    fn status(prefix: Vec<u8>) -> Self {
+    fn status(
+        prefix: Vec<u8>,
+        stream: crate::output::OutputStream,
+        sink: Option<Arc<dyn OutputSink>>,
+    ) -> Self {
         Self {
             marker: prefix,
             parse_status: true,
+            stream,
+            sink,
             scan: Vec::new(),
             output: Vec::new(),
             status: None,
@@ -287,6 +312,11 @@ impl MarkerCollector {
     }
 
     fn append_output(&mut self, bytes: &[u8]) {
+        if !bytes.is_empty() {
+            if let Some(sink) = &self.sink {
+                sink.write(self.stream, bytes);
+            }
+        }
         let room = MAX_EXEC_OUTPUT_BYTES.saturating_sub(self.output.len());
         self.output
             .extend_from_slice(&bytes[..bytes.len().min(room)]);
@@ -404,34 +434,41 @@ pub fn exec(request: ExecRequest) -> Result<ExecResult> {
         .spawn()
         .map_err(|error| Error::Backend(format!("exec spawn failed: {error}")))?;
     #[cfg(unix)]
-    let _cancel = {
-        let pgid = child.id() as i32;
-        crate::cancel::register(move || crate::cancel::kill_process_group(pgid))
-    };
+    let pgid = child.id() as i32;
+    #[cfg(unix)]
+    let _cancel = crate::cancel::register(move || crate::cancel::kill_process_group(pgid));
     // Windows has no process groups; a job object plays the same role. If the
     // job cannot be created the command still runs, it just cannot be
     // cancelled as a tree.
     #[cfg(windows)]
-    let _cancel = job::Job::containing(&child)
-        .map(std::sync::Arc::new)
-        .map(|job| crate::cancel::register(move || job.terminate()));
+    let job = job::Job::containing(&child).map(std::sync::Arc::new);
+    #[cfg(windows)]
+    let _cancel = job.as_ref().map(|job| {
+        let job = std::sync::Arc::clone(job);
+        crate::cancel::register(move || job.terminate())
+    });
+    let sink = crate::output::current();
     let stdout = child.stdout.take().expect("stdout is piped");
     let stderr = child.stderr.take().expect("stderr is piped");
-    let stdout_reader = thread::spawn(move || read_capped(stdout));
-    let stderr_reader = thread::spawn(move || read_capped(stderr));
+    let stdout_reader = PipeReader::spawn(stdout, crate::output::OutputStream::Stdout, sink.clone());
+    let stderr_reader = PipeReader::spawn(stderr, crate::output::OutputStream::Stderr, sink);
 
     // The command lives exactly as long as this call; there is no wall-clock
     // limit here. Callers end it through their cancel scope.
     let status = child
         .wait()
         .map_err(|error| Error::Backend(format!("exec wait failed: {error}")))?;
+    // Clean up any descendants still in the command's process group / job so a
+    // background child holding stdout/stderr cannot keep the call blocked.
+    #[cfg(unix)]
+    crate::cancel::kill_process_group(pgid);
+    #[cfg(windows)]
+    if let Some(job) = &job {
+        job.terminate();
+    }
 
-    let (stdout, stdout_truncated) = stdout_reader
-        .join()
-        .map_err(|_| Error::Backend("stdout reader failed".into()))?;
-    let (stderr, stderr_truncated) = stderr_reader
-        .join()
-        .map_err(|_| Error::Backend("stderr reader failed".into()))?;
+    let (stdout, stdout_truncated) = stdout_reader.finish(POST_EXIT_DRAIN_TIMEOUT);
+    let (stderr, stderr_truncated) = stderr_reader.finish(POST_EXIT_DRAIN_TIMEOUT);
     Ok(ExecResult {
         exit_code: status.code(),
         stdout,

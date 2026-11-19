@@ -6,7 +6,7 @@
 
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -249,20 +249,26 @@ fn run_exec(root: &Path, runtime: &Path, exec: &WorkerExec) -> Result<WorkerExec
         .spawn()
         .map_err(|error| Error::Backend(format!("exec spawn failed: {error}")))?;
     #[cfg(unix)]
-    ACTIVE_COMMAND_PGID.store(child.id() as i32, std::sync::atomic::Ordering::SeqCst);
+    let pgid = child.id() as i32;
+    #[cfg(unix)]
+    ACTIVE_COMMAND_PGID.store(pgid, std::sync::atomic::Ordering::SeqCst);
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
-    let err_thread = std::thread::spawn(move || read_capped(stderr));
-    let (out_text, out_trunc) = read_capped(stdout);
-    let (err_text, err_trunc) = err_thread
-        .join()
-        .map_err(|_| Error::Backend("output thread join failed".into()))?;
+    let out_reader =
+        crate::output::PipeReader::spawn(stdout, crate::output::OutputStream::Stdout, None);
+    let err_reader =
+        crate::output::PipeReader::spawn(stderr, crate::output::OutputStream::Stderr, None);
     let status = child
         .wait()
         .map_err(|error| Error::Backend(format!("exec wait failed: {error}")));
     #[cfg(unix)]
-    ACTIVE_COMMAND_PGID.store(0, std::sync::atomic::Ordering::SeqCst);
+    {
+        crate::cancel::kill_process_group(pgid);
+        ACTIVE_COMMAND_PGID.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
     let status = status?;
+    let (out_text, out_trunc) = out_reader.finish(crate::output::POST_EXIT_DRAIN_TIMEOUT);
+    let (err_text, err_trunc) = err_reader.finish(crate::output::POST_EXIT_DRAIN_TIMEOUT);
     Ok(WorkerExecResult {
         exit_code: status.code(),
         stdout: out_text,
@@ -272,7 +278,8 @@ fn run_exec(root: &Path, runtime: &Path, exec: &WorkerExec) -> Result<WorkerExec
     })
 }
 
-pub(crate) fn read_capped(mut reader: impl Read) -> (String, bool) {
+#[cfg(test)]
+pub(crate) fn read_capped(mut reader: impl std::io::Read) -> (String, bool) {
     let mut buf = Vec::with_capacity(64 * 1024);
     let mut chunk = [0u8; 64 * 1024];
     let mut truncated = false;
