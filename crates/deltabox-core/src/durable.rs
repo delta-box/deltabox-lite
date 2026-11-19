@@ -189,6 +189,7 @@ impl DurableSessionManager {
             project: meta.project,
             started_at_ms: meta.started_at_ms,
             status: meta.status,
+            orphaned: false,
             checkpoint_count: manifest.list().len(),
             pending_changes,
             filesystem: meta.filesystem,

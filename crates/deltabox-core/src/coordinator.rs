@@ -6,7 +6,7 @@ use crate::protocol::FilesystemInfo;
 use crate::protocol::{
     AbortParams, AbortResult, ActiveReview, CheckpointInfo, CheckpointParams, CommitParams,
     CommitResult, DiffParams, DiffResult, DurabilityMode, ExecParams, ExecResult, FilesystemMode,
-    FsReadResult, ReviewBeginParams, SessionInfo,
+    FsReadResult, ReviewBeginParams, SessionInfo, SessionStatus, SessionSummary,
 };
 #[cfg(not(windows))]
 use crate::session::SessionMeta;
@@ -51,7 +51,6 @@ pub struct CoordinatorOptions {
 }
 
 pub struct SessionCoordinator {
-    #[cfg(not(windows))]
     project: PathBuf,
     routes: RwLock<HashMap<String, FilesystemMode>>,
     attach_sessions: bool,
@@ -117,7 +116,6 @@ impl SessionCoordinator {
             },
         )?;
         Ok(Self {
-            #[cfg(not(windows))]
             project,
             routes: RwLock::new(HashMap::new()),
             attach_sessions,
@@ -266,26 +264,12 @@ impl SessionCoordinator {
     /// Running sessions of this project whose attached owner died. Each one
     /// can be passed to `adopt`.
     pub fn orphaned_sessions(&self) -> Result<Vec<String>> {
-        let mut orphans = Vec::new();
-        let root = self.sessions_root()?;
-        let Ok(entries) = std::fs::read_dir(&root) else {
-            return Ok(orphans);
-        };
-        for entry in entries.flatten() {
-            let store = entry.path();
-            let Some(id) = store.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if uuid::Uuid::parse_str(id).is_err() || !self.is_running(id).unwrap_or(false) {
-                continue;
-            }
-            if matches!(
-                crate::owner::probe(&store),
-                crate::owner::Ownership::Orphaned { .. }
-            ) {
-                orphans.push(id.to_string());
-            }
-        }
+        let mut orphans: Vec<String> = self
+            .list_sessions()?
+            .into_iter()
+            .filter(|s| s.orphaned)
+            .map(|s| s.session_id)
+            .collect();
         orphans.sort();
         Ok(orphans)
     }
@@ -301,6 +285,28 @@ impl SessionCoordinator {
         return Ok(self.windows_cbcow.sessions_root().to_path_buf());
         #[cfg(not(windows))]
         state_root(&self.project)
+    }
+
+    /// List persisted sessions for `project` without creating state directories,
+    /// recovering state, starting helpers, or scanning the working tree.
+    pub fn list_project_sessions(project: &Path) -> Result<Vec<SessionSummary>> {
+        let project = project.canonicalize()?;
+        if !project.is_dir() {
+            return Err(Error::Backend("project must be a directory".into()));
+        }
+        #[cfg(not(windows))]
+        let root = crate::state_layout::existing_state_root(&project)?;
+        #[cfg(windows)]
+        let root = crate::windows_cbcow::existing_sessions_root(&project)?;
+        match root {
+            Some(root) => read_sessions(&root, &project),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// List this coordinator's persisted sessions (including a custom `state_dir`).
+    pub fn list_sessions(&self) -> Result<Vec<SessionSummary>> {
+        read_sessions(&self.sessions_root()?, &self.project)
     }
 
     fn session_store(&self, session_id: &str) -> Result<PathBuf> {
@@ -324,7 +330,7 @@ impl SessionCoordinator {
     }
 
     pub fn status(&self, session_id: &str) -> Result<SessionInfo> {
-        match self.route(session_id)? {
+        let mut info = match self.route(session_id)? {
             Route::CopyPrivate(manager) => manager.status(session_id),
             #[cfg(target_os = "linux")]
             Route::Cbcow(manager) => manager.status(session_id),
@@ -332,7 +338,16 @@ impl SessionCoordinator {
             Route::MacosCbcow(manager) => manager.status(session_id),
             #[cfg(windows)]
             Route::WindowsCbcow(manager) => manager.status(session_id),
+        }?;
+        if info.status == SessionStatus::Running {
+            if let Ok(store) = self.session_store(session_id) {
+                info.orphaned = matches!(
+                    crate::owner::probe(&store),
+                    crate::owner::Ownership::Orphaned { .. }
+                );
+            }
         }
+        Ok(info)
     }
 
     pub fn stop(&self, session_id: &str) -> Result<SessionInfo> {
@@ -742,6 +757,78 @@ fn default_mode() -> FilesystemMode {
     FilesystemMode::CbcowThrough
 }
 
+fn read_sessions(root: &Path, project: &Path) -> Result<Vec<SessionSummary>> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut sessions = Vec::new();
+    for entry in entries.flatten() {
+        let store = entry.path();
+        let Some(id) = store.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if uuid::Uuid::parse_str(id).is_err() {
+            continue;
+        }
+        let Ok(raw) = std::fs::read(store.join("session.json")) else {
+            continue;
+        };
+        let Some(mut summary) = parse_summary(&raw) else {
+            continue;
+        };
+        if summary.session_id != id || summary.project != project {
+            continue;
+        }
+        if summary.status == SessionStatus::Running {
+            summary.orphaned = matches!(
+                crate::owner::probe(&store),
+                crate::owner::Ownership::Orphaned { .. }
+            );
+        }
+        sessions.push(summary);
+    }
+    sessions.sort_by(|a, b| {
+        a.started_at_ms
+            .cmp(&b.started_at_ms)
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+    Ok(sessions)
+}
+
+#[cfg(not(windows))]
+fn parse_summary(raw: &[u8]) -> Option<SessionSummary> {
+    let meta: SessionMeta = serde_json::from_slice(raw).ok()?;
+    Some(SessionSummary {
+        session_id: meta.session_id,
+        project: meta.project,
+        started_at_ms: meta.started_at_ms,
+        status: meta.status,
+        orphaned: false,
+        resolved_fs_mode: meta.filesystem.resolved_fs_mode,
+        durability: meta.filesystem.durability,
+    })
+}
+
+#[cfg(windows)]
+fn parse_summary(raw: &[u8]) -> Option<SessionSummary> {
+    let meta: crate::windows::engine::Manifest = serde_json::from_slice(raw).ok()?;
+    let durability = match meta.durability {
+        DurabilityMode::Fast => "process-crash",
+        DurabilityMode::Strict => "strict",
+    };
+    Some(SessionSummary {
+        session_id: meta.session_id,
+        project: meta.source,
+        started_at_ms: meta.started_at_ms,
+        status: meta.status,
+        orphaned: false,
+        resolved_fs_mode: meta.fs_mode,
+        durability: durability.into(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -784,6 +871,10 @@ mod tests {
             manifest["fs_mode"] = serde_json::to_value(mode).unwrap();
             fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
             let reopened = SessionCoordinator::new_with_options(&project, options.clone()).unwrap();
+            let sessions = reopened.list_sessions().unwrap();
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].session_id, started.session_id);
+            assert_eq!(sessions[0].resolved_fs_mode, mode);
             for _ in 0..2 {
                 let route = reopened.route(&started.session_id).unwrap();
                 if mode == FilesystemMode::CopyPrivate {

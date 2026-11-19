@@ -36,6 +36,29 @@ fn state_root_with_override(project: &Path, override_dir: Option<&OsStr>) -> Res
     }
 }
 
+/// Session-record root without creating missing directories, for read-only
+/// discovery (`session list`).
+pub(crate) fn existing_state_root(project: &Path) -> Result<Option<PathBuf>> {
+    match std::env::var_os("DELTABOX_STATE_DIR") {
+        Some(dir) => {
+            let path = PathBuf::from(dir);
+            if !path.exists() {
+                return Ok(None);
+            }
+            let base = path.canonicalize()?;
+            if base.starts_with(project) {
+                return Err(Error::Backend(format!(
+                    "state directory {} must live outside the project {}",
+                    base.display(),
+                    project.display()
+                )));
+            }
+            Ok(Some(base.join(PROJECTS_DIR).join(project_key(project))))
+        }
+        None => Ok(Some(project.join(".deltabox"))),
+    }
+}
+
 /// External base for engine state, keyed by session id at the top level.
 pub(crate) fn state_base() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("DELTABOX_STATE_DIR") {

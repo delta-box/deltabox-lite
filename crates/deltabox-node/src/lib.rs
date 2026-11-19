@@ -101,6 +101,7 @@ pub struct NativeSessionInfo {
     #[napi(js_name = "started_at_ms")]
     pub started_at_ms: f64,
     pub status: String,
+    pub orphaned: bool,
     #[napi(js_name = "checkpoint_count")]
     pub checkpoint_count: f64,
     #[napi(js_name = "pending_changes")]
@@ -809,6 +810,7 @@ fn session_info(value: SessionInfo, isolation: NativeIsolation) -> NativeSession
         project: value.project.to_string_lossy().into_owned(),
         started_at_ms: value.started_at_ms as f64,
         status: session_status(value.status),
+        orphaned: value.orphaned,
         checkpoint_count: value.checkpoint_count as f64,
         pending_changes: value.pending_changes as f64,
         requested_fs_mode: filesystem_mode(filesystem.requested_fs_mode),

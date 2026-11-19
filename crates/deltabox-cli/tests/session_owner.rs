@@ -285,3 +285,43 @@ fn clean_drop_of_an_attached_coordinator_orphans_its_sessions() {
     assert!(adopter.orphaned_sessions().unwrap().is_empty());
     assert!(matches!(adopter.adopt(&info.session_id), Err(Error::SessionStopped(_))));
 }
+
+#[test]
+fn cli_list_and_status_report_running_orphaned_and_stopped_sessions() {
+    let root = project();
+    let project_dir = root.path().join("project");
+    let cli = |args: &[&str]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_deltabox"));
+        cmd.current_dir(&project_dir).args(args);
+        #[cfg(windows)]
+        cmd.env("DELTABOX_STATE_DIR", root.path().join("state"))
+            .env("DELTABOX_RUNTIME_DIR", root.path().join("runtime"));
+        cmd.output().unwrap()
+    };
+    let json = |args: &[&str]| -> serde_json::Value {
+        let out = cli(args);
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+
+    assert_eq!(json(&["session", "list", "--json"]), serde_json::json!([]));
+    assert!(!project_dir.join(".deltabox").exists());
+    let s1 = coordinator(root.path(), false).start(None, Some(any_mode()), true).unwrap().session_id;
+    let owner = coordinator(root.path(), true);
+    let s2 = owner.start(None, Some(any_mode()), true).unwrap().session_id;
+    let adopter = coordinator(root.path(), true);
+    let _cleanup = Cleanup(&adopter, vec![s1.clone(), s2.clone()]);
+
+    assert_eq!(json(&["session", "status", &s2])["orphaned"], false);
+    drop(owner);
+    assert_eq!(json(&["session", "status", &s2])["orphaned"], true);
+
+    adopter.stop(&s1).unwrap();
+    assert_eq!(json(&["session", "list", "--json"]).as_array().unwrap().len(), 2);
+    assert_eq!(json(&["session", "list", "--status", "running", "--json"]), serde_json::json!([]));
+    assert_eq!(json(&["session", "list", "--status", "orphaned", "--json"])[0]["session_id"], s2);
+    assert_eq!(json(&["session", "list", "--status", "stopped", "--json"])[0]["session_id"], s1);
+
+    let table = String::from_utf8(cli(&["session", "list"]).stdout).unwrap();
+    assert!(table.contains(&s1) && table.contains("stopped") && table.contains(&s2) && table.contains("orphaned"));
+}
