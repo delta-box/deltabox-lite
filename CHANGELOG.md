@@ -9,6 +9,12 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+### Added
+
+- Repeatable `--network-allow HOST:PORT` on `deltabox exec` and `deltabox run`,
+  aligning CLI execution-scoped network grants with JSON-RPC, Node, and
+  `--fs-read-allow` / `--fs-write-allow`.
+
 ## [0.4.3] - 2026-11-18
 
 ### Added

@@ -175,7 +175,8 @@ restricts outbound traffic to an execution-scoped authenticated HTTP/CONNECT pro
 
 #### Dynamic approvals (API)
 
-A trusted orchestrator can grant temporary network access for a single command:
+A trusted orchestrator or CLI caller can grant temporary network access for a single command:
+- **CLI**: Pass repeatable `--network-allow HOST:PORT` on `deltabox exec` or `deltabox run`.
 - **JSON-RPC (`serve`)**: Pass `network_allow: ["example.com:443"]` in `session.exec`.
 - **Node.js binding**: Pass the optional `networkAllow` array to native `exec()`.
 

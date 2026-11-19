@@ -298,3 +298,91 @@ fn static_network_modes_are_enforced() {
 
     server.finish();
 }
+
+#[test]
+fn cli_rejects_invalid_and_excessive_network_grants_before_setup() {
+    for sub in ["exec", "run"] {
+        let work = tempfile::tempdir().unwrap();
+        let state = work.path().join("state");
+        let run_with = |grants: Vec<&str>| {
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_deltabox"));
+            cmd.current_dir(work.path()).env("DELTABOX_STATE_DIR", &state).arg(sub);
+            cmd.arg(if sub == "exec" { "unused" } else { "--abort" });
+            for g in grants {
+                cmd.args(["--network-allow", g]);
+            }
+            cmd.args(["--", "unused"]).output().unwrap()
+        };
+        for bad in ["*", "https://example.com", "example.com:0"] {
+            let out = run_with(vec![bad]);
+            assert_eq!(out.status.code(), Some(2));
+            assert!(String::from_utf8_lossy(&out.stderr).contains("host:port"));
+        }
+        let out = run_with(vec!["example.com:443"; 33]);
+        assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("at most 32"));
+        assert!(!state.exists());
+    }
+}
+
+#[test]
+#[cfg_attr(windows, ignore = "requires native MXC PSEC; run explicitly on a supported Windows host")]
+fn cli_exec_and_run_forward_network_allow() {
+    let origin = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    origin.set_nonblocking(true).unwrap();
+    let target = format!("127.0.0.1:{}", origin.local_addr().unwrap().port());
+    let url = format!("http://{target}/");
+
+    let root = tempfile::tempdir().unwrap();
+    let project = root.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let allow_policy = root.path().join("allow.toml");
+    let closed_policy = root.path().join("closed.toml");
+    std::fs::write(&allow_policy, format!("{}deny = [\"blocked.example:443\"]\n", policy_toml("allowlist", &[], true))).unwrap();
+    std::fs::write(&closed_policy, policy_toml("allowlist", &[], false)).unwrap();
+
+    let cli = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_deltabox"))
+            .current_dir(&project)
+            .env("DELTABOX_STATE_DIR", root.path().join("state"))
+            .env("DELTABOX_RUNTIME_DIR", root.path().join("runtime"))
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let curl_bin = curl();
+    let curl_tail = ["--", &curl_bin, "--silent", "--show-error", "--fail", "--max-time", "3", &url];
+
+    let start = cli(&["session", "start", ".", "--policy", allow_policy.to_str().unwrap(), "--fs-mode", "copy-private", "--require-fs-mode"]);
+    assert!(start.status.success(), "{}", String::from_utf8_lossy(&start.stderr));
+    let sid = String::from_utf8(start.stdout).unwrap().trim().to_owned();
+
+    let mut unapproved = vec!["exec", &sid];
+    unapproved.extend_from_slice(&curl_tail);
+    let denied: Value = serde_json::from_slice(&cli(&unapproved).stdout).unwrap();
+    assert_ne!(denied["exit_code"], 0);
+    assert!(origin.accept().is_err());
+
+    let t = serve_once(&origin);
+    let mut approved = vec!["exec", &sid, "--network-allow", &target];
+    approved.extend_from_slice(&curl_tail);
+    let ok: Value = serde_json::from_slice(&cli(&approved).stdout).unwrap();
+    t.join().unwrap();
+    assert_eq!(ok["exit_code"], 0, "{ok}");
+    assert_eq!(ok["stdout"], "ok");
+
+    let expired: Value = serde_json::from_slice(&cli(&unapproved).stdout).unwrap();
+    assert_ne!(expired["exit_code"], 0);
+    assert!(String::from_utf8_lossy(&cli(&["exec", &sid, "--network-allow", "BLOCKED.EXAMPLE:443", "--", &curl_bin]).stderr).contains("prohibited"));
+    assert!(cli(&["session", "stop", &sid]).status.success());
+
+    let t = serve_once(&origin);
+    let mut one_shot = vec!["run", "--abort", "--fs-mode", "copy-private", "--require-fs-mode", "--policy", allow_policy.to_str().unwrap(), "--network-allow", &target];
+    one_shot.extend_from_slice(&curl_tail);
+    let ran = cli(&one_shot);
+    t.join().unwrap();
+    assert!(ran.status.success() && ran.stdout == b"ok");
+
+    let closed_sid = String::from_utf8(cli(&["session", "start", ".", "--policy", closed_policy.to_str().unwrap(), "--fs-mode", "copy-private", "--require-fs-mode"]).stdout).unwrap().trim().to_owned();
+    assert!(String::from_utf8_lossy(&cli(&["exec", &closed_sid, "--network-allow", &target, "--", &curl_bin]).stderr).contains("disabled"));
+    assert!(cli(&["session", "stop", &closed_sid]).status.success());
+}

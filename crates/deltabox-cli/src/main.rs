@@ -186,6 +186,10 @@ struct ExecArgs {
     fs_write_allow: Vec<PathBuf>,
     #[arg(long)]
     env: Vec<String>,
+    /// Temporarily allow an exact host:port; repeat for multiple targets (max 32).
+    /// Requires an approval-enabled allowlist policy on the session.
+    #[arg(long, value_name = "HOST:PORT", value_parser = parse_network_target)]
+    network_allow: Vec<String>,
     #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
     command: Vec<String>,
 }
@@ -218,6 +222,9 @@ struct RunArgs {
     cwd: Option<PathBuf>,
     #[arg(long)]
     env: Vec<String>,
+    /// Temporarily allow an exact host:port; requires an approval-enabled policy.
+    #[arg(long, value_name = "HOST:PORT", value_parser = parse_network_target)]
+    network_allow: Vec<String>,
     #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
     command: Vec<String>,
 }
@@ -429,6 +436,7 @@ fn main() -> anyhow::Result<()> {
         Command::Exec(args) => {
             let _cancel = cancel_on_termination();
             validate_exec_command(&args.command)?;
+            validate_network_grant_count(&args.network_allow)?;
             let manager = SessionCoordinator::new(&args.project, None)?;
             let env = if args.env.is_empty() {
                 None
@@ -447,7 +455,7 @@ fn main() -> anyhow::Result<()> {
                 env,
                 label: args.label,
                 execution_profile: args.execution_profile.unwrap_or_default(),
-                network_allow: Vec::new(),
+                network_allow: args.network_allow,
                 fs_read_allow: args.fs_read_allow,
                 fs_write_allow: args.fs_write_allow,
             })?;
@@ -772,8 +780,18 @@ enum RunAction {
     Abort,
 }
 
+fn parse_network_target(value: &str) -> Result<String, String> {
+    deltabox_core::network::normalize_target(value).map_err(|error| error.to_string())
+}
+
+fn validate_network_grant_count(targets: &[String]) -> anyhow::Result<()> {
+    anyhow::ensure!(targets.len() <= 32, "at most 32 network targets per exec");
+    Ok(())
+}
+
 fn run_transaction(args: RunArgs) -> anyhow::Result<i32> {
     validate_exec_command(&args.command)?;
+    validate_network_grant_count(&args.network_allow)?;
     let action = if args.commit {
         Some(RunAction::Commit)
     } else if args.abort {
@@ -819,7 +837,7 @@ fn run_transaction(args: RunArgs) -> anyhow::Result<i32> {
             env,
             label: args.label,
             execution_profile: Default::default(),
-            network_allow: Vec::new(),
+            network_allow: args.network_allow,
             fs_read_allow: Vec::new(),
             fs_write_allow: Vec::new(),
         })?;
