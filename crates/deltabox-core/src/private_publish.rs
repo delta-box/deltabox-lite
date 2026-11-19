@@ -400,66 +400,58 @@ impl AcceptedIndex {
     }
 
     pub fn refresh(&mut self, project: &Path, changes: &[PublishChange]) -> Result<()> {
-        let mut ordered: Vec<&PublishChange> = changes.iter().collect();
-        ordered.sort_by_key(|change| (depth(&change.path), change.path.as_str()));
+        enum RefreshKind {
+            Ancestor,
+            Changed,
+        }
 
-        let change_paths: BTreeSet<&str> = ordered.iter().map(|c| c.path.as_str()).collect();
-        let mut ancestors = BTreeSet::new();
+        let mut ordered = BTreeMap::new();
         let mut root_touched = false;
         let mut root_namespace_changed = false;
-
-        for change in &ordered {
-            let mut cursor = Path::new(&change.path).parent();
-            let mut direct = true;
-            while let Some(parent) = cursor {
-                let parent_str = path_string(parent)?;
-                if parent_str.is_empty() {
-                    if direct {
-                        root_touched = true;
-                        if change.namespace_changed {
-                            root_namespace_changed = true;
-                        }
-                    }
+        for change in changes {
+            let path = Path::new(&change.path);
+            ordered.insert(
+                (depth(&change.path), change.path.clone()),
+                RefreshKind::Changed,
+            );
+            for parent in path.ancestors().skip(1) {
+                if parent.as_os_str().is_empty() {
                     break;
                 }
-                direct = false;
-                // Ancestors that are themselves in `changes` are replaced in
-                // Phase 2 before any descendant is captured.
-                if !change_paths.contains(parent_str.as_str()) {
-                    ancestors.insert((depth(&parent_str), parent_str));
-                }
-                cursor = parent.parent();
+                let parent = path_string(parent)?;
+                ordered
+                    .entry((depth(&parent), parent))
+                    .or_insert(RefreshKind::Ancestor);
+            }
+            if path.parent() == Some(Path::new("")) {
+                root_touched = true;
+                root_namespace_changed |= change.namespace_changed;
             }
         }
 
-        // Phase 1: Refresh or materialize ancestor directories top-down before
-        // capturing children, so every child binds to its parent's final
-        // generation and in-place metadata updates preserve untouched siblings.
-        for (_, ancestor) in ancestors {
-            let host = project.join(&ancestor);
-            self.refresh_parent_entry(&ancestor, fingerprint(&host, false)?)?;
-        }
-
-        // Phase 2: Apply path changes top-down so a newly added or replaced
-        // directory is indexed before any descendant change under it.
-        for change in &ordered {
+        // An implicit ancestor may itself be below an explicitly changed directory.
+        // Process both kinds in one depth order so each parent has its final generation.
+        for ((_, relative), kind) in ordered {
+            let path = project.join(&relative);
+            if matches!(kind, RefreshKind::Ancestor) {
+                self.refresh_parent_entry(&relative, fingerprint(&path, false)?)?;
+                continue;
+            }
             for paths in self.manifest.hardlinks.values_mut() {
                 paths.retain(|path| {
-                    path != &change.path
+                    path != &relative
                         && !path
-                            .strip_prefix(&change.path)
+                            .strip_prefix(&relative)
                             .is_some_and(|suffix| suffix.starts_with('/'))
                 });
             }
-            self.remove_subtree(&change.path)?;
-            let path = project.join(&change.path);
+            self.remove_subtree(&relative)?;
             if fs::symlink_metadata(&path).is_ok() {
                 self.capture_path(project, &path)?;
             }
         }
 
-        // Phase 3: Refresh the project root entry/stamp when direct children
-        // of the root changed (without rotating `root_generation`).
+        // The root keeps its generation when the membership of the project changes.
         if root_touched {
             let current = fingerprint(project, true)?
                 .ok_or_else(|| Error::Backend("project root is unavailable".into()))?;
@@ -1576,6 +1568,30 @@ mod tests {
         accepted
             .validate(&project, ["a/b/c".into(), "d/file".into()])
             .unwrap();
+    }
+
+    #[test]
+    fn changed_ancestor_with_an_unlisted_intermediate_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let index = tmp.path().join("accepted");
+        fs::create_dir(&project).unwrap();
+        let mut accepted =
+            AcceptedIndex::create(&index, AcceptedState::capture(&project).unwrap()).unwrap();
+
+        fs::create_dir_all(project.join("a/b")).unwrap();
+        fs::write(project.join("a/b/c"), "ok").unwrap();
+        let added = |path: &str| PublishChange {
+            path: path.into(),
+            kind: ChangeKind::Added,
+            existed: false,
+            namespace_changed: true,
+        };
+        accepted
+            .refresh(&project, &[added("a/b/c"), added("a")])
+            .unwrap();
+        let reopened = AcceptedIndex::open_with_durability(&index, false).unwrap();
+        reopened.validate(&project, ["a/b/c".into()]).unwrap();
     }
 
     #[test]
