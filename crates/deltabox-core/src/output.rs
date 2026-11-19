@@ -9,9 +9,10 @@ use crate::worker::MAX_EXEC_OUTPUT_BYTES;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long [`PipeReader::finish`] waits for EOF after the main process has
 /// exited and its process group has been cleaned up. Guards against a
@@ -94,6 +95,7 @@ impl PipeBuffer {
 pub(crate) struct PipeReader {
     done: Receiver<()>,
     buffer: Arc<Mutex<PipeBuffer>>,
+    active: Arc<AtomicBool>,
 }
 
 impl PipeReader {
@@ -104,6 +106,8 @@ impl PipeReader {
     ) -> Self {
         let buffer = Arc::new(Mutex::new(PipeBuffer::default()));
         let captured = Arc::clone(&buffer);
+        let active = Arc::new(AtomicBool::new(true));
+        let streaming = Arc::clone(&active);
         let (tx, done) = mpsc::channel();
         std::thread::spawn(move || {
             let mut chunk = [0u8; 64 * 1024];
@@ -111,6 +115,9 @@ impl PipeReader {
                 match reader.read(&mut chunk) {
                     Ok(0) => break,
                     Ok(n) => {
+                        if !streaming.load(Ordering::Acquire) {
+                            break;
+                        }
                         let slice = &chunk[..n];
                         if let Some(sink) = &sink {
                             sink.write(stream, slice);
@@ -125,17 +132,28 @@ impl PipeReader {
             }
             let _ = tx.send(());
         });
-        Self { done, buffer }
+        Self {
+            done,
+            buffer,
+            active,
+        }
     }
 
-    /// Wait up to `timeout` for EOF, then return whatever was captured so far.
+    /// Wait up to `timeout` for EOF, then stop forwarding and return whatever
+    /// was captured so far.
     pub(crate) fn finish(self, timeout: Duration) -> (String, bool) {
         let _ = self.done.recv_timeout(timeout);
+        self.active.store(false, Ordering::Release);
         let buf = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
         (
             String::from_utf8_lossy(&buf.bytes).into_owned(),
             buf.truncated,
         )
+    }
+
+    /// Wait until `deadline` for EOF, sharing one drain window across pipes.
+    pub(crate) fn finish_by(self, deadline: Instant) -> (String, bool) {
+        self.finish(deadline.saturating_duration_since(Instant::now()))
     }
 }
 

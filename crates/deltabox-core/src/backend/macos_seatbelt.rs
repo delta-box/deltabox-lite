@@ -537,12 +537,11 @@ impl SandboxBackend for SeatbeltBackend {
         let out_reader = PipeReader::spawn(stdout, OutputStream::Stdout, sink.clone());
         let err_reader = PipeReader::spawn(stderr, OutputStream::Stderr, sink);
         let status = child.wait()?;
-        // Clean up any descendants still in the command's process group so a
-        // background child holding stdout/stderr cannot keep the call blocked
-        // or keep writing to the sandbox after the command has exited.
-        crate::cancel::kill_process_group(pgid);
-        let (stdout, out_truncated) = out_reader.finish(POST_EXIT_DRAIN_TIMEOUT);
-        let (stderr, err_truncated) = err_reader.finish(POST_EXIT_DRAIN_TIMEOUT);
+        // Drain any buffered output briefly without hanging if a background
+        // descendant still holds stdout/stderr open.
+        let drain_deadline = Instant::now() + POST_EXIT_DRAIN_TIMEOUT;
+        let (stdout, out_truncated) = out_reader.finish_by(drain_deadline);
+        let (stderr, err_truncated) = err_reader.finish_by(drain_deadline);
         Ok(ExecResult {
             exit_code: status.code(),
             stdout,

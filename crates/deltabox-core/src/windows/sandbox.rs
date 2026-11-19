@@ -391,8 +391,9 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
     // `wait` owns descendant termination and teardown, so it always runs.
     let exit = process.wait();
     drop(registration);
-    let (stdout, out_cut) = out.finish(crate::output::POST_EXIT_DRAIN_TIMEOUT);
-    let (stderr, err_cut) = err.finish(crate::output::POST_EXIT_DRAIN_TIMEOUT);
+    let drain_deadline = std::time::Instant::now() + crate::output::POST_EXIT_DRAIN_TIMEOUT;
+    let (stdout, out_cut) = out.finish_by(drain_deadline);
+    let (stderr, err_cut) = err.finish_by(drain_deadline);
     // The proxy outlives the command (it is dropped on return), so its denials are complete here.
     let network_denials = proxy
         .as_ref()

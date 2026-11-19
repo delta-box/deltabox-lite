@@ -458,17 +458,11 @@ pub fn exec(request: ExecRequest) -> Result<ExecResult> {
     let status = child
         .wait()
         .map_err(|error| Error::Backend(format!("exec wait failed: {error}")))?;
-    // Clean up any descendants still in the command's process group / job so a
-    // background child holding stdout/stderr cannot keep the call blocked.
-    #[cfg(unix)]
-    crate::cancel::kill_process_group(pgid);
-    #[cfg(windows)]
-    if let Some(job) = &job {
-        job.terminate();
-    }
-
-    let (stdout, stdout_truncated) = stdout_reader.finish(POST_EXIT_DRAIN_TIMEOUT);
-    let (stderr, stderr_truncated) = stderr_reader.finish(POST_EXIT_DRAIN_TIMEOUT);
+    // Drain any buffered output briefly without hanging if a background
+    // descendant still holds stdout/stderr open.
+    let drain_deadline = Instant::now() + POST_EXIT_DRAIN_TIMEOUT;
+    let (stdout, stdout_truncated) = stdout_reader.finish_by(drain_deadline);
+    let (stderr, stderr_truncated) = stderr_reader.finish_by(drain_deadline);
     Ok(ExecResult {
         exit_code: status.code(),
         stdout,

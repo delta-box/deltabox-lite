@@ -327,13 +327,11 @@ fn run_exec(
         .wait()
         .map_err(|error| Error::Backend(format!("exec wait failed: {error}")));
     #[cfg(unix)]
-    {
-        crate::cancel::kill_process_group(pgid);
-        ACTIVE_COMMAND_PGID.store(0, std::sync::atomic::Ordering::SeqCst);
-    }
+    ACTIVE_COMMAND_PGID.store(0, std::sync::atomic::Ordering::SeqCst);
     let status = status?;
-    let (out_text, out_trunc) = out_reader.finish(crate::output::POST_EXIT_DRAIN_TIMEOUT);
-    let (err_text, err_trunc) = err_reader.finish(crate::output::POST_EXIT_DRAIN_TIMEOUT);
+    let drain_deadline = std::time::Instant::now() + crate::output::POST_EXIT_DRAIN_TIMEOUT;
+    let (out_text, out_trunc) = out_reader.finish_by(drain_deadline);
+    let (err_text, err_trunc) = err_reader.finish_by(drain_deadline);
     Ok(WorkerExecResult {
         exit_code: status.code(),
         stdout: out_text,
