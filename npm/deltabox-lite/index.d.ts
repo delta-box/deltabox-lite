@@ -55,8 +55,8 @@ export interface NativeExecResult {
   /**
    * Processes the command left running in its process group (for example
    * `cmd &`) that were stopped when its main process exited. A command owns
-   * everything it starts. Always 0 on Windows, where the job object is torn
-   * down without a count.
+   * everything it starts. The Windows sandbox (MXC) stops them too but
+   * cannot count them, and reports 0.
    */
   background_terminated: number
   /**
@@ -75,8 +75,8 @@ export interface NativeExitResult {
   /**
    * Processes the command left running in its process group (for example
    * `cmd &`) that were stopped when its main process exited. A command owns
-   * everything it starts. Always 0 on Windows, where the job object is torn
-   * down without a count.
+   * everything it starts. The Windows sandbox (MXC) stops them too but
+   * cannot count them, and reports 0.
    */
   background_terminated: number
   /**

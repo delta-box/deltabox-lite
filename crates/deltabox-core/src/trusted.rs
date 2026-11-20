@@ -463,16 +463,23 @@ pub fn exec(request: ExecRequest) -> Result<ExecResult> {
         .wait()
         .map_err(|error| Error::Backend(format!("exec wait failed: {error}")))?;
     // The command owns its process tree: stop what it left running, then
-    // collect output. On Windows, terminating the job does the same (without
-    // a count), so the pipes close before the drain starts.
+    // collect output. On Windows the job object holds the tree; its main
+    // process has exited, so whatever is still active in it is a leftover.
     #[cfg(unix)]
     let settled = crate::output::settle(Some(pgid), stdout_reader, stderr_reader);
     #[cfg(windows)]
-    if let Some(job) = &job {
-        job.terminate();
-    }
-    #[cfg(not(unix))]
-    let settled = crate::output::settle(None, stdout_reader, stderr_reader);
+    let settled = {
+        let survivors = job.as_ref().map_or(0, |job| {
+            let survivors = job.active_processes();
+            if survivors > 0 {
+                job.terminate();
+            }
+            survivors
+        });
+        let mut settled = crate::output::settle(None, stdout_reader, stderr_reader);
+        settled.background_terminated = survivors;
+        settled
+    };
     Ok(ExecResult {
         exit_code: status.code(),
         stdout: settled.stdout,
@@ -492,9 +499,10 @@ mod job {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
+        JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+        TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
     pub struct Job(HANDLE);
@@ -536,6 +544,26 @@ mod job {
             // SAFETY: `self.0` is a live job handle.
             unsafe {
                 TerminateJobObject(self.0, 1);
+            }
+        }
+
+        /// Processes still running in the job.
+        pub fn active_processes(&self) -> u32 {
+            // SAFETY: `self.0` is a live job handle and `info` is a correctly
+            // sized out-buffer for this information class.
+            unsafe {
+                let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = std::mem::zeroed();
+                if QueryInformationJobObject(
+                    self.0,
+                    JobObjectBasicAccountingInformation,
+                    &mut info as *mut _ as *mut core::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                    std::ptr::null_mut(),
+                ) == 0
+                {
+                    return 0;
+                }
+                info.ActiveProcesses
             }
         }
     }
@@ -707,6 +735,35 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// Windows counterpart of `background_children_are_stopped_when_the_command_exits`:
+    /// the job object holds the tree, so the leftover is counted and stopped.
+    #[cfg(windows)]
+    #[test]
+    fn background_children_are_stopped_when_the_command_exits_on_windows() {
+        let shell = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32")
+            .join("cmd.exe");
+        let started = Instant::now();
+        let result = exec(ExecRequest {
+            argv: vec![
+                shell.to_string_lossy().into_owned(),
+                "/c".into(),
+                "start /b ping -n 30 127.0.0.1 >nul & echo started".into(),
+            ],
+            cwd: None,
+            env: None,
+        })
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "waited on the background child: {result:?}"
+        );
+        assert_eq!(result.exit_code, Some(0), "{result:?}");
+        assert_eq!(result.stdout.trim(), "started", "{result:?}");
+        assert!(result.background_terminated >= 1, "{result:?}");
+        assert!(!result.output_detached, "{result:?}");
     }
 
     // macOS ships no `setsid` command.

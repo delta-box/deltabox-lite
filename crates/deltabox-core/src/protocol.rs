@@ -499,8 +499,8 @@ pub struct ExecResult {
     pub network_denials: Vec<NetworkDenial>,
     /// Processes the command left running in its process group (e.g. `cmd &`)
     /// that were stopped when its main process exited. A command owns
-    /// everything it starts; background jobs do not outlive it. Always 0 on
-    /// Windows, where the job object is torn down without a count.
+    /// everything it starts; background jobs do not outlive it. The Windows
+    /// sandbox (MXC) stops them too but cannot count them, and reports 0.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub background_terminated: u32,
     /// A descendant that escaped the process group (e.g. `setsid`) still held
