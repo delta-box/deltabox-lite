@@ -9,6 +9,8 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-11-20
+
 ### Added
 
 - Node clients can call `sync(sessionId)` to reconcile sibling publications in private sessions.
