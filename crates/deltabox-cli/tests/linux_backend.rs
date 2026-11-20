@@ -30,10 +30,13 @@ fn exec_direct(
     cwd: Option<PathBuf>,
     env: Option<Vec<(String, String)>>,
 ) -> ExecResult {
+    // Outside the project: Seatbelt's shadow mode copies the project into the
+    // store, which must not copy itself.
+    let store = tempfile::tempdir().unwrap();
     let spec = SessionSpec {
         project: project.to_path_buf(),
         host_project: None,
-        store_dir: project.join(".deltabox-test-store"),
+        store_dir: store.path().to_path_buf(),
         policy: deltabox_core::policy::Policy::default_agent(),
         resolved_deny_paths: None,
     };
