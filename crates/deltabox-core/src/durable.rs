@@ -1276,10 +1276,8 @@ fn clear_active_review(store: &Path) -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn make_direct_backend(worker_bin: Option<PathBuf>) -> Box<dyn SandboxBackend> {
-    Box::new(crate::backend::linux_sandlock::SandlockBackend::new_direct(
-        worker_bin,
-    ))
+fn make_direct_backend(_worker_bin: Option<PathBuf>) -> Box<dyn SandboxBackend> {
+    Box::new(crate::backend::linux_sandlock::SandlockBackend::new())
 }
 
 #[cfg(target_os = "macos")]

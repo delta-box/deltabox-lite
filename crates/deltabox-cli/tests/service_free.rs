@@ -1350,7 +1350,7 @@ fn direct_write_and_exec_storage_limits_are_enforced_atomically() {
 }
 
 #[test]
-fn optional_serve_recovers_after_worker_failure() {
+fn optional_serve_recovers_after_a_signalled_command() {
     let project = tempfile::tempdir().unwrap();
     let mut serve = Command::new(bin())
         .arg("serve")
@@ -1383,18 +1383,30 @@ fn optional_serve_recovers_after_worker_failure() {
             "method": "session.exec",
             "params": {
                 "session_id": sid,
-                "argv": ["sh", "-c", if cfg!(target_os = "linux") { "kill -KILL $PPID" } else { "kill -KILL $$" }],
+                "argv": ["sh", "-c", "kill -KILL $$"],
             },
         }));
-        if cfg!(target_os = "linux") {
-            assert!(
-                failed["error"].is_object(),
-                "worker failure was hidden: {failed}"
-            );
-        } else {
-            assert!(
-                failed["result"]["exit_code"].is_null(),
-                "signalled command was hidden: {failed}"
+        assert!(
+            failed["result"]["exit_code"].is_null(),
+            "signalled command was hidden: {failed}"
+        );
+
+        // Commands run as children of the caller. Landlock signal scoping
+        // (ABI 6 and later) keeps a command from signalling it; older kernels
+        // report that protection as degraded.
+        #[cfg(target_os = "linux")]
+        if deltabox_core::backend::linux_sandlock::landlock_abi() >= 6 {
+            let parent = rpc(serde_json::json!({
+                "id": 20,
+                "method": "session.exec",
+                "params": {
+                    "session_id": sid,
+                    "argv": ["sh", "-c", "kill -KILL $PPID"],
+                },
+            }));
+            assert_ne!(
+                parent["result"]["exit_code"], 0,
+                "a command signalled its caller: {parent}"
             );
         }
 

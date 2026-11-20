@@ -593,7 +593,13 @@ impl Manager {
                     cwd,
                     env: command_executor::capture_environment(env),
                 };
-                exec_sandboxed(&session_id, &spec, request, fence_record(&record))
+                crate::backend::run_once(
+                    crate::backend::macos_seatbelt::SeatbeltBackend::new_direct(),
+                    &session_id,
+                    &spec,
+                    request,
+                    fence_record(&record),
+                )
             }
         };
         let tracked = tracker.as_ref().map_or(Ok(()), |tracker| {
@@ -1726,36 +1732,6 @@ fn operation_lock(record: &Record) -> Result<command_executor::OperationLock> {
 /// Where a running command's process group is recorded for the fence.
 fn fence_record(record: &Record) -> PathBuf {
     record.state_root.join("command-group.json")
-}
-
-/// Run one sandboxed command in this process: build the Seatbelt profile and,
-/// if the policy needs one, a network proxy for this command only, spawn it
-/// under `sandbox-exec`, and tear both down when it ends.
-///
-/// The command is bound to the calling thread's cancel scope, so `kill()`,
-/// `cancelExec` and the CLI's signal handling end its process tree. If this
-/// process dies without cleaning up, the next operation lock fences it.
-fn exec_sandboxed(
-    session_id: &str,
-    spec: &SessionSpec,
-    request: ExecRequest,
-    fence: PathBuf,
-) -> Result<ExecResult> {
-    use crate::backend::SandboxBackend;
-    let mut backend = crate::backend::macos_seatbelt::SeatbeltBackend::new_direct();
-    backend.start_session(session_id, spec)?;
-    let result = {
-        let _fence = crate::fence::scope(fence);
-        backend.exec(session_id, request)
-    };
-    let stopped = backend.stop_session(session_id);
-    match (result, stopped) {
-        (Ok(result), Ok(())) => Ok(result),
-        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-        (Err(error), Err(cleanup)) => Err(Error::Backend(format!(
-            "{error}; sandbox cleanup failed: {cleanup}"
-        ))),
-    }
 }
 
 fn command_endpoint(record: &Record) -> CommandEndpoint {

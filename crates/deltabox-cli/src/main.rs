@@ -55,9 +55,6 @@ enum Command {
         #[command(subcommand)]
         cmd: ReviewCmd,
     },
-    /// Run the in-sandbox worker loop (spawned by the Linux backend).
-    #[command(hide = true)]
-    Worker(WorkerArgs),
     #[cfg(windows)]
     #[command(name = "__windows-fs-helper", hide = true)]
     WindowsFsHelper(WindowsFsHelperArgs),
@@ -68,10 +65,6 @@ enum Command {
     #[cfg(target_os = "macos")]
     #[command(hide = true)]
     MacosEvents(MacosEventsArgs),
-    /// Run a session-scoped persistent command executor.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[command(hide = true)]
-    CommandHelper(CommandHelperArgs),
     /// Serve the JSON-RPC protocol over stdio.
     Serve,
 }
@@ -308,30 +301,11 @@ struct AbortArgs {
     checkpoint: Option<String>,
 }
 
-#[derive(clap::Args)]
-struct WorkerArgs {
-    #[arg(long)]
-    root: PathBuf,
-    #[arg(long)]
-    runtime: PathBuf,
-}
-
 #[cfg(windows)]
 #[derive(clap::Args)]
 struct WindowsFsHelperArgs {
     #[arg(long)]
     state_dir: PathBuf,
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-#[derive(clap::Args)]
-struct CommandHelperArgs {
-    #[arg(long)]
-    socket: PathBuf,
-    #[arg(long)]
-    token_file: PathBuf,
-    #[arg(long)]
-    ready_file: PathBuf,
 }
 
 #[cfg(target_os = "macos")]
@@ -672,9 +646,6 @@ fn main() -> anyhow::Result<()> {
                 );
             }
         },
-        Command::Worker(args) => {
-            deltabox_core::worker::run_worker(&args.root, &args.runtime)?;
-        }
         #[cfg(windows)]
         Command::WindowsFsHelper(args) => {
             if let Err(error)=deltabox_core::windows::helper::run(&args.state_dir) {
@@ -710,17 +681,6 @@ fn main() -> anyhow::Result<()> {
                 args.since,
                 std::time::Duration::from_secs(30),
             )?;
-        }
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        Command::CommandHelper(args) => {
-            deltabox_core::command_executor::run(deltabox_core::command_executor::Config {
-                endpoint: deltabox_core::command_executor::Endpoint::new(
-                    args.socket,
-                    args.token_file,
-                    args.ready_file,
-                ),
-                worker_bin: std::env::current_exe()?,
-            })?;
         }
         Command::NetworkCapabilities => { println!("{{\"version\":1}}"); }
         Command::Serve => {

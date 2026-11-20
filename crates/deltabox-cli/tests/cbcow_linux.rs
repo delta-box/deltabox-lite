@@ -138,6 +138,70 @@ impl Drop for Session {
     }
 }
 
+/// The caller owns the command's sandbox. When the caller is SIGKILLed, the
+/// kernel's parent-death signal ends the command's main process, but its own
+/// children survive in its process group. The next operation that takes the
+/// session lock must stop them before doing anything else.
+#[test]
+fn the_next_operation_stops_a_command_left_by_a_killed_caller() {
+    if !available() {
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    let session = Session::start(project.path());
+    let record: Value = serde_json::from_slice(
+        &std::fs::read(
+            project
+                .path()
+                .join(".deltabox")
+                .join(&session.id)
+                .join("mount.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let engine = PathBuf::from(record["state_dir"].as_str().unwrap());
+    let fence = engine.parent().unwrap().join("command-group.json");
+
+    let mut caller = Command::new(env!("CARGO_BIN_EXE_deltabox"))
+        .args(["exec", &session.id, "--project"])
+        .arg(project.path())
+        .args(["--", "sh", "-c", "sleep 60 & sleep 60"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !fence.exists() {
+        assert!(Instant::now() < deadline, "the command never started");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let recorded: Value = serde_json::from_slice(&std::fs::read(&fence).unwrap()).unwrap();
+    let pgid = recorded["pgid"].as_i64().unwrap() as i32;
+    caller.kill().unwrap();
+    caller.wait().unwrap();
+    // SAFETY: signal 0 only checks that the group exists.
+    let alive = |pgid| unsafe { libc::killpg(pgid, 0) } == 0;
+    assert!(
+        alive(pgid),
+        "the command's children must outlive its SIGKILLed caller"
+    );
+
+    // Any operation that takes the session lock runs the fence first.
+    session.status();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while alive(pgid) {
+        assert!(
+            Instant::now() < deadline,
+            "the next operation did not stop the orphaned command"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!fence.exists());
+    let after = session.exec_shell("printf ok");
+    assert_ok(&after);
+}
+
 #[test]
 fn changes_and_history_cross_cli_processes() {
     if !available() {
@@ -1089,17 +1153,14 @@ fn read_write_profile_widens_host_access_but_keeps_protected_denies() {
 
     // The control plane is closed in both profiles: none of these paths may be
     // opened for writing or renamed away, because they are how the manager
-    // decides the session is alive. Appending is the meaningful probe for the
-    // three regular files; for the two sockets it fails whatever the sandbox
-    // does, so the rename is what carries the guarantee there.
+    // decides the session is alive and serializes commands against commit and
+    // abort. Appending is the meaningful probe for the regular files; for the
+    // socket it fails whatever the sandbox does, so the rename is what carries
+    // the guarantee there. Commands run in the caller, so there is no command
+    // helper socket or ready file any more; `command.lock` is the caller-held
+    // operation lock.
     let session_runtime = runtime.path().join("deltabox-lite").join(&session);
-    for name in [
-        "ready",
-        "control.sock",
-        "command.sock",
-        "command.ready",
-        "command.lock",
-    ] {
+    for name in ["ready", "control.sock", "command.lock"] {
         let target = session_runtime.join(name);
         let moved = session_runtime.join(format!("{name}.moved"));
         assert!(

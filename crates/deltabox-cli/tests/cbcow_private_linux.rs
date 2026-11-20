@@ -590,7 +590,7 @@ fn background_writes_wait_for_a_private_commit_and_stay_pending() {
     std::fs::write(project.path().join("base.txt"), "base").unwrap();
     let session = Session::start(project.path());
     let trigger = tempfile::tempdir().unwrap();
-    assert_exec_ok(&session.exec_shell(&background_writer(&trigger.path().join("go"))));
+    let _writer = late_writer(&session, &trigger.path().join("go"));
 
     let pause = tempfile::tempdir().unwrap();
     let commit = paused_commit(&session, pause.path());
@@ -630,7 +630,7 @@ fn a_killed_private_commit_releases_frozen_writers() {
     std::fs::write(project.path().join("base.txt"), "base").unwrap();
     let session = Session::start(project.path());
     let trigger = tempfile::tempdir().unwrap();
-    assert_exec_ok(&session.exec_shell(&background_writer(&trigger.path().join("go"))));
+    let _writer = late_writer(&session, &trigger.path().join("go"));
 
     let pause = tempfile::tempdir().unwrap();
     let mut commit = paused_commit(&session, pause.path());
@@ -658,7 +658,7 @@ fn recovery_rolls_back_a_crashed_commit_when_the_session_changed_since() {
     let session = Session::start(project.path());
     session.write("value.txt", "new");
     let trigger = tempfile::tempdir().unwrap();
-    assert_exec_ok(&session.exec_shell(&background_writer(&trigger.path().join("go"))));
+    let _writer = late_writer(&session, &trigger.path().join("go"));
 
     let crashed = session.command_with_env(
         ["commit", &session.id],
@@ -734,13 +734,39 @@ fn recovery_rolls_back_a_crashed_commit_without_a_frozen_checkpoint() {
     );
 }
 
-/// Shell script that writes published.txt now and, from a detached process
-/// that outlives the exec, late.txt once `trigger` exists.
-fn background_writer(trigger: &Path) -> String {
-    format!(
-        "printf published > published.txt; (setsid sh -c 'while [ ! -e {} ]; do sleep 0.01; done; printf late > late.txt' >/dev/null 2>&1 &)",
-        trigger.display()
+/// Write published.txt through a command now, and start a writer that writes
+/// late.txt into the session once `trigger` exists.
+///
+/// The late writer stands in for a process writing into the session while a
+/// commit holds the write gate. It runs on the host and writes through the
+/// session's FUSE mount, which is the same gate a command's writes go
+/// through. It cannot be a process the command leaves behind: commands run in
+/// a sandbox built for them alone, and once the command's main process exits
+/// that sandbox is gone and nothing it started can open files any more.
+fn late_writer(session: &Session, trigger: &Path) -> KillOnDrop {
+    assert_exec_ok(&session.exec_shell("printf published > published.txt"));
+    let mountpoint = PathBuf::from(session.mount_record()["mountpoint"].as_str().unwrap());
+    KillOnDrop(
+        Command::new("sh")
+            .args([
+                "-c",
+                "while [ ! -e \"$1\" ]; do sleep 0.01; done; printf late > \"$2/late.txt\"",
+                "late-writer",
+            ])
+            .arg(trigger)
+            .arg(&mountpoint)
+            .spawn()
+            .unwrap(),
     )
+}
+
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 /// Start a commit that pauses inside its write freeze, before reading the

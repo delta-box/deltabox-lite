@@ -546,19 +546,11 @@ impl Manager {
                 }
             }
             CommandExecutionMode::Sandboxed => {
-                let initial_record = self.load_record(&session_id)?;
-                let operation =
-                    command_executor::lock_operations(&command_endpoint(&initial_record)?)?;
+                // Held for the whole command: commit, abort and checkpoint
+                // wait until it has finished, in this process or any other.
+                let _operation = operation_lock(&self.load_record(&session_id)?)?;
                 let record = self.ensure_helper(&session_id)?;
                 let layout = session_layout(&record)?;
-                let endpoint = command_endpoint(&record)?;
-                if !endpoint.token_file.exists() {
-                    write_private(
-                        &endpoint.token_file,
-                        format!("{}{}\n", Uuid::new_v4(), Uuid::new_v4()).as_bytes(),
-                        record.durability == DurabilityMode::Strict,
-                    )?;
-                }
                 let mapper = PathMapper::new(&self.project, &record.mountpoint);
                 let mut policy = self.policy(&meta)?;
                 policy.apply_execution_profile(execution_profile);
@@ -609,18 +601,12 @@ impl Manager {
                     policy,
                     resolved_deny_paths: Some(deny_paths),
                 };
-                command_executor::ensure_running(
-                    &endpoint,
-                    &self.helper_bin,
-                    &layout.state_dir.join("command-helper.log"),
-                )?;
-                drop(operation);
-                command_executor::exec(
-                    &endpoint,
+                crate::backend::run_once(
+                    crate::backend::linux_sandlock::SandlockBackend::new(),
                     &session_id,
-                    record.helper_start_ticks,
-                    spec,
+                    &spec,
                     request,
+                    layout.state_dir.join(FENCE_RECORD),
                 )?
             }
         };
@@ -1166,7 +1152,6 @@ impl Manager {
             self.recover_publication(session_id, &record)?;
             return Ok(record);
         }
-        command_executor::reset(&command_endpoint(&record)?)?;
         self.stop_helper(&record);
         wait_helper_stopped(&record)?;
         detach_mount(&record.mountpoint)?;
@@ -1545,8 +1530,7 @@ impl Manager {
         if !self.store(session_id).join(SESSION_META).exists() {
             return Err(Error::SessionNotFound(session_id.into()));
         }
-        let record = self.load_record(session_id)?;
-        let operation = command_executor::lock_operations(&command_endpoint(&record)?)?;
+        let operation = operation_lock(&self.load_record(session_id)?)?;
         Ok(SessionOperationLock {
             _operation: operation,
             _session: session,
@@ -1670,6 +1654,21 @@ fn filesystem_info_inner(record: &MountRecord) -> FilesystemInfo {
         crate::protocol::FilesystemMode::CopyPrivate => unreachable!("CB-CoW mount record mode"),
     };
     info.with_durability(record.durability, record.group_commit_ms)
+}
+
+/// Where a running command's process group is recorded for the fence, inside
+/// the session state no command can reach.
+const FENCE_RECORD: &str = "command-group.json";
+
+/// Take the session's operation lock, then stop anything a caller that died
+/// while holding it left running (see `crate::fence`).
+///
+/// The lock file is the one the command helper used, so a helper still
+/// running from an older version and this process exclude each other.
+fn operation_lock(record: &MountRecord) -> Result<command_executor::OperationLock> {
+    let operation = command_executor::lock_operations(&command_endpoint(record)?)?;
+    crate::fence::reap(&session_layout(record)?.state_dir.join(FENCE_RECORD))?;
+    Ok(operation)
 }
 
 fn command_endpoint(record: &MountRecord) -> Result<CommandEndpoint> {
