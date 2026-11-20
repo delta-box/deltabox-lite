@@ -30,11 +30,14 @@ fn exec_direct(
     cwd: Option<PathBuf>,
     env: Option<Vec<(String, String)>>,
 ) -> ExecResult {
+    // Backends compare real paths; macOS temp dirs sit behind /var -> /private/var.
+    let project = std::fs::canonicalize(project).unwrap();
+    let cwd = cwd.map(|cwd| std::fs::canonicalize(cwd).unwrap());
     // Outside the project: Seatbelt's shadow mode copies the project into the
     // store, which must not copy itself.
     let store = tempfile::tempdir().unwrap();
     let spec = SessionSpec {
-        project: project.to_path_buf(),
+        project: project.clone(),
         host_project: None,
         store_dir: store.path().to_path_buf(),
         policy: deltabox_core::policy::Policy::default_agent(),
