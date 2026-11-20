@@ -1488,6 +1488,14 @@ fn assert_client_death_kills_the_command_tree(mode: &str, signal: libc::c_int, c
     unsafe { libc::kill(client.id() as i32, signal) };
     let _ = client.wait();
 
+    // A caught signal cancels the command before the client exits. SIGKILL
+    // cannot be caught: the kernel ends only the command's main process, and
+    // the next operation on the session stops the rest before it runs.
+    let result = if signal == libc::SIGKILL {
+        Some(exec(project.path(), &sid, "echo alive"))
+    } else {
+        None
+    };
     let deadline = Instant::now() + Duration::from_secs(20);
     while process_exists(&sleep) {
         assert!(
@@ -1497,7 +1505,7 @@ fn assert_client_death_kills_the_command_tree(mode: &str, signal: libc::c_int, c
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    let result = exec(project.path(), &sid, "echo alive");
+    let result = result.unwrap_or_else(|| exec(project.path(), &sid, "echo alive"));
     assert_eq!(result["exit_code"], 0, "[{mode} sig {signal}] {result}");
     assert!(result["stdout"].as_str().unwrap().contains("alive"), "{result}");
 
@@ -1512,9 +1520,9 @@ fn interrupting_the_exec_client_kills_the_running_command_tree() {
     assert_client_death_kills_the_command_tree("copy-private", libc::SIGTERM, 2);
 }
 
-/// SIGKILL cannot be handled, so only the kernel-side mechanisms apply: on
-/// Linux the worker's parent-death signal (in-process modes) and the helper's
-/// hangup detection (helper-routed modes).
+/// SIGKILL cannot be handled. The kernel's parent-death signal ends the
+/// command's main process, and the next session operation stops whatever it
+/// left in its process group (`crate::fence`) before running.
 #[cfg(target_os = "linux")]
 #[test]
 fn killing_the_exec_client_kills_the_running_command_tree() {

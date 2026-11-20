@@ -676,7 +676,13 @@ impl DurableSessionManager {
             };
             let mut backend = make_direct_backend(self.worker_bin.clone());
             backend.start_session(session_id, &spec)?;
-            let result = operation(backend.as_mut(), session_id);
+            let result = {
+                // Outside the candidate and its scratch, so no command can
+                // reach it.
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                let _fence = crate::fence::scope(store.join(FENCE_RECORD));
+                operation(backend.as_mut(), session_id)
+            };
             let stop = backend.stop_session(session_id);
             let value = result?;
             stop?;
@@ -1290,13 +1296,26 @@ fn make_direct_backend(_worker_bin: Option<PathBuf>) -> Box<dyn SandboxBackend> 
     Box::new(crate::backend::DefaultBackend)
 }
 
+/// Where a running command's process group is recorded for the fence.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const FENCE_RECORD: &str = "command-group.json";
+
 struct SessionLock {
     path: PathBuf,
     pid: u32,
 }
 
 impl SessionLock {
+    /// Take the session lock, then stop anything a caller that died while
+    /// holding it left running (see `crate::fence`).
     fn acquire(store: &Path) -> Result<Self> {
+        let lock = Self::acquire_unfenced(store)?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        crate::fence::reap(&store.join(FENCE_RECORD))?;
+        Ok(lock)
+    }
+
+    fn acquire_unfenced(store: &Path) -> Result<Self> {
         std::fs::create_dir_all(store)?;
         let path = store.join(LOCK_FILE);
         let pid = std::process::id();
