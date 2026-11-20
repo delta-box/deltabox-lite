@@ -19,6 +19,7 @@
   },
   "files": [
     "index.cjs",
+    "child.cjs",
     "index.d.ts",
     "bin/deltabox.js",
     "README.md"

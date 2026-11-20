@@ -511,6 +511,16 @@ pub struct ExecResult {
     /// Authenticated proxy denials only; direct OS-level denials have no destination event.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub network_denials: Vec<NetworkDenial>,
+    /// Processes the command left running in its process group (`cmd &`)
+    /// that were stopped when its main process exited, so they could not hold
+    /// its output open or outlive it. The Windows sandbox (MXC) stops them as
+    /// well but cannot count them, and reports 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub background_terminated: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

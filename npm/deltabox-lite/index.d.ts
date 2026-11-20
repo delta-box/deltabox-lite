@@ -1,5 +1,8 @@
 /// <reference types="node" />
 
+import { EventEmitter } from "node:events"
+import { Readable } from "node:stream"
+
 export interface NativeEnvironmentEntry {
   key: string
   value: string
@@ -53,6 +56,50 @@ export interface NativeExecResult {
   duration_ms: number
   truncated: boolean
   network_denials: Array<{ target: string; reason: string }>
+  /**
+   * Processes the command left running in its process group (for example
+   * `cmd &`) that were stopped when its main process exited, so they could
+   * not hold its output open or outlive it. The Windows sandbox stops them
+   * too but cannot count them, and reports 0.
+   */
+  background_terminated: number
+}
+
+/** Options for {@link NativeDeltaboxInstance.spawn}: `exec`'s arguments. */
+export interface NativeSpawnOptions {
+  argv: string[]
+  cwd?: string
+  environment?: NativeEnvironmentEntry[]
+  label?: string
+  executionProfile?: NativeExecutionProfile
+  networkAllow?: string[]
+  fsReadAllow?: string[]
+  fsWriteAllow?: string[]
+}
+
+/**
+ * The native handle of a spawned command. Use it through {@link spawn},
+ * which turns its pipes into Node streams.
+ */
+export interface NativeChild {
+  /** The process id, or null until the command has started. */
+  readonly pid: number | null
+  /**
+   * Take ownership of the stdout pipe's read end as a file descriptor (Unix).
+   * The caller must close it exactly once. Null once taken, and on Windows.
+   */
+  takeStdoutFd(): number | null
+  takeStderrFd(): number | null
+  /** Next stdout chunk, or null at EOF (Windows, where no fd is handed out). */
+  readStdout(): Promise<Buffer | null>
+  readStderr(): Promise<Buffer | null>
+  /**
+   * Resolves once the command has finished and the session recorded it. Its
+   * stdout/stderr fields are empty: the output went to the pipes.
+   */
+  wait(): Promise<NativeExecResult>
+  /** End the command's whole process tree. */
+  kill(): void
 }
 
 /**
@@ -177,6 +224,12 @@ export interface NativeDeltaboxInstance {
    * themselves into a new session or process group are not reached.
    */
   cancelExec(execId: string): boolean
+  /**
+   * Start a command and return its handle at once. It runs exactly as
+   * {@link exec} would, but its output goes to pipes read while it runs.
+   * Prefer the {@link spawn} wrapper.
+   */
+  spawn(sessionId: string, options: NativeSpawnOptions): NativeChild
   readFile(sessionId: string, path: string): Promise<Buffer>
   writeFile(sessionId: string, path: string, content: Buffer): Promise<void>
   recordFileChanges(sessionId: string, paths: string[]): Promise<void>
@@ -208,3 +261,55 @@ export interface DeltaboxNativeBinding {
 export function binaryPath(): string
 export function nativePath(): string
 export function loadNative(): DeltaboxNativeBinding
+
+/** Options for {@link spawn} and {@link exec}. */
+export interface CommandOptions {
+  argv: string[]
+  cwd?: string
+  env?: Record<string, string>
+  label?: string
+  executionProfile?: NativeExecutionProfile
+  networkAllow?: string[]
+  fsReadAllow?: string[]
+  fsWriteAllow?: string[]
+}
+
+/**
+ * A command running in a Deltabox session, shaped like Node's `ChildProcess`.
+ * Events: `exit` (code, signal) when the command has finished, `close`
+ * (code, signal) once it has finished and both streams have closed, and
+ * `error` if it failed to run.
+ */
+export declare class DeltaboxChildProcess extends EventEmitter {
+  readonly stdout: Readable
+  readonly stderr: Readable
+  readonly pid: number | undefined
+  exitCode: number | null
+  signalCode: null
+  killed: boolean
+  /**
+   * The result once the command has finished. Awaiting it drains any output
+   * stream nobody is reading, so the command cannot block on a full pipe.
+   */
+  readonly result: Promise<NativeExecResult>
+  /** End the command's whole process tree. */
+  kill(): boolean
+}
+
+/**
+ * Start a command and return a `ChildProcess`-style handle with real
+ * `stdout`/`stderr` streams (backpressure included). Read both streams, or
+ * await `result`, so the command never blocks on a full pipe.
+ */
+export function spawn(
+  deltabox: NativeDeltaboxInstance,
+  sessionId: string,
+  options: CommandOptions,
+): DeltaboxChildProcess
+
+/** Run a command to completion. `signal` kills its whole process tree. */
+export function exec(
+  deltabox: NativeDeltaboxInstance,
+  sessionId: string,
+  options: CommandOptions & { signal?: AbortSignal },
+): Promise<NativeExecResult>

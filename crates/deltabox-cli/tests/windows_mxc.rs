@@ -147,6 +147,24 @@ fn expect_read_denied(paths: &[String]) -> String {
     )
 }
 
+/// A command owns its process tree: a `start /b` child that inherits stderr
+/// neither holds the command open nor survives it. The MXC job teardown stops
+/// it; MXC reports no count (`background_terminated` stays 0). Same contract as
+/// `service_free.rs` on Linux and macOS.
+#[test]
+#[ignore = "requires native MXC PSEC and WinFsp for CB-CoW; run explicitly on a supported Windows host"]
+fn background_children_are_stopped_when_their_command_exits() {
+    let s = Session::start("copy-private", &[]);
+    let started = Instant::now();
+    let out = s.cmd("start /b ping -n 30 127.0.0.1 >nul & echo started");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(15), "exec waited for its background child: {result}");
+    assert_eq!(result["exit_code"], 0, "{result}");
+    assert_eq!(result["stdout"].as_str().unwrap().trim(), "started", "{result}");
+}
+
+
 // ---------------------------------------------------------------------------
 // copy-private: commands run in a plain private directory (no WinFsp)
 // ---------------------------------------------------------------------------
