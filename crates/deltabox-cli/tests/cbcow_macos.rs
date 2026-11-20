@@ -712,7 +712,11 @@ fn read_write_profiles_preserve_macos_tracking_and_protected_state() {
                     "protected {}: {result}",
                     path.display()
                 );
-                assert!(path.exists());
+                // The fence record is removed when the probing command ends;
+                // the probe's exit code already shows it was untouchable.
+                if path != &fence {
+                    assert!(path.exists());
+                }
             }
             assert_eq!(std::fs::read_to_string(&base).unwrap(), "accepted");
             assert!(!fence.exists(), "a finished command leaves no fence record");
