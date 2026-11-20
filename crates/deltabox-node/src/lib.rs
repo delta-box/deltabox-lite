@@ -196,6 +196,23 @@ pub struct NativeDiffResult {
 }
 
 #[napi(object)]
+pub struct NativeSyncConflict {
+    pub path: String,
+    #[napi(js_name = "host_kind")]
+    pub host_kind: String,
+    pub theirs: Option<String>,
+}
+
+#[napi(object)]
+pub struct NativeSyncResult {
+    #[napi(js_name = "folded_publications")]
+    pub folded_publications: f64,
+    #[napi(js_name = "stale_paths")]
+    pub stale_paths: Vec<String>,
+    pub conflicts: Vec<NativeSyncConflict>,
+}
+
+#[napi(object)]
 pub struct NativeCommitResult {
     #[napi(js_name = "checkpoint_id")]
     pub checkpoint_id: String,
@@ -631,6 +648,28 @@ impl NativeDeltabox {
                 .review_diff(&session_id)
                 .map(diff_result)
                 .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn sync(&self, session_id: String) -> napi::Result<NativeSyncResult> {
+        let coordinator = Arc::clone(&self.coordinator);
+        run_blocking(move || {
+            let result = coordinator.sync(&session_id).map_err(native_error)?;
+            Ok(NativeSyncResult {
+                folded_publications: result.folded_publications as f64,
+                stale_paths: result.stale_paths,
+                conflicts: result
+                    .conflicts
+                    .into_iter()
+                    .map(|conflict| NativeSyncConflict {
+                        path: conflict.path,
+                        host_kind: change_kind(conflict.host_kind),
+                        theirs: conflict.theirs,
+                    })
+                    .collect(),
+            })
         })
         .await
     }

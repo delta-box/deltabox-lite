@@ -96,6 +96,12 @@ export interface NativeDiffResult {
   changes: NativeChange[]
 }
 
+export interface NativeSyncResult {
+  folded_publications: number
+  stale_paths: string[]
+  conflicts: { path: string; host_kind: NativeChange['kind']; theirs?: string }[]
+}
+
 export interface NativeCommitResult {
   checkpoint_id: string
   applied: number
@@ -181,6 +187,7 @@ export interface NativeDeltaboxInstance {
   beginReview(sessionId: string, kind: 'task' | 'tool' | 'risky', label?: string): Promise<NativeActiveReview>
   reviewStatus(sessionId: string): Promise<NativeActiveReview | null>
   reviewDiff(sessionId: string): Promise<NativeDiffResult>
+  sync(sessionId: string): Promise<NativeSyncResult>
   reviewCommit(sessionId: string): Promise<NativeCommitResult>
   reviewAbort(sessionId: string): Promise<NativeAbortResult>
   reviewSkip(sessionId: string): Promise<NativeActiveReview>
