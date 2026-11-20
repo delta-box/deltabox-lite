@@ -1,0 +1,89 @@
+{
+  "env": {
+    "kernel": "7.0.0-34-generic",
+    "cpu": "Intel(R) Core(TM) Ultra 5 245K",
+    "cpus": 14,
+    "workdir": "target/bench-exp3",
+    "workdir_fs": "ext4",
+    "git": "ace4691-dirty",
+    "deltabox": "deltabox 0.4.2",
+    "python": "3.14.4"
+  },
+  "rounds": 100,
+  "warmups": 3,
+  "rates": [
+    0,
+    25,
+    50,
+    75,
+    100
+  ],
+  "commands": [
+    [
+      "read",
+      "ls -R"
+    ],
+    [
+      "read",
+      "cat src/f00.py"
+    ],
+    [
+      "read",
+      "grep -rn TODO src"
+    ],
+    [
+      "edit",
+      "dd if=/tmp/claude-1000/-home-liu-Documents-test-deltabox-lite/aacb81c0-9411-4c7f-b90b-66b57fc8116b/scratchpad/deltabox-exp3-payload-gg05isti/edit-4k of=src/f01.py bs=4096 count=1 seek=0 oflag=seek_bytes conv=notrunc status=none"
+    ],
+    [
+      "read",
+      "wc -l src/f1*.py"
+    ],
+    [
+      "read",
+      "find src assets -name '*.py'"
+    ],
+    [
+      "edit",
+      "dd if=/tmp/claude-1000/-home-liu-Documents-test-deltabox-lite/aacb81c0-9411-4c7f-b90b-66b57fc8116b/scratchpad/deltabox-exp3-payload-gg05isti/edit-4k of=assets/data.bin bs=4096 count=1 seek=16777216 oflag=seek_bytes conv=notrunc status=none"
+    ],
+    [
+      "read",
+      "head -c 65536 assets/data.bin | md5sum"
+    ],
+    [
+      "read",
+      "grep -l import src/*.py"
+    ],
+    [
+      "create",
+      "dd if=/tmp/claude-1000/-home-liu-Documents-test-deltabox-lite/aacb81c0-9411-4c7f-b90b-66b57fc8116b/scratchpad/deltabox-exp3-payload-gg05isti/edit-4k of=src/new_module.py bs=4096 count=1 status=none"
+    ],
+    [
+      "read",
+      "cat src/f10.py src/f11.py src/f12.py"
+    ],
+    [
+      "edit",
+      "dd if=/tmp/claude-1000/-home-liu-Documents-test-deltabox-lite/aacb81c0-9411-4c7f-b90b-66b57fc8116b/scratchpad/deltabox-exp3-payload-gg05isti/edit-4k of=src/f02.py bs=4096 count=1 seek=4096 oflag=seek_bytes conv=notrunc status=none"
+    ],
+    [
+      "read",
+      "tail -n 20 src/f20.py"
+    ],
+    [
+      "meta",
+      "mv src/f98.py src/f98_renamed.py"
+    ],
+    [
+      "edit",
+      "dd if=/tmp/claude-1000/-home-liu-Documents-test-deltabox-lite/aacb81c0-9411-4c7f-b90b-66b57fc8116b/scratchpad/deltabox-exp3-payload-gg05isti/edit-4k of=src/f03.py bs=4096 count=1 seek=0 oflag=seek_bytes conv=notrunc status=none"
+    ],
+    [
+      "read",
+      "sort src/f30.py | uniq | wc -l"
+    ]
+  ],
+  "started": "2026-11-15 22:41:00",
+  "finished": "2026-11-15 23:35:36"
+}

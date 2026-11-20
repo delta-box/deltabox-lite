@@ -1,0 +1,370 @@
+{
+ "instance_id": "astropy__astropy-14995",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "59ca7a9149370bd867f92bddea284a51575889fc3acec84124ee376a28debbc7",
+ "image": "swebench/sweb.eval.x86_64.astropy_1776_astropy-14995",
+ "image_digest": "sha256:6a204c3d4002b221144205ad13a0f414ea335170ae8327d3af2c5946b19b387d",
+ "resolved": true,
+ "pypi_as_of": 1771236317.490327,
+ "steps": 46,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 11,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 45,
+ "rc_recorded": 45,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 1,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": [
+    "astropy/_version.py",
+    "astropy/compiler_version.cpython-311-x86_64-linux-gnu.so",
+    "astropy/convolution/_convolve.cpython-311-x86_64-linux-gnu.so",
+    "astropy/cosmology/flrw/scalar_inv_efuncs.cpython-311-x86_64-linux-gnu.so",
+    "astropy/io/ascii/cparser.cpython-311-x86_64-linux-gnu.so",
+    "astropy/io/fits/_tiled_compression/_compression.cpython-311-x86_64-linux-gnu.so",
+    "astropy/io/fits/_utils.cpython-311-x86_64-linux-gnu.so",
+    "astropy/io/votable/tablewriter.cpython-311-x86_64-linux-gnu.so",
+    "astropy/stats/_fast_sigma_clip.cpython-311-x86_64-linux-gnu.so",
+    "astropy/stats/_stats.cpython-311-x86_64-linux-gnu.so",
+    "astropy/table/_column_mixins.cpython-311-x86_64-linux-gnu.so",
+    "astropy/table/_np_utils.cpython-311-x86_64-linux-gnu.so",
+    "astropy/time/_parse_times.cpython-311-x86_64-linux-gnu.so",
+    "astropy/timeseries/periodograms/bls/_impl.cpython-311-x86_64-linux-gnu.so",
+    "astropy/timeseries/periodograms/lombscargle/implementations/cython_impl.cpython-311-x86_64-linux-gnu.so",
+    "astropy/utils/_compiler.cpython-311-x86_64-linux-gnu.so",
+    "astropy/utils/xml/_iterparser.cpython-311-x86_64-linux-gnu.so",
+    "astropy/wcs/_wcs.cpython-311-x86_64-linux-gnu.so"
+   ]
+  },
+  {
+   "i": 14,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": [
+    "debug_issue.py"
+   ]
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": [
+    "test_fix.py"
+   ]
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": [
+    "astropy/nddata/mixins/ndarithmetic.py",
+    "fix_patch.py"
+   ]
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": [
+    "test_comprehensive.py"
+   ]
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": [
+    "test_other_handlers.py"
+   ]
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": [
+    "test_edge_cases.py"
+   ]
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 4,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": [
+    "test_pr_issue.py"
+   ]
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": [
+    "test_all_operations.py"
+   ]
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 12,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 13,
+   "last": 13,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 14,
+   "last": 18,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 19,
+   "last": 20,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 21,
+   "last": 21,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 22,
+   "last": 24,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 25,
+   "last": 25,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 26,
+   "last": 26,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 27,
+   "last": 40,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 41,
+   "last": 41,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 42,
+   "last": 43,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 44,
+   "last": 45,
+   "outcome": "none",
+   "id": 11
+  }
+ ],
+ "seconds": 312
+}

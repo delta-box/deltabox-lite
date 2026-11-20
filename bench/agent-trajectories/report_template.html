@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trajectory Replays</title>
+<style>
+:root {
+  --bg: #fbfaf8; --panel: #ffffff; --ink: #1f1e1c; --muted: #6b6862; --line: #e6e3de;
+  --commit-bg: #e9f5ec; --commit-ink: #1f6b36; --commit-bar: #2f9e55;
+  --abort-bg: #fdecea; --abort-ink: #a3261b; --abort-bar: #d0453a;
+  --discard-bg: #fff6f4; --bar: #9db4d6; --code: #f3f1ed; --warn: #a86500;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #171716; --panel: #1f1f1d; --ink: #ebe9e4; --muted: #a29f98; --line: #34332f;
+    --commit-bg: #173222; --commit-ink: #8fd9a8; --commit-bar: #3fb46a;
+    --abort-bg: #3b1d1a; --abort-ink: #f2a198; --abort-bar: #e2665b;
+    --discard-bg: #2a1d1b; --bar: #4f6b93; --code: #2a2926; --warn: #e3a64a;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1180px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 22px; margin: 0 0 4px; }
+h2 { font-size: 17px; margin: 0; }
+.sub { color: var(--muted); margin: 0 0 20px; }
+a { color: inherit; }
+code, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 16px; margin: 16px 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; color: var(--muted); font-size: 13px; }
+.sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 5px; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); font-weight: 600; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.scroll { overflow-x: auto; }
+.summary tr { cursor: pointer; }
+.summary td:first-child { white-space: nowrap; }
+.summary tbody tr:hover { background: var(--code); }
+.pill { display: inline-block; padding: 1px 7px; border-radius: 99px; font-size: 12px; font-weight: 600; }
+.pill.c { background: var(--commit-bg); color: var(--commit-ink); }
+.pill.a { background: var(--abort-bg); color: var(--abort-ink); }
+.pill.m { background: var(--code); color: var(--muted); }
+.strip { display: flex; flex-wrap: wrap; gap: 2px; margin: 10px 0 4px; }
+.strip span { width: 10px; height: 16px; border-radius: 2px; background: var(--commit-bar); cursor: pointer; }
+.strip span.empty { opacity: .35; }
+.strip span.a { background: var(--abort-bar); }
+.head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: baseline; }
+.facts { color: var(--muted); font-size: 13px; }
+.facts b { color: var(--ink); font-weight: 600; }
+.steps td { font-size: 13px; }
+.steps tr.exec td.cmd { max-width: 0; width: 60%; }
+.cmd .line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; cursor: pointer; }
+.cmd pre { margin: 6px 0 2px; padding: 8px; background: var(--code); border-radius: 6px; white-space: pre-wrap;
+  word-break: break-word; max-height: 360px; overflow: auto; }
+tr.discard td { background: var(--discard-bg); }
+tr.discard td.cmd .line { text-decoration: line-through; text-decoration-color: var(--abort-bar); }
+tr.commit td { background: var(--commit-bg); color: var(--commit-ink); font-weight: 600; border-left: 0; }
+tr.abort td { background: var(--abort-bg); color: var(--abort-ink); font-weight: 600; }
+tr.commit td:first-child { box-shadow: inset 4px 0 var(--commit-bar); }
+tr.abort td:first-child { box-shadow: inset 4px 0 var(--abort-bar); }
+tr.abort .detail { font-weight: 400; color: var(--ink); margin-top: 4px; }
+.kind { color: var(--muted); }
+.bar { display: inline-block; height: 8px; background: var(--bar); border-radius: 2px; vertical-align: middle; margin-left: 6px; }
+.bad { color: var(--warn); font-weight: 600; }
+.controls { display: flex; flex-wrap: wrap; gap: 16px; margin: 8px 0 0; }
+.controls label { cursor: pointer; user-select: none; }
+details > summary { cursor: pointer; color: var(--muted); margin-top: 8px; }
+.only-tx tr.exec { display: none; }
+.missing { color: var(--muted); }
+@media (max-width: 700px) {
+  .steps tr.exec td.cmd { width: auto; }
+  .hide-sm { display: none; }
+}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script>
+const D = /*DATA*/null;
+const B = D.meta.backends;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fms = ms => ms >= 1000 ? (ms / 1000).toFixed(2) + " s" : ms.toFixed(ms < 10 ? 1 : 0) + " ms";
+const sum = a => a.reduce((x, y) => x + y, 0);
+
+function stats(I) {
+  const r = I.rows, s = {};
+  for (const b of B) s[b] = {
+    cmd: sum(r.filter(x => x.op === "exec").map(x => x.ms[b])),
+    commit: sum(r.filter(x => x.op === "commit").map(x => x.ms[b])),
+    abort: sum(r.filter(x => x.op === "abort").map(x => x.ms[b])),
+  };
+  return {
+    steps: r.filter(x => x.op === "exec").length + sum(r.filter(x => x.op === "abort").map(x => x.replaces.length)),
+    commits: r.filter(x => x.op === "commit").length,
+    aborts: r.filter(x => x.op === "abort").length,
+    same: r.filter(x => x.op !== "exec" && x.same).length,
+    bounds: r.filter(x => x.op !== "exec").length,
+    rcok: r.filter(x => x.op === "exec" && x.rec !== "").every(x => B.every(b => x.rc[b] === x.rec)),
+    t: s,
+  };
+}
+
+function render() {
+  const done = D.inst.filter(i => !i.missing);
+  const S = Object.fromEntries(done.map(i => [i.id, stats(i)]));
+  const tot = b => ["cmd", "commit", "abort"].map(k => sum(done.map(i => S[i.id].t[b][k])));
+  let h = `<h1>Transactional agent trajectories: replay</h1>
+  <p class="sub">${esc(D.meta.agent)} · ${esc(D.meta.model)} · SWE-bench Verified run
+  <code>${esc(D.meta.run)}</code> · commit policy <code>${esc(D.meta.policy)}</code>.
+  Each agent command was replayed in its task image with two commit/abort backends:
+  <b>manual</b> (the agent's own commands; an abort is the agent's revert command) and
+  <b>git</b> (commit = <code>add -A</code> + <code>commit</code>, abort = <code>reset --hard</code> + <code>clean</code>).</p>`;
+
+  h += `<div class="card"><div class="head"><h2>Overview</h2>
+  <div class="legend"><span><span class="sw" style="background:var(--commit-bar)"></span>commit</span>
+  <span><span class="sw" style="background:var(--abort-bar)"></span>abort</span>
+  <span><span class="sw" style="background:var(--commit-bar);opacity:.35"></span>commit with no file changes</span></div></div>
+  <div class="scroll"><table class="summary"><thead><tr><th>instance</th><th class="n">steps</th>
+  <th class="n">commits</th><th class="n">aborts</th>
+  ${B.map(b => `<th class="n">commands (${b})</th>`).join("")}
+  <th class="n">git commits</th><th class="n">git aborts</th><th class="n">git overhead</th>
+  <th class="n hide-sm">checks</th><th>transactions</th></tr></thead><tbody>`;
+  for (const I of D.inst) {
+    if (I.missing) { h += `<tr><td>${esc(I.id)}</td><td colspan="11" class="missing">not replayed (image did not fit on disk)</td></tr>`; continue; }
+    const s = S[I.id], g = s.t.git;
+    h += `<tr onclick="location.hash='${I.id}'"><td><a href="#${I.id}">${esc(I.id)}</a></td>
+    <td class="n">${s.steps}</td><td class="n">${s.commits}</td><td class="n">${s.aborts}</td>
+    ${B.map(b => `<td class="n">${fms(s.t[b].cmd)}</td>`).join("")}
+    <td class="n">${fms(g.commit)}</td><td class="n">${fms(g.abort)}</td>
+    <td class="n">${(100 * (g.commit + g.abort) / g.cmd).toFixed(1)}%</td>
+    <td class="n hide-sm">${s.rcok ? "✓" : '<span class="bad">rc</span>'} ${s.same === s.bounds ? "✓" : `<span class="bad">${s.same}/${s.bounds}</span>`}</td>
+    <td>${strip(I)}</td></tr>`;
+  }
+  const tg = tot("git"), tm = tot("manual");
+  h += `</tbody><tfoot><tr><th>total</th>
+  <th class="n">${sum(done.map(i => S[i.id].steps))}</th><th class="n">${sum(done.map(i => S[i.id].commits))}</th>
+  <th class="n">${sum(done.map(i => S[i.id].aborts))}</th>
+  ${B.map(b => `<th class="n">${fms(tot(b)[0])}</th>`).join("")}
+  <th class="n">${fms(tg[1])}</th><th class="n">${fms(tg[2])}</th>
+  <th class="n">${(100 * (tg[1] + tg[2]) / tg[0]).toFixed(1)}%</th><th class="hide-sm"></th><th></th></tr></tfoot></table></div>
+  <p class="facts">Checks: ✓ ✓ = every exit code matches the recording, and after every commit/abort
+  the two backends leave the same <code>/testbed</code>. Click a row or a square to jump to it.</p></div>`;
+
+  if (D.compare.length > 1) {
+    const desc = {per_eval: "commit after every test/script run, even if nothing changed",
+                  per_write: "commit after a test/script run only if a file changed",
+                  minimal: "commit only where an abort needs a checkpoint"};
+    h += `<div class="card"><h2>Commit policies compared (git backend, same ${D.compare[0].insts.length} trajectories)</h2>
+    <div class="scroll"><table><thead><tr><th>policy</th><th>rule</th><th class="n">commits</th><th class="n">commit total</th>
+    <th class="n">per commit</th><th class="n">aborts</th><th class="n">abort total</th><th class="n">overhead</th></tr></thead><tbody>
+    ${D.compare.map(c => `<tr${c.policy === D.meta.policy ? ' style="font-weight:600"' : ""}><td><code>${c.policy}</code></td><td>${desc[c.policy] || ""}</td>
+    <td class="n">${c.commits}</td><td class="n">${fms(c.commit_ms)}</td><td class="n">${fms(c.commit_ms / c.commits)}</td>
+    <td class="n">${c.aborts}</td><td class="n">${fms(c.abort_ms)}</td>
+    <td class="n">${(100 * (c.commit_ms + c.abort_ms) / c.cmd_ms).toFixed(1)}%</td></tr>`).join("")}
+    </tbody></table></div><p class="facts">Overhead = git's commit + abort time ÷ the agent's command time in the same run.
+    The agent's commands are identical under every policy; only where the commits go changes.</p></div>`;
+  }
+  for (const I of done) h += section(I, S[I.id]);
+  document.getElementById("app").innerHTML = h;
+  if (location.hash) document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView();
+}
+
+function strip(I) {
+  const txs = I.rows.filter(r => r.op !== "exec");
+  return `<div class="strip">${txs.map(r => {
+    const writes = I.rows.some(x => x.op === "exec" && x.tx === r.tx && x.kind !== "read" && x.kind !== "eval");
+    const cls = r.op === "abort" ? "a" : writes ? "" : "empty";
+    return `<span class="${cls}" title="tx ${r.tx}: ${r.op}" onclick="event.stopPropagation();location.hash='${I.id}-tx${r.tx}'"></span>`;
+  }).join("")}</div>`;
+}
+
+function section(I, s) {
+  const max = Math.max(...I.rows.filter(r => r.op === "exec").map(r => Math.max(...B.map(b => r.ms[b]))));
+  const aborted = new Set();
+  for (const r of I.rows) if (r.op === "abort") aborted.add(r.tx);
+  let h = `<div class="card" id="${I.id}"><div class="head"><h2>${esc(I.id)}</h2>
+  <span class="facts"><span class="pill ${I.resolved ? "c" : "m"}">${I.resolved ? "resolved" : "unresolved"}</span>
+  · <a href="${esc(I.url)}">raw trajectory</a></span></div>
+  <p class="facts">${esc(I.why)} · <b>${s.steps}</b> steps · <b>${s.commits}</b> commits · <b>${s.aborts}</b> aborts ·
+  commands ${B.map(b => `${b} <b>${fms(s.t[b].cmd)}</b>`).join(", ")} ·
+  git commit/abort <b>${fms(s.t.git.commit + s.t.git.abort)}</b></p>
+  ${strip(I)}
+  <div class="controls"><label><input type="checkbox" onchange="this.closest('.card').querySelector('table').classList.toggle('only-tx', this.checked)"> show only commit / abort lines</label></div>
+  <div class="scroll"><table class="steps"><thead><tr><th class="n">step</th><th>kind</th><th>command</th>
+  <th class="n">exit</th>${B.map(b => `<th class="n">${b}</th>`).join("")}</tr></thead><tbody>`;
+  for (const r of I.rows) {
+    if (r.op === "exec") {
+      const first = r.cmd.split("\n").find(l => l.trim()) || "";
+      const rcs = B.map(b => r.rc[b]);
+      const rcBad = r.rec !== "" && rcs.some(x => x !== r.rec);
+      h += `<tr class="exec${aborted.has(r.tx) ? " discard" : ""}"><td class="n mono">${r.step}</td>
+      <td class="kind">${esc(r.kind)}</td>
+      <td class="cmd"><span class="line mono" onclick="tog(this)" title="click to show the full command">${esc(first)}</span><pre hidden>${esc(r.cmd)}</pre></td>
+      <td class="n mono${rcBad ? " bad" : ""}" title="recorded: ${esc(r.rec)}">${esc(rcs[0])}${rcBad ? " ≠ " + esc(r.rec) : ""}</td>
+      ${B.map(b => `<td class="n mono">${fms(r.ms[b])}${b === B[B.length - 1] ? `<span class="bar" style="width:${Math.max(1, 60 * r.ms[b] / max)}px"></span>` : ""}</td>`).join("")}</tr>`;
+    } else if (r.op === "commit") {
+      h += `<tr class="commit" id="${I.id}-tx${r.tx}"><td class="n mono">tx ${r.tx}</td><td>COMMIT</td>
+      <td>keep the changes${r.same ? "" : ' <span class="bad">workspaces differ</span>'}</td><td></td>
+      ${B.map(b => `<td class="n mono">${b === "manual" ? "–" : fms(r.ms[b])}</td>`).join("")}</tr>`;
+    } else {
+      h += `<tr class="abort" id="${I.id}-tx${r.tx}"><td class="n mono">tx ${r.tx}</td><td>ABORT</td>
+      <td>roll back steps ${r.span[0]}–${r.span[1]}${r.same ? " · same workspace as the agent's undo" : ' <span class="bad">workspaces differ</span>'}
+      <div class="detail">replaces the agent's own revert: ${r.replaces.map(x => `step ${x.step} <code>${esc(x.cmd.split("\n")[0])}</code>`).join(", ")}
+      <br>files: ${r.files.map(f => `<code>${esc(f)}</code>`).join(", ")}</div></td><td></td>
+      ${B.map(b => `<td class="n mono" title="${b === "manual" ? "the agent's revert command" : "rollback"}">${fms(r.ms[b])}</td>`).join("")}</tr>`;
+    }
+  }
+  h += `</tbody></table></div>`;
+  const rej = I.events.filter(e => !e.accepted);
+  if (rej.length) h += `<details><summary>${rej.length} revert(s) by the agent that are not aborts</summary><ul>${
+    rej.map(e => `<li>step ${e.step}${e.files_reverted.length ? ` (${e.files_reverted.map(esc).join(", ")})` : ""}: ${esc(e.reason)}</li>`).join("")}</ul></details>`;
+  return h + `</div>`;
+}
+
+function tog(el) { const p = el.nextElementSibling; p.hidden = !p.hidden; }
+render();
+</script>
+</body>
+</html>

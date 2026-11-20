@@ -1,0 +1,542 @@
+{
+ "instance_id": "django__django-14534",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "cb3777273dec054978c71db60c1a0c1926af14f351c56f143648d8c0667dad72",
+ "image": "swebench/sweb.eval.x86_64.django_1776_django-14534",
+ "image_digest": "sha256:2e2c4c046f01df8af119486f0f266b156e5195603868f9cd481ff05996442e84",
+ "resolved": false,
+ "pypi_as_of": 1771241883.4346914,
+ "steps": 76,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 16,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 75,
+ "rc_recorded": 75,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 1,
+   "changed": [
+    "test_boundwidget_id.py"
+   ]
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": [
+    "test_boundwidget_id.py"
+   ]
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": [
+    "test_boundwidget_id_edge_cases.py"
+   ]
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": [
+    "django/forms/boundfield.py.bak"
+   ]
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": [
+    "django/forms/boundfield.py"
+   ]
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": [
+    "test_boundwidget_comprehensive.py"
+   ]
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": [
+    "test_select_widget.py"
+   ]
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": [
+    "test_select_rendering.py"
+   ]
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": [
+    "django/forms/boundfield.py"
+   ]
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 48,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": [
+    "test_checkbox_no_autoid.py"
+   ]
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": [
+    "django/forms/boundfield.py"
+   ]
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 53,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 54,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 56,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 57,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 58,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 59,
+   "rc": 0,
+   "changed": [
+    "test_final_verification.py"
+   ]
+  },
+  {
+   "i": 60,
+   "rc": 0,
+   "changed": [
+    "django/forms/boundfield.py"
+   ]
+  },
+  {
+   "i": 61,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 62,
+   "rc": 0,
+   "changed": [
+    "django/forms/boundfield.py"
+   ]
+  },
+  {
+   "i": 63,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 64,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 65,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 66,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 67,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 68,
+   "rc": 0,
+   "changed": [
+    "django/forms/boundfield.py"
+   ]
+  },
+  {
+   "i": 69,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 70,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 71,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 72,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 73,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 74,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 75,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 8,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 9,
+   "last": 11,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 12,
+   "last": 12,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 13,
+   "last": 20,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 21,
+   "last": 21,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 22,
+   "last": 25,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 26,
+   "last": 35,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 36,
+   "last": 41,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 42,
+   "last": 44,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 45,
+   "last": 49,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 50,
+   "last": 50,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 51,
+   "last": 59,
+   "outcome": "commit",
+   "id": 11
+  },
+  {
+   "first": 60,
+   "last": 60,
+   "outcome": "commit",
+   "id": 12
+  },
+  {
+   "first": 61,
+   "last": 62,
+   "outcome": "commit",
+   "id": 13
+  },
+  {
+   "first": 63,
+   "last": 68,
+   "outcome": "commit",
+   "id": 14
+  },
+  {
+   "first": 69,
+   "last": 73,
+   "outcome": "commit",
+   "id": 15
+  },
+  {
+   "first": 74,
+   "last": 75,
+   "outcome": "none",
+   "id": 16
+  }
+ ],
+ "seconds": 132
+}

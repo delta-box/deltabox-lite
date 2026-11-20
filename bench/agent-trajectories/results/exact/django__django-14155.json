@@ -1,0 +1,270 @@
+{
+ "instance_id": "django__django-14155",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "98993d8b1e1435d2ae4f5d00221765633226d83805a2d84683a793d63a57abb9",
+ "image": "swebench/sweb.eval.x86_64.django_1776_django-14155",
+ "image_digest": "sha256:1890602326397108ee8f6551174834e1867446aabf63a143b0016b18c6e2f720",
+ "resolved": false,
+ "pypi_as_of": 1771241292.430773,
+ "steps": 31,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 10,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 30,
+ "rc_recorded": 30,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 1,
+   "changed": [
+    "test_partial_issue.py"
+   ]
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": [
+    "django/urls/resolvers.py",
+    "fix_resolver_partial.py"
+   ]
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": [
+    "test_partial_comprehensive.py"
+   ]
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 1,
+   "changed": [
+    "test_real_world_partial.py"
+   ]
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": [
+    "test_real_world_partial_simple.py"
+   ]
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": [
+    "test_edge_cases.py"
+   ]
+  },
+  {
+   "i": 21,
+   "rc": 1,
+   "changed": [
+    "test_unwrap_depth.py"
+   ]
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": [
+    "test_verify_flattening.py"
+   ]
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": [
+    "final_comprehensive_test.py"
+   ]
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 7,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 8,
+   "last": 10,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 11,
+   "last": 15,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 16,
+   "last": 18,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 19,
+   "last": 19,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 20,
+   "last": 20,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 21,
+   "last": 21,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 22,
+   "last": 23,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 24,
+   "last": 25,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 26,
+   "last": 28,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 29,
+   "last": 30,
+   "outcome": "none",
+   "id": 10
+  }
+ ],
+ "seconds": 118
+}

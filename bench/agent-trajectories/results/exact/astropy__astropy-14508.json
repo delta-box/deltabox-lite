@@ -1,0 +1,482 @@
+{
+ "instance_id": "astropy__astropy-14508",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "dfb1312d07deb6732c535d5cb3993e5ac37fe2a8d4d75fc332eb2b4b9d5022c7",
+ "image": "swebench/sweb.eval.x86_64.astropy_1776_astropy-14508",
+ "image_digest": "sha256:f65db6bec005fb5db80c71fc9dd756935b581bfa903530ac0bd62d381e8de6bb",
+ "resolved": true,
+ "pypi_as_of": 1771236207.439871,
+ "steps": 45,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 15,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 44,
+ "rc_recorded": 44,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 1,
+   "changed": [
+    "test_reproduction.py"
+   ]
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": [
+    "test_format_float.py"
+   ]
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": [
+    "test_improved_format_float.py"
+   ]
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": [
+    "astropy/io/fits/card.py.backup"
+   ]
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": [
+    "astropy/io/fits/card.py",
+    "update_card.py"
+   ]
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": [
+    "test_direct_function.py"
+   ]
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": [
+    "test_extracted_function.py"
+   ]
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": [
+    "astropy/compiler_version.cpython-311-x86_64-linux-gnu.so",
+    "astropy/convolution/_convolve.cpython-311-x86_64-linux-gnu.so",
+    "astropy/cosmology/flrw/scalar_inv_efuncs.cpython-311-x86_64-linux-gnu.so",
+    "astropy/io/ascii/cparser.cpython-311-x86_64-linux-gnu.so",
+    "astropy/io/fits/_tiled_compression/_compression.cpython-311-x86_64-linux-gnu.so",
+    "astropy/io/fits/_utils.cpython-311-x86_64-linux-gnu.so",
+    "astropy/io/votable/tablewriter.cpython-311-x86_64-linux-gnu.so",
+    "astropy/stats/_fast_sigma_clip.cpython-311-x86_64-linux-gnu.so",
+    "astropy/stats/_stats.cpython-311-x86_64-linux-gnu.so",
+    "astropy/table/_column_mixins.cpython-311-x86_64-linux-gnu.so",
+    "astropy/table/_np_utils.cpython-311-x86_64-linux-gnu.so",
+    "astropy/time/_parse_times.cpython-311-x86_64-linux-gnu.so",
+    "astropy/timeseries/periodograms/bls/_impl.cpython-311-x86_64-linux-gnu.so",
+    "astropy/timeseries/periodograms/lombscargle/implementations/cython_impl.cpython-311-x86_64-linux-gnu.so",
+    "astropy/utils/_compiler.cpython-311-x86_64-linux-gnu.so",
+    "astropy/utils/xml/_iterparser.cpython-311-x86_64-linux-gnu.so",
+    "astropy/wcs/_wcs.cpython-311-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-311/astropy/compiler_version.cpython-311-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-311/astropy/convolution/_convolve.cpython-311-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-311/astropy/cosmology/flrw/scalar_inv_efuncs.cpython-311-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-311/astropy/io/ascii/cparser.cpython-311-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-311/astropy/io/fits/_tiled_compression/_compression.cpython-311-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-311/astropy/io/fits/_utils.cpython-311-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-311/astropy/io/votable/tablewriter.cpython-311-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-311/astropy/stats/_fast_sigma_clip.cpython-311-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-311/astropy/stats/_stats.cpython-311-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-311/astropy/table/_column_mixins.cpython-311-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-311/astropy/table/_np_utils.cpython-311-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-311/astropy/time/_parse_times.cpython-311-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-311/astropy/timeseries/periodograms/bls/_impl.cpython-311-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-311/astropy/timeseries/periodograms/lombscargle/implementations/cython_impl.cpython-311-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-311/astropy/utils/_compiler.cpython-311-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-311/astropy/utils/xml/_iterparser.cpython-311-x86_64-linux-gnu.so",
+    "build/lib.linux-x86_64-cpython-311/astropy/wcs/_wcs.cpython-311-x86_64-linux-gnu.so",
+    "build/temp.linux-x86_64-cpython-311/astropy/_compiler.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/convolution/_convolve.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/convolution/src/convolve.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/cosmology/flrw/scalar_inv_efuncs.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/io/ascii/cparser.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/io/ascii/src/tokenizer.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/io/fits/_tiled_compression/src/compression.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/io/fits/_tiled_compression/src/unquantize.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/io/fits/_utils.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/io/votable/src/tablewriter.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/stats/_stats.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/stats/src/compute_bounds.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/stats/src/fast_sigma_clip.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/stats/src/wirth_select.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/table/_column_mixins.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/table/_np_utils.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/time/src/parse_times.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/timeseries/periodograms/bls/_impl.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/timeseries/periodograms/bls/bls.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/timeseries/periodograms/lombscargle/implementations/cython_impl.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/utils/src/compiler.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/utils/xml/src/iterparse.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/wcs/src/astropy_wcs.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/wcs/src/astropy_wcs_api.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/wcs/src/distortion.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/wcs/src/distortion_wrap.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/wcs/src/docstrings.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/wcs/src/pipeline.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/wcs/src/pyutil.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/wcs/src/sip.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/wcs/src/sip_wrap.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/wcs/src/str_list_proxy.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/wcs/src/unit_list_proxy.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/wcs/src/util.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/wcs/src/wcslib_auxprm_wrap.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/wcs/src/wcslib_celprm_wrap.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/wcs/src/wcslib_prjprm_wrap.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/wcs/src/wcslib_tabprm_wrap.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/wcs/src/wcslib_wrap.o",
+    "build/temp.linux-x86_64-cpython-311/astropy/wcs/src/wcslib_wtbarr_wrap.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/cfitsio/lib/fits_hcompress.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/cfitsio/lib/fits_hdecompress.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/cfitsio/lib/pliocomp.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/cfitsio/lib/quantize.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/cfitsio/lib/ricecomp.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/expat/lib/xmlparse.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/expat/lib/xmlrole.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/expat/lib/xmltok.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/expat/lib/xmltok_impl.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/cel.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/dis.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/flexed/wcsbth.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/flexed/wcspih.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/flexed/wcsulex.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/flexed/wcsutrn.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/lin.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/log.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/prj.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/spc.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/sph.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/spx.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/tab.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/wcs.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/wcserr.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/wcsfix.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/wcshdr.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/wcsprintf.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/wcsunits.o",
+    "build/temp.linux-x86_64-cpython-311/cextern/wcslib/C/wcsutil.o"
+   ]
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": [
+    "test_comprehensive.py"
+   ]
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": [
+    "test_float_roundtrip.py"
+   ]
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": [
+    "test_edge_cases.py"
+   ]
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": [
+    "test_integer_value.py"
+   ]
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": [
+    "test_integer_vs_float.py"
+   ]
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": [
+    "test_final_verification.py"
+   ]
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 5,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 6,
+   "last": 11,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 12,
+   "last": 12,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 13,
+   "last": 14,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 15,
+   "last": 15,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 16,
+   "last": 17,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 18,
+   "last": 18,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 19,
+   "last": 21,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 22,
+   "last": 23,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 24,
+   "last": 35,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 36,
+   "last": 36,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 37,
+   "last": 38,
+   "outcome": "commit",
+   "id": 11
+  },
+  {
+   "first": 39,
+   "last": 39,
+   "outcome": "commit",
+   "id": 12
+  },
+  {
+   "first": 40,
+   "last": 40,
+   "outcome": "commit",
+   "id": 13
+  },
+  {
+   "first": 41,
+   "last": 41,
+   "outcome": "commit",
+   "id": 14
+  },
+  {
+   "first": 42,
+   "last": 44,
+   "outcome": "none",
+   "id": 15
+  }
+ ],
+ "seconds": 289
+}

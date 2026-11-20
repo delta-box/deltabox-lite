@@ -1,0 +1,1280 @@
+{
+ "instance_id": "pydata__xarray-6599",
+ "source": {
+  "benchmark": "SWE-bench Verified",
+  "track": "bash-only",
+  "agent": "mini-SWE-agent 2.0.0",
+  "agent_version_in_trajectory": "2.1.0",
+  "model": "claude-sonnet-4-5-20250929 (reasoning effort: high)",
+  "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+  "trajectory_url": "https://swe-bench-submissions.s3.amazonaws.com/bash-only/20260217_mini-v2.0.0_claude-4-5-sonnet-high/trajs/pydata__xarray-6599/pydata__xarray-6599.traj.json",
+  "trajectory_sha256": "46e034c2563a0dc92d4de10dc68d7e3029dd79bbf61b2f0114b8449f736b0d8c",
+  "leaderboard_resolved": false,
+  "exit_status": "Submitted",
+  "repo": "pydata/xarray",
+  "base_commit": "6bb2b855498b5c68d7cca8cceb710365d58e6048",
+  "environment": {
+   "image": "docker.io/swebench/sweb.eval.x86_64.pydata_1776_xarray-6599:latest",
+   "cwd": "/testbed",
+   "env": {
+    "PAGER": "cat",
+    "MANPAGER": "cat",
+    "LESS": "-R",
+    "PIP_PROGRESS_BAR": "off",
+    "TQDM_DISABLE": "1"
+   },
+   "forward_env": [],
+   "timeout": 60,
+   "executable": "docker",
+   "run_args": [
+    "--rm"
+   ],
+   "container_timeout": "2h",
+   "pull_timeout": 300,
+   "interpreter": [
+    "bash",
+    "-c"
+   ]
+  },
+  "agent_wall_time_s": 569.5
+ },
+ "workspace": "/testbed",
+ "excluded_from_workspace": [
+  ".git",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".tox",
+  "__pycache__",
+  "*.pyc",
+  "*.egg-info"
+ ],
+ "steps": [
+  {
+   "i": 0,
+   "cmd_sha256": "d256e60a3b12ae8d",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 1,
+   "cmd_sha256": "8bdd2294c95eef67",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 2,
+   "cmd_sha256": "cce00a203f124c92",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 3,
+   "cmd_sha256": "06d429a2a5dc07b5",
+   "kind": "write",
+   "recorded_rc": 1,
+   "writes": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 4,
+   "cmd_sha256": "b1f70377ee65f337",
+   "kind": "env",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 5,
+   "cmd_sha256": "79c7bf62329e3816",
+   "kind": "eval",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 6,
+   "cmd_sha256": "cff0d4175379544c",
+   "kind": "env",
+   "recorded_rc": -1,
+   "writes": []
+  },
+  {
+   "i": 7,
+   "cmd_sha256": "107d71fdf66c146f",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 8,
+   "cmd_sha256": "e3884a204546abae",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 9,
+   "cmd_sha256": "07d27f5dc148e0ff",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "xarray/core/dtypes.py"
+   ]
+  },
+  {
+   "i": 10,
+   "cmd_sha256": "79c7bf62329e3816",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 11,
+   "cmd_sha256": "ed47591125d590da",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 12,
+   "cmd_sha256": "295a93c77acf1885",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 13,
+   "cmd_sha256": "fe430ab82a2196b0",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 14,
+   "cmd_sha256": "cee80c936f13ca89",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 15,
+   "cmd_sha256": "92ffa504551ea990",
+   "kind": "write",
+   "recorded_rc": 1,
+   "writes": [
+    "test_timedelta_conversion.py"
+   ]
+  },
+  {
+   "i": 16,
+   "cmd_sha256": "45de3209545b6e1a",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "test_datetime_timedelta.py"
+   ]
+  },
+  {
+   "i": 17,
+   "cmd_sha256": "081246d240e2f284",
+   "kind": "write",
+   "recorded_rc": 1,
+   "writes": [
+    "test_timedelta_fix.py"
+   ]
+  },
+  {
+   "i": 18,
+   "cmd_sha256": "9487e71341b1d8d0",
+   "kind": "env",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 19,
+   "cmd_sha256": "d2ddc43230735972",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 20,
+   "cmd_sha256": "c24904c4b4ecdb88",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "fix_test.py"
+   ]
+  },
+  {
+   "i": 21,
+   "cmd_sha256": "0b8f707fb710183a",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "apply_fix.py",
+    "xarray/core/computation.py"
+   ]
+  },
+  {
+   "i": 22,
+   "cmd_sha256": "79c7bf62329e3816",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 23,
+   "cmd_sha256": "dc223da31bb39fb6",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "debug_polyval.py"
+   ]
+  },
+  {
+   "i": 24,
+   "cmd_sha256": "4c2e417f71dfbc6a",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 25,
+   "cmd_sha256": "af0314ccdddfc634",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "debug_ensure_numeric.py"
+   ]
+  },
+  {
+   "i": 26,
+   "cmd_sha256": "86aa1a325e7c34e1",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "test_reload.py"
+   ]
+  },
+  {
+   "i": 27,
+   "cmd_sha256": "c0742fc7a7e78d6f",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "test_direct_call.py"
+   ]
+  },
+  {
+   "i": 28,
+   "cmd_sha256": "9364c6e7f6237c86",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 29,
+   "cmd_sha256": "6d671ae306bbb432",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 30,
+   "cmd_sha256": "2b6e5447188f6645",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "check_data_vs_coord.py"
+   ]
+  },
+  {
+   "i": 31,
+   "cmd_sha256": "5cb0097d9e8e2251",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "trace_polyval.py"
+   ]
+  },
+  {
+   "i": 32,
+   "cmd_sha256": "d2f103fdae685620",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "trace_horner.py"
+   ]
+  },
+  {
+   "i": 33,
+   "cmd_sha256": "441c287f861ec72f",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "trace_actual_polyval.py"
+   ]
+  },
+  {
+   "i": 34,
+   "cmd_sha256": "a2239aff113e2852",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 35,
+   "cmd_sha256": "2dd8a6874676aef3",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "examine_input.py"
+   ]
+  },
+  {
+   "i": 36,
+   "cmd_sha256": "979f69946932fa42",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 37,
+   "cmd_sha256": "901d46e98bc3201e",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 38,
+   "cmd_sha256": "a16c06ae1312f97d",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 39,
+   "cmd_sha256": "d2e4e7581b6f5dd1",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 40,
+   "cmd_sha256": "0031aa6e8c06f917",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 41,
+   "cmd_sha256": "391fe8c406501a80",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 42,
+   "cmd_sha256": "7aeae5e0fe83b575",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "test_extract_coordinate.py"
+   ]
+  },
+  {
+   "i": 43,
+   "cmd_sha256": "02420509e26c2791",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "test_fix_idea.py"
+   ]
+  },
+  {
+   "i": 44,
+   "cmd_sha256": "1364f490925dc988",
+   "kind": "write",
+   "recorded_rc": 1,
+   "writes": [
+    "test_full_fix.py"
+   ]
+  },
+  {
+   "i": 45,
+   "cmd_sha256": "078ce924ad7b95e7",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "check_values_transposed.py"
+   ]
+  },
+  {
+   "i": 46,
+   "cmd_sha256": "ebc17debec3a222e",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "apply_real_fix.py",
+    "xarray/core/computation.py"
+   ]
+  },
+  {
+   "i": 47,
+   "cmd_sha256": "79c7bf62329e3816",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 48,
+   "cmd_sha256": "62a86a5e93b501ec",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "verify_fix.py"
+   ]
+  },
+  {
+   "i": 49,
+   "cmd_sha256": "3679ef7c5f24457b",
+   "kind": "eval",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 50,
+   "cmd_sha256": "3933e8b57b19c84f",
+   "kind": "env",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 51,
+   "cmd_sha256": "3679ef7c5f24457b",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 52,
+   "cmd_sha256": "8fa53c53359407a4",
+   "kind": "write",
+   "recorded_rc": 1,
+   "writes": [
+    "test_edge_cases.py"
+   ]
+  },
+  {
+   "i": 53,
+   "cmd_sha256": "ad121eabdb1aa97e",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "debug_timedelta.py"
+   ]
+  },
+  {
+   "i": 54,
+   "cmd_sha256": "763066d8c1340c04",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "verify_original_units.py"
+   ]
+  },
+  {
+   "i": 55,
+   "cmd_sha256": "565c32aada1a2872",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "test_edge_cases_fixed.py"
+   ]
+  },
+  {
+   "i": 56,
+   "cmd_sha256": "ab158dc139b4f803",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 57,
+   "cmd_sha256": "30193136f75431a4",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 58,
+   "cmd_sha256": "1aff121eb1956dd3",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 59,
+   "cmd_sha256": "20c367c346c0cb06",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 60,
+   "cmd_sha256": "f060d02bdf37a9da",
+   "kind": "revert",
+   "recorded_rc": 4,
+   "writes": [
+    "xarray/core/computation.py",
+    "xarray/core/dtypes.py"
+   ]
+  },
+  {
+   "i": 61,
+   "cmd_sha256": "97d02766dd9c7d61",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "xarray/core/computation.py",
+    "xarray/core/dtypes.py"
+   ]
+  },
+  {
+   "i": 62,
+   "cmd_sha256": "06f36fa6f293df3a",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 63,
+   "cmd_sha256": "d195e90733e78e0f",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 64,
+   "cmd_sha256": "e1310625059575ab",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "final_verification.py"
+   ]
+  },
+  {
+   "i": 65,
+   "cmd_sha256": "ecf64ae4445f5b35",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 66,
+   "cmd_sha256": "cb7e5fa551f9866a",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 67,
+   "cmd_sha256": "14dc06def76579e8",
+   "kind": "read",
+   "recorded_rc": null,
+   "writes": []
+  }
+ ],
+ "transactions": {
+  "minimal": [
+   {
+    "first": 0,
+    "last": 59,
+    "outcome": "commit",
+    "id": 0,
+    "writes": 28,
+    "evals": 35
+   },
+   {
+    "first": 60,
+    "last": 60,
+    "outcome": "abort",
+    "checkpoint_before": 60,
+    "replaces": [
+     61
+    ],
+    "files": [
+     "xarray/core/computation.py",
+     "xarray/core/dtypes.py"
+    ],
+    "id": 1,
+    "writes": 2,
+    "evals": 1
+   },
+   {
+    "first": 62,
+    "last": 67,
+    "outcome": "commit",
+    "id": 2,
+    "writes": 2,
+    "evals": 3
+   }
+  ],
+  "per_eval": [
+   {
+    "first": 0,
+    "last": 3,
+    "outcome": "commit",
+    "id": 0,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 4,
+    "last": 5,
+    "outcome": "commit",
+    "id": 1,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 6,
+    "last": 7,
+    "outcome": "commit",
+    "id": 2,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 8,
+    "last": 10,
+    "outcome": "commit",
+    "id": 3,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 11,
+    "last": 15,
+    "outcome": "commit",
+    "id": 4,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 16,
+    "last": 16,
+    "outcome": "commit",
+    "id": 5,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 17,
+    "last": 17,
+    "outcome": "commit",
+    "id": 6,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 18,
+    "last": 19,
+    "outcome": "commit",
+    "id": 7,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 20,
+    "last": 20,
+    "outcome": "commit",
+    "id": 8,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 21,
+    "last": 21,
+    "outcome": "commit",
+    "id": 9,
+    "writes": 2,
+    "evals": 1
+   },
+   {
+    "first": 22,
+    "last": 22,
+    "outcome": "commit",
+    "id": 10,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 23,
+    "last": 23,
+    "outcome": "commit",
+    "id": 11,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 24,
+    "last": 25,
+    "outcome": "commit",
+    "id": 12,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 26,
+    "last": 26,
+    "outcome": "commit",
+    "id": 13,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 27,
+    "last": 27,
+    "outcome": "commit",
+    "id": 14,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 28,
+    "last": 30,
+    "outcome": "commit",
+    "id": 15,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 31,
+    "last": 31,
+    "outcome": "commit",
+    "id": 16,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 32,
+    "last": 32,
+    "outcome": "commit",
+    "id": 17,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 33,
+    "last": 33,
+    "outcome": "commit",
+    "id": 18,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 34,
+    "last": 35,
+    "outcome": "commit",
+    "id": 19,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 36,
+    "last": 42,
+    "outcome": "commit",
+    "id": 20,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 43,
+    "last": 43,
+    "outcome": "commit",
+    "id": 21,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 44,
+    "last": 44,
+    "outcome": "commit",
+    "id": 22,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 45,
+    "last": 45,
+    "outcome": "commit",
+    "id": 23,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 46,
+    "last": 46,
+    "outcome": "commit",
+    "id": 24,
+    "writes": 2,
+    "evals": 1
+   },
+   {
+    "first": 47,
+    "last": 47,
+    "outcome": "commit",
+    "id": 25,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 48,
+    "last": 48,
+    "outcome": "commit",
+    "id": 26,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 49,
+    "last": 49,
+    "outcome": "commit",
+    "id": 27,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 50,
+    "last": 51,
+    "outcome": "commit",
+    "id": 28,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 52,
+    "last": 52,
+    "outcome": "commit",
+    "id": 29,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 53,
+    "last": 53,
+    "outcome": "commit",
+    "id": 30,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 54,
+    "last": 54,
+    "outcome": "commit",
+    "id": 31,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 55,
+    "last": 55,
+    "outcome": "commit",
+    "id": 32,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 56,
+    "last": 56,
+    "outcome": "commit",
+    "id": 33,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 57,
+    "last": 57,
+    "outcome": "commit",
+    "id": 34,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 58,
+    "last": 59,
+    "outcome": "commit",
+    "id": 35,
+    "writes": 0,
+    "evals": 0
+   },
+   {
+    "first": 60,
+    "last": 60,
+    "outcome": "abort",
+    "checkpoint_before": 60,
+    "replaces": [
+     61
+    ],
+    "files": [
+     "xarray/core/computation.py",
+     "xarray/core/dtypes.py"
+    ],
+    "id": 36,
+    "writes": 2,
+    "evals": 1
+   },
+   {
+    "first": 62,
+    "last": 62,
+    "outcome": "commit",
+    "id": 37,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 63,
+    "last": 63,
+    "outcome": "commit",
+    "id": 38,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 64,
+    "last": 64,
+    "outcome": "commit",
+    "id": 39,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 65,
+    "last": 67,
+    "outcome": "commit",
+    "id": 40,
+    "writes": 1,
+    "evals": 0
+   }
+  ],
+  "per_write": [
+   {
+    "first": 0,
+    "last": 3,
+    "outcome": "commit",
+    "id": 0,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 4,
+    "last": 10,
+    "outcome": "commit",
+    "id": 1,
+    "writes": 1,
+    "evals": 3
+   },
+   {
+    "first": 11,
+    "last": 15,
+    "outcome": "commit",
+    "id": 2,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 16,
+    "last": 16,
+    "outcome": "commit",
+    "id": 3,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 17,
+    "last": 17,
+    "outcome": "commit",
+    "id": 4,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 18,
+    "last": 20,
+    "outcome": "commit",
+    "id": 5,
+    "writes": 1,
+    "evals": 2
+   },
+   {
+    "first": 21,
+    "last": 21,
+    "outcome": "commit",
+    "id": 6,
+    "writes": 2,
+    "evals": 1
+   },
+   {
+    "first": 22,
+    "last": 23,
+    "outcome": "commit",
+    "id": 7,
+    "writes": 1,
+    "evals": 2
+   },
+   {
+    "first": 24,
+    "last": 25,
+    "outcome": "commit",
+    "id": 8,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 26,
+    "last": 26,
+    "outcome": "commit",
+    "id": 9,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 27,
+    "last": 27,
+    "outcome": "commit",
+    "id": 10,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 28,
+    "last": 30,
+    "outcome": "commit",
+    "id": 11,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 31,
+    "last": 31,
+    "outcome": "commit",
+    "id": 12,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 32,
+    "last": 32,
+    "outcome": "commit",
+    "id": 13,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 33,
+    "last": 33,
+    "outcome": "commit",
+    "id": 14,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 34,
+    "last": 35,
+    "outcome": "commit",
+    "id": 15,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 36,
+    "last": 42,
+    "outcome": "commit",
+    "id": 16,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 43,
+    "last": 43,
+    "outcome": "commit",
+    "id": 17,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 44,
+    "last": 44,
+    "outcome": "commit",
+    "id": 18,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 45,
+    "last": 45,
+    "outcome": "commit",
+    "id": 19,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 46,
+    "last": 46,
+    "outcome": "commit",
+    "id": 20,
+    "writes": 2,
+    "evals": 1
+   },
+   {
+    "first": 47,
+    "last": 48,
+    "outcome": "commit",
+    "id": 21,
+    "writes": 1,
+    "evals": 2
+   },
+   {
+    "first": 49,
+    "last": 52,
+    "outcome": "commit",
+    "id": 22,
+    "writes": 1,
+    "evals": 3
+   },
+   {
+    "first": 53,
+    "last": 53,
+    "outcome": "commit",
+    "id": 23,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 54,
+    "last": 54,
+    "outcome": "commit",
+    "id": 24,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 55,
+    "last": 55,
+    "outcome": "commit",
+    "id": 25,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 56,
+    "last": 59,
+    "outcome": "commit",
+    "id": 26,
+    "writes": 0,
+    "evals": 2
+   },
+   {
+    "first": 60,
+    "last": 60,
+    "outcome": "abort",
+    "checkpoint_before": 60,
+    "replaces": [
+     61
+    ],
+    "files": [
+     "xarray/core/computation.py",
+     "xarray/core/dtypes.py"
+    ],
+    "id": 27,
+    "writes": 2,
+    "evals": 1
+   },
+   {
+    "first": 62,
+    "last": 64,
+    "outcome": "commit",
+    "id": 28,
+    "writes": 1,
+    "evals": 3
+   },
+   {
+    "first": 65,
+    "last": 67,
+    "outcome": "commit",
+    "id": 29,
+    "writes": 1,
+    "evals": 0
+   }
+  ]
+ },
+ "revert_events": [
+  {
+   "step": 60,
+   "files_reverted": [
+    "xarray/core/computation.py",
+    "xarray/core/dtypes.py"
+   ],
+   "span": [
+    9,
+    59
+   ],
+   "accepted": false,
+   "reason": "temporary revert: xarray/core/dtypes.py gets the span's version back at step 61"
+  },
+  {
+   "step": 61,
+   "files_reverted": [
+    "xarray/core/computation.py",
+    "xarray/core/dtypes.py"
+   ],
+   "span": [
+    60,
+    60
+   ],
+   "accepted": true,
+   "reason": "rollback to a checkpoint before the span reproduces the revert",
+   "files": [
+    "xarray/core/computation.py",
+    "xarray/core/dtypes.py"
+   ]
+  }
+ ],
+ "session_outcome": "abort",
+ "summary": {
+  "steps": 68,
+  "revert_events": 2,
+  "accepted_aborts": 1,
+  "minimal": {
+   "transactions": 3,
+   "aborts": 1,
+   "commits": 2,
+   "writing_transactions": 3,
+   "abort_rate_of_writing_transactions": 0.333
+  },
+  "per_eval": {
+   "transactions": 41,
+   "aborts": 1,
+   "commits": 40,
+   "writing_transactions": 29,
+   "abort_rate_of_writing_transactions": 0.034
+  },
+  "per_write": {
+   "transactions": 30,
+   "aborts": 1,
+   "commits": 29,
+   "writing_transactions": 29,
+   "abort_rate_of_writing_transactions": 0.034
+  }
+ },
+ "validation": {
+  "status": "static analysis only",
+  "todo": "replay in the task image and compare workspace hashes (replay.py --validate)"
+ }
+}

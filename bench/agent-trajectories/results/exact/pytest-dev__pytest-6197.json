@@ -1,0 +1,592 @@
+{
+ "instance_id": "pytest-dev__pytest-6197",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "5bd26096ab3f0923213345615108894a88e85bb9e6857e037a95d3614ee33ca9",
+ "image": "swebench/sweb.eval.x86_64.pytest-dev_1776_pytest-6197",
+ "image_digest": "sha256:15d39592171743355fdade433454d2dbd5cd7d7db21bdcf0e2f125edecabaf09",
+ "resolved": false,
+ "pypi_as_of": 1771249498.3502636,
+ "steps": 90,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 4,
+ "aborts": 3,
+ "aborted_steps": 32,
+ "rc_match_recording": 89,
+ "rc_recorded": 89,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [
+  {
+   "step": 61,
+   "span": [
+    59,
+    60
+   ],
+   "reason": "overlaps an earlier abort"
+  },
+  {
+   "step": 64,
+   "span": [
+    63,
+    63
+   ],
+   "reason": "overlaps an earlier abort"
+  },
+  {
+   "step": 82,
+   "span": [
+    81,
+    81
+   ],
+   "reason": "overlaps an earlier abort"
+  }
+ ],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": [
+    "src/_pytest/_version.py"
+   ]
+  },
+  {
+   "i": 11,
+   "rc": 2,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": [
+    "src/_pytest/python.py.backup"
+   ]
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": [
+    "src/_pytest/python.py"
+   ]
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 52,
+   "rc": 2,
+   "changed": []
+  },
+  {
+   "i": 53,
+   "rc": 2,
+   "changed": []
+  },
+  {
+   "i": 54,
+   "rc": 2,
+   "changed": []
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 56,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 57,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 58,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 59,
+   "rc": 0,
+   "changed": [
+    "src/_pytest/python.py"
+   ]
+  },
+  {
+   "i": 60,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 61,
+   "rc": 0,
+   "changed": [
+    "src/_pytest/python.py"
+   ]
+  },
+  {
+   "i": 62,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 63,
+   "rc": 2,
+   "changed": [
+    "src/_pytest/python.py"
+   ]
+  },
+  {
+   "i": 64,
+   "rc": 0,
+   "changed": [
+    "src/_pytest/python.py"
+   ]
+  },
+  {
+   "i": 65,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 66,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 67,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 68,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 69,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 70,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 71,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 72,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 73,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 74,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 75,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 76,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 77,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 78,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 79,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 80,
+   "rc": 2,
+   "changed": []
+  },
+  {
+   "i": 81,
+   "rc": 0,
+   "changed": [
+    "src/_pytest/python.py"
+   ]
+  },
+  {
+   "i": 82,
+   "rc": 0,
+   "changed": [
+    "src/_pytest/python.py"
+   ]
+  },
+  {
+   "i": 83,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 84,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 85,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 86,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 87,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 88,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 89,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 10,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 11,
+   "last": 44,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 45,
+   "last": 45,
+   "outcome": "none",
+   "id": 2
+  },
+  {
+   "first": 46,
+   "last": 58,
+   "outcome": "abort",
+   "replaces": [
+    59
+   ],
+   "id": 3
+  },
+  {
+   "first": 60,
+   "last": 60,
+   "outcome": "none",
+   "id": 4
+  },
+  {
+   "first": 61,
+   "last": 62,
+   "outcome": "abort",
+   "replaces": [
+    63
+   ],
+   "id": 5
+  },
+  {
+   "first": 64,
+   "last": 80,
+   "outcome": "abort",
+   "replaces": [
+    81
+   ],
+   "id": 6
+  },
+  {
+   "first": 82,
+   "last": 82,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 83,
+   "last": 86,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 87,
+   "last": 89,
+   "outcome": "none",
+   "id": 9
+  }
+ ],
+ "seconds": 101
+}

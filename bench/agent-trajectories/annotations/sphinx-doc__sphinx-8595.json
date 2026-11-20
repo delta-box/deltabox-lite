@@ -1,0 +1,835 @@
+{
+ "instance_id": "sphinx-doc__sphinx-8595",
+ "source": {
+  "benchmark": "SWE-bench Verified",
+  "track": "bash-only",
+  "agent": "mini-SWE-agent 2.0.0",
+  "agent_version_in_trajectory": "2.1.0",
+  "model": "claude-sonnet-4-5-20250929 (reasoning effort: high)",
+  "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+  "trajectory_url": "https://swe-bench-submissions.s3.amazonaws.com/bash-only/20260217_mini-v2.0.0_claude-4-5-sonnet-high/trajs/sphinx-doc__sphinx-8595/sphinx-doc__sphinx-8595.traj.json",
+  "trajectory_sha256": "60c04a784e2eddb96d0b034a1b07a00b8c0c11c900dc44229780eeac5995fb8b",
+  "leaderboard_resolved": true,
+  "exit_status": "Submitted",
+  "repo": "sphinx-doc/sphinx",
+  "base_commit": "b19bce971e82f2497d67fdacdeca8db08ae0ba56",
+  "environment": {
+   "image": "docker.io/swebench/sweb.eval.x86_64.sphinx-doc_1776_sphinx-8595:latest",
+   "cwd": "/testbed",
+   "env": {
+    "PAGER": "cat",
+    "MANPAGER": "cat",
+    "LESS": "-R",
+    "PIP_PROGRESS_BAR": "off",
+    "TQDM_DISABLE": "1"
+   },
+   "forward_env": [],
+   "timeout": 60,
+   "executable": "docker",
+   "run_args": [
+    "--rm"
+   ],
+   "container_timeout": "2h",
+   "pull_timeout": 300,
+   "interpreter": [
+    "bash",
+    "-c"
+   ]
+  },
+  "agent_wall_time_s": 272.6
+ },
+ "workspace": "/testbed",
+ "excluded_from_workspace": [
+  ".git",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".tox",
+  "__pycache__",
+  "*.pyc",
+  "*.egg-info"
+ ],
+ "steps": [
+  {
+   "i": 0,
+   "cmd_sha256": "a1159e9df3670d54",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 1,
+   "cmd_sha256": "1de700c29687cae3",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 2,
+   "cmd_sha256": "ca0677742fd74697",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 3,
+   "cmd_sha256": "99341f5eb3bf4860",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 4,
+   "cmd_sha256": "e85c495994fcf952",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 5,
+   "cmd_sha256": "b45ae0b193d5d687",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 6,
+   "cmd_sha256": "f00d200e96e59532",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 7,
+   "cmd_sha256": "cd4e039ca7f5c607",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 8,
+   "cmd_sha256": "0c0025987efc6d3f",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 9,
+   "cmd_sha256": "fbb8776e72198635",
+   "kind": "env",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 10,
+   "cmd_sha256": "df167e5c2167e46b",
+   "kind": "eval",
+   "recorded_rc": 2,
+   "writes": []
+  },
+  {
+   "i": 11,
+   "cmd_sha256": "20467eab8221429a",
+   "kind": "env",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 12,
+   "cmd_sha256": "df167e5c2167e46b",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 13,
+   "cmd_sha256": "404d45901fca19c6",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 14,
+   "cmd_sha256": "86efae18088ac658",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 15,
+   "cmd_sha256": "1d187331011eadd0",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 16,
+   "cmd_sha256": "8363434df5043ead",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 17,
+   "cmd_sha256": "f2c2fdbf22cb831f",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 18,
+   "cmd_sha256": "a588487bec0b8ca1",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 19,
+   "cmd_sha256": "8e415026e640c9be",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 20,
+   "cmd_sha256": "cb512249b91ff370",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 21,
+   "cmd_sha256": "8b58878649453601",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 22,
+   "cmd_sha256": "81c2af8f9eb99e01",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "sphinx/ext/autodoc/__init__.py.bak"
+   ]
+  },
+  {
+   "i": 23,
+   "cmd_sha256": "87cd443b66f03c22",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "sphinx/ext/autodoc/__init__.py"
+   ]
+  },
+  {
+   "i": 24,
+   "cmd_sha256": "8b58878649453601",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 25,
+   "cmd_sha256": "d3aa132ef25e028c",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 26,
+   "cmd_sha256": "404d45901fca19c6",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 27,
+   "cmd_sha256": "52083539b65ead93",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 28,
+   "cmd_sha256": "b25e5e684921408d",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 29,
+   "cmd_sha256": "0f004d338bc37ed2",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 30,
+   "cmd_sha256": "f21ceda54303925e",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 31,
+   "cmd_sha256": "dbf82228b758825a",
+   "kind": "eval",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 32,
+   "cmd_sha256": "47ea330f6ed6c3e3",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 33,
+   "cmd_sha256": "2e8ba6aaeab7cb1b",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 34,
+   "cmd_sha256": "e4f9224c50bc2374",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 35,
+   "cmd_sha256": "2e8ba6aaeab7cb1b",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 36,
+   "cmd_sha256": "dfcde09f581d59e4",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 37,
+   "cmd_sha256": "2e8ba6aaeab7cb1b",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 38,
+   "cmd_sha256": "1d187331011eadd0",
+   "kind": "read",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 39,
+   "cmd_sha256": "420d6ab67c0dc974",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 40,
+   "cmd_sha256": "200591a5ba0055ff",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 41,
+   "cmd_sha256": "118449e233a03261",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 42,
+   "cmd_sha256": "7dfbc8e088a8f93d",
+   "kind": "env",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 43,
+   "cmd_sha256": "c2f99fe12b48b16f",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 44,
+   "cmd_sha256": "4206da6a10c9d3f8",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 45,
+   "cmd_sha256": "83cf16b0eff2f5ce",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "sphinx/ext/autodoc/__init__.py",
+    "sphinx/ext/autodoc/__init__.py.orig"
+   ]
+  },
+  {
+   "i": 46,
+   "cmd_sha256": "523653a76ff73487",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 47,
+   "cmd_sha256": "87cd443b66f03c22",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "sphinx/ext/autodoc/__init__.py"
+   ]
+  },
+  {
+   "i": 48,
+   "cmd_sha256": "5b92d249ec889b81",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 49,
+   "cmd_sha256": "2f4481cf2fb01c4d",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 50,
+   "cmd_sha256": "00a340591d39a7dc",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 51,
+   "cmd_sha256": "d56556453b618025",
+   "kind": "eval",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 52,
+   "cmd_sha256": "961c245d59769b16",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 53,
+   "cmd_sha256": "d56556453b618025",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 54,
+   "cmd_sha256": "1fe848e68544ab1e",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 55,
+   "cmd_sha256": "c0c94ab5ffffa42d",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 56,
+   "cmd_sha256": "aef2c167cda9b9b5",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 57,
+   "cmd_sha256": "29edde2c8301263d",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 58,
+   "cmd_sha256": "d1438896904abee1",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 59,
+   "cmd_sha256": "93bd4b3451f4a3d6",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 60,
+   "cmd_sha256": "e9ce16cf67fb6b28",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 61,
+   "cmd_sha256": "28f0c9d067341a49",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 62,
+   "cmd_sha256": "a476ca0a2cff2763",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 63,
+   "cmd_sha256": "232ea8a0bccce9d8",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 64,
+   "cmd_sha256": "40545548e0214d78",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 65,
+   "cmd_sha256": "79e88d48312b4fe8",
+   "kind": "read",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 66,
+   "cmd_sha256": "4a90a8aeef9bff80",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 67,
+   "cmd_sha256": "cb7e5fa551f9866a",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 68,
+   "cmd_sha256": "14dc06def76579e8",
+   "kind": "read",
+   "recorded_rc": null,
+   "writes": []
+  }
+ ],
+ "transactions": {
+  "minimal": [
+   {
+    "first": 0,
+    "last": 22,
+    "outcome": "commit",
+    "id": 0,
+    "writes": 1,
+    "evals": 5
+   },
+   {
+    "first": 23,
+    "last": 44,
+    "outcome": "abort",
+    "checkpoint_before": 23,
+    "replaces": [
+     45
+    ],
+    "files": [
+     "sphinx/ext/autodoc/__init__.py"
+    ],
+    "id": 1,
+    "writes": 1,
+    "evals": 8
+   },
+   {
+    "first": 46,
+    "last": 68,
+    "outcome": "commit",
+    "id": 2,
+    "writes": 2,
+    "evals": 11
+   }
+  ],
+  "per_eval": [
+   {
+    "first": 0,
+    "last": 6,
+    "outcome": "commit",
+    "id": 0,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 7,
+    "last": 7,
+    "outcome": "commit",
+    "id": 1,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 8,
+    "last": 8,
+    "outcome": "commit",
+    "id": 2,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 9,
+    "last": 10,
+    "outcome": "commit",
+    "id": 3,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 11,
+    "last": 12,
+    "outcome": "commit",
+    "id": 4,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 13,
+    "last": 22,
+    "outcome": "commit",
+    "id": 5,
+    "writes": 1,
+    "evals": 0
+   },
+   {
+    "first": 23,
+    "last": 44,
+    "outcome": "abort",
+    "checkpoint_before": 23,
+    "replaces": [
+     45
+    ],
+    "files": [
+     "sphinx/ext/autodoc/__init__.py"
+    ],
+    "id": 6,
+    "writes": 1,
+    "evals": 8
+   },
+   {
+    "first": 46,
+    "last": 46,
+    "outcome": "commit",
+    "id": 7,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 47,
+    "last": 48,
+    "outcome": "commit",
+    "id": 8,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 49,
+    "last": 49,
+    "outcome": "commit",
+    "id": 9,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 50,
+    "last": 51,
+    "outcome": "commit",
+    "id": 10,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 52,
+    "last": 53,
+    "outcome": "commit",
+    "id": 11,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 54,
+    "last": 54,
+    "outcome": "commit",
+    "id": 12,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 55,
+    "last": 55,
+    "outcome": "commit",
+    "id": 13,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 56,
+    "last": 56,
+    "outcome": "commit",
+    "id": 14,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 57,
+    "last": 58,
+    "outcome": "commit",
+    "id": 15,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 59,
+    "last": 61,
+    "outcome": "commit",
+    "id": 16,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 62,
+    "last": 64,
+    "outcome": "commit",
+    "id": 17,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 65,
+    "last": 68,
+    "outcome": "commit",
+    "id": 18,
+    "writes": 1,
+    "evals": 0
+   }
+  ],
+  "per_write": [
+   {
+    "first": 0,
+    "last": 22,
+    "outcome": "commit",
+    "id": 0,
+    "writes": 1,
+    "evals": 5
+   },
+   {
+    "first": 23,
+    "last": 44,
+    "outcome": "abort",
+    "checkpoint_before": 23,
+    "replaces": [
+     45
+    ],
+    "files": [
+     "sphinx/ext/autodoc/__init__.py"
+    ],
+    "id": 1,
+    "writes": 1,
+    "evals": 8
+   },
+   {
+    "first": 46,
+    "last": 48,
+    "outcome": "commit",
+    "id": 2,
+    "writes": 1,
+    "evals": 2
+   },
+   {
+    "first": 49,
+    "last": 68,
+    "outcome": "commit",
+    "id": 3,
+    "writes": 1,
+    "evals": 9
+   }
+  ]
+ },
+ "revert_events": [
+  {
+   "step": 45,
+   "files_reverted": [
+    "sphinx/ext/autodoc/__init__.py"
+   ],
+   "span": [
+    23,
+    44
+   ],
+   "accepted": true,
+   "reason": "rollback to a checkpoint before the span reproduces the revert",
+   "dropped_unused_scratch": [
+    "sphinx/ext/autodoc/__init__.py.orig"
+   ],
+   "files": [
+    "sphinx/ext/autodoc/__init__.py"
+   ]
+  }
+ ],
+ "session_outcome": "commit",
+ "summary": {
+  "steps": 69,
+  "revert_events": 1,
+  "accepted_aborts": 1,
+  "minimal": {
+   "transactions": 3,
+   "aborts": 1,
+   "commits": 2,
+   "writing_transactions": 3,
+   "abort_rate_of_writing_transactions": 0.333
+  },
+  "per_eval": {
+   "transactions": 19,
+   "aborts": 1,
+   "commits": 18,
+   "writing_transactions": 4,
+   "abort_rate_of_writing_transactions": 0.25
+  },
+  "per_write": {
+   "transactions": 4,
+   "aborts": 1,
+   "commits": 3,
+   "writing_transactions": 4,
+   "abort_rate_of_writing_transactions": 0.25
+  }
+ },
+ "validation": {
+  "status": "static analysis only",
+  "todo": "replay in the task image and compare workspace hashes (replay.py --validate)"
+ }
+}

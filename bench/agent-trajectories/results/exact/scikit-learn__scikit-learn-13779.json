@@ -1,0 +1,304 @@
+{
+ "instance_id": "scikit-learn__scikit-learn-13779",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "fd09c9f4e0e5837eaf103677ea18f085eb5b0ab1d855fd7cc20fd03617953931",
+ "image": "swebench/sweb.eval.x86_64.scikit-learn_1776_scikit-learn-13779",
+ "image_digest": "sha256:4de8b61aed8a3c6c8bbc1e8d69f5060928a9b7ac0d29d808f696fc3cbf01b521",
+ "resolved": true,
+ "pypi_as_of": 1771250190.6003487,
+ "steps": 39,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 7,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 38,
+ "rc_recorded": 38,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 5,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": [
+    "sklearn/__check_build/_check_build.c",
+    "sklearn/_isotonic.c",
+    "sklearn/cluster/_dbscan_inner.cpp",
+    "sklearn/cluster/_hierarchical.cpp",
+    "sklearn/cluster/_k_means.c",
+    "sklearn/cluster/_k_means_elkan.c",
+    "sklearn/datasets/_svmlight_format.c",
+    "sklearn/decomposition/_online_lda.c",
+    "sklearn/decomposition/cdnmf_fast.c",
+    "sklearn/ensemble/_gradient_boosting.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_binning.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_gradient_boosting.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_loss.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_predictor.c",
+    "sklearn/ensemble/_hist_gradient_boosting/histogram.c",
+    "sklearn/ensemble/_hist_gradient_boosting/splitting.c",
+    "sklearn/ensemble/_hist_gradient_boosting/types.c",
+    "sklearn/ensemble/_hist_gradient_boosting/utils.c",
+    "sklearn/feature_extraction/_hashing.c",
+    "sklearn/linear_model/cd_fast.c"
+   ]
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": [
+    "sklearn/ensemble/voting.py"
+   ]
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": [
+    "test_fix.py"
+   ]
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": [
+    "validate_fix.py"
+   ]
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": [
+    "test_none_estimator_logic.py"
+   ]
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 4,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 5,
+   "last": 12,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 13,
+   "last": 21,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 22,
+   "last": 24,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 25,
+   "last": 32,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 33,
+   "last": 33,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 34,
+   "last": 35,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 36,
+   "last": 38,
+   "outcome": "none",
+   "id": 7
+  }
+ ],
+ "seconds": 197
+}

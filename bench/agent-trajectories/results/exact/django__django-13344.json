@@ -1,0 +1,486 @@
+{
+ "instance_id": "django__django-13344",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "099687b7341803bc93c6643ec21062bd6867a32ee1893c21e770ae9c658dc206",
+ "image": "swebench/sweb.eval.x86_64.django_1776_django-13344",
+ "image_digest": "sha256:675551ddbb2800e5a3095003a0c044c5a2d36594fc630101dc2b34fb18e80373",
+ "resolved": false,
+ "pypi_as_of": 1771240124.2816408,
+ "steps": 77,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 8,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 76,
+ "rc_recorded": 76,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": [
+    "django/core/handlers/exception.py.bak"
+   ]
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": [
+    "django/core/handlers/exception.py"
+   ]
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": [
+    "django/core/handlers/base.py.bak"
+   ]
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": [
+    "django/core/handlers/base.py"
+   ]
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 53,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 54,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 56,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 57,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 58,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 59,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 60,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 61,
+   "rc": 0,
+   "changed": [
+    "django/core/handlers/base.py",
+    "django/core/handlers/base.py.bak.bak",
+    "django/core/handlers/exception.py",
+    "django/core/handlers/exception.py.bak.bak"
+   ]
+  },
+  {
+   "i": 62,
+   "rc": 0,
+   "changed": [
+    "django/core/handlers/base.py"
+   ]
+  },
+  {
+   "i": 63,
+   "rc": 0,
+   "changed": [
+    "django/core/handlers/exception.py"
+   ]
+  },
+  {
+   "i": 64,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 65,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 66,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 67,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 68,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 69,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 70,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 71,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 72,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 73,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 74,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 75,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 76,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 37,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 38,
+   "last": 38,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 39,
+   "last": 39,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 40,
+   "last": 40,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 41,
+   "last": 61,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 62,
+   "last": 62,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 63,
+   "last": 63,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 64,
+   "last": 73,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 74,
+   "last": 76,
+   "outcome": "none",
+   "id": 8
+  }
+ ],
+ "seconds": 183
+}

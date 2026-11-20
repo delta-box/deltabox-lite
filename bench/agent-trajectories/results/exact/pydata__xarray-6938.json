@@ -1,0 +1,617 @@
+{
+ "instance_id": "pydata__xarray-6938",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "3c23307f7578afba4b0e207bad3d522396d3d4ceb388e8f4ad031932d0026bea",
+ "image": "swebench/sweb.eval.x86_64.pydata_1776_xarray-6938",
+ "image_digest": "sha256:672985f42845cd0b9c53819e1c74c6caa4959d8bf9470587d47fea8115f80dff",
+ "resolved": false,
+ "pypi_as_of": 1771248441.5257576,
+ "steps": 78,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 12,
+ "aborts": 4,
+ "aborted_steps": 5,
+ "rc_match_recording": 77,
+ "rc_recorded": 77,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [
+  {
+   "step": 61,
+   "span": [
+    56,
+    60
+   ],
+   "reason": "overlaps an earlier abort"
+  },
+  {
+   "step": 64,
+   "span": [
+    62,
+    63
+   ],
+   "reason": "overlaps an earlier abort"
+  },
+  {
+   "step": 70,
+   "span": [
+    65,
+    69
+   ],
+   "reason": "overlaps an earlier abort"
+  }
+ ],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 1,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": [
+    "test_variable_copy.py"
+   ]
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": [
+    "test_dataset_var_ref.py"
+   ]
+  },
+  {
+   "i": 27,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": [
+    "test_fix.py"
+   ]
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": [
+    "xarray/core/dataset.py.bak"
+   ]
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": [
+    "fix_swap_dims.py",
+    "xarray/core/dataset.py"
+   ]
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": [
+    "test_base_variable.py"
+   ]
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": [
+    "fix_swap_dims2.py",
+    "xarray/core/dataset.py"
+   ]
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": [
+    "test_comprehensive.py"
+   ]
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": [
+    "test_multiindex_copy.py"
+   ]
+  },
+  {
+   "i": 53,
+   "rc": 0,
+   "changed": [
+    "test_multiindex_swap.py"
+   ]
+  },
+  {
+   "i": 54,
+   "rc": 0,
+   "changed": [
+    "xarray/core/dataset.py"
+   ]
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 56,
+   "rc": 0,
+   "changed": [
+    "xarray/core/dataset.py"
+   ]
+  },
+  {
+   "i": 57,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 58,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 59,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 60,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 61,
+   "rc": 0,
+   "changed": [
+    "xarray/core/dataset.py"
+   ]
+  },
+  {
+   "i": 62,
+   "rc": 0,
+   "changed": [
+    "xarray/core/dataset.py"
+   ]
+  },
+  {
+   "i": 63,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 64,
+   "rc": 0,
+   "changed": [
+    "xarray/core/dataset.py"
+   ]
+  },
+  {
+   "i": 65,
+   "rc": 0,
+   "changed": [
+    "xarray/core/dataset.py"
+   ]
+  },
+  {
+   "i": 66,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 67,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 68,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 69,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 70,
+   "rc": 0,
+   "changed": [
+    "xarray/core/dataset.py"
+   ]
+  },
+  {
+   "i": 71,
+   "rc": 0,
+   "changed": [
+    "xarray/core/dataset.py"
+   ]
+  },
+  {
+   "i": 72,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 73,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 74,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 75,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 76,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 77,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 6,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 7,
+   "last": 25,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 26,
+   "last": 26,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 27,
+   "last": 38,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 39,
+   "last": 40,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 41,
+   "last": 41,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 42,
+   "last": 42,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 43,
+   "last": 44,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 45,
+   "last": 48,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 49,
+   "last": 52,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 53,
+   "last": 53,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 54,
+   "last": 55,
+   "outcome": "abort",
+   "replaces": [
+    56
+   ],
+   "id": 11
+  },
+  {
+   "first": 57,
+   "last": 60,
+   "outcome": "none",
+   "id": 12
+  },
+  {
+   "first": 61,
+   "last": 61,
+   "outcome": "abort",
+   "replaces": [
+    62
+   ],
+   "id": 13
+  },
+  {
+   "first": 63,
+   "last": 63,
+   "outcome": "none",
+   "id": 14
+  },
+  {
+   "first": 64,
+   "last": 64,
+   "outcome": "abort",
+   "replaces": [
+    65
+   ],
+   "id": 15
+  },
+  {
+   "first": 66,
+   "last": 69,
+   "outcome": "none",
+   "id": 16
+  },
+  {
+   "first": 70,
+   "last": 70,
+   "outcome": "abort",
+   "replaces": [
+    71
+   ],
+   "id": 17
+  },
+  {
+   "first": 72,
+   "last": 74,
+   "outcome": "commit",
+   "id": 18
+  },
+  {
+   "first": 75,
+   "last": 77,
+   "outcome": "none",
+   "id": 19
+  }
+ ],
+ "seconds": 330
+}

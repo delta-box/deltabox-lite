@@ -1,0 +1,352 @@
+{
+ "instance_id": "pytest-dev__pytest-7521",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "86d92fa1d8024eb0fef9453fe57cc837ec5ace388313d20aeb9abdd2094b4edf",
+ "image": "swebench/sweb.eval.x86_64.pytest-dev_1776_pytest-7521",
+ "image_digest": "sha256:2fd3c0b4d923cd4eb81d39c3fe5adfb416753b09ce567a25896acb970cea3cfc",
+ "resolved": true,
+ "pypi_as_of": 1771249532.4115674,
+ "steps": 45,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 9,
+ "aborts": 1,
+ "aborted_steps": 4,
+ "rc_match_recording": 44,
+ "rc_recorded": 44,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": [
+    "test_repro.py"
+   ]
+  },
+  {
+   "i": 12,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": [
+    "src/_pytest/_version.py"
+   ]
+  },
+  {
+   "i": 14,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": [
+    "test_repro_simple.py"
+   ]
+  },
+  {
+   "i": 16,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": [
+    "src/_pytest/capture.py.backup"
+   ]
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": [
+    "src/_pytest/capture.py"
+   ]
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": [
+    "src/_pytest/_version.py"
+   ]
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": [
+    "test_comprehensive.py"
+   ]
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": [
+    "src/_pytest/_version.py",
+    "src/_pytest/capture.py"
+   ]
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": [
+    "src/_pytest/_version.py",
+    "src/_pytest/capture.py"
+   ]
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": [
+    "test_edge_cases.py"
+   ]
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 11,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 12,
+   "last": 13,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 14,
+   "last": 15,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 16,
+   "last": 19,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 20,
+   "last": 20,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 21,
+   "last": 22,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 23,
+   "last": 24,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 25,
+   "last": 27,
+   "outcome": "none",
+   "id": 7
+  },
+  {
+   "first": 28,
+   "last": 31,
+   "outcome": "abort",
+   "replaces": [
+    32
+   ],
+   "id": 8
+  },
+  {
+   "first": 33,
+   "last": 38,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 39,
+   "last": 42,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 43,
+   "last": 44,
+   "outcome": "none",
+   "id": 11
+  }
+ ],
+ "seconds": 134
+}

@@ -1,0 +1,461 @@
+{
+ "instance_id": "scikit-learn__scikit-learn-14983",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "f8c4097092b203fdf1f7d51f53e511acc4a49cc8d29d645d6655ffc52dbb5d9d",
+ "image": "swebench/sweb.eval.x86_64.scikit-learn_1776_scikit-learn-14983",
+ "image_digest": "sha256:671ab629659e48085e86b54f3d83f6aba03b6183f3d569ff9c417c67dd64f343",
+ "resolved": true,
+ "pypi_as_of": 1771250547.645158,
+ "steps": 69,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 7,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 68,
+ "rc_recorded": 68,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": [
+    "sklearn/__check_build/_check_build.c",
+    "sklearn/_isotonic.c",
+    "sklearn/cluster/_dbscan_inner.cpp",
+    "sklearn/cluster/_hierarchical.cpp",
+    "sklearn/cluster/_k_means.c",
+    "sklearn/cluster/_k_means_elkan.c",
+    "sklearn/datasets/_svmlight_format.c",
+    "sklearn/decomposition/_online_lda.c",
+    "sklearn/decomposition/cdnmf_fast.c",
+    "sklearn/ensemble/_gradient_boosting.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_binning.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_gradient_boosting.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_loss.c",
+    "sklearn/ensemble/_hist_gradient_boosting/_predictor.c",
+    "sklearn/ensemble/_hist_gradient_boosting/common.c",
+    "sklearn/ensemble/_hist_gradient_boosting/histogram.c",
+    "sklearn/ensemble/_hist_gradient_boosting/splitting.c",
+    "sklearn/ensemble/_hist_gradient_boosting/utils.c",
+    "sklearn/feature_extraction/_hashing.c",
+    "sklearn/linear_model/cd_fast.c",
+    "sklearn/linear_model/sag_fast.c",
+    "sklearn/linear_model/sgd_fast.c",
+    "sklearn/manifold/_barnes_hut_tsne.c"
+   ]
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": [
+    "sklearn/model_selection/_split.py"
+   ]
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": [
+    "sklearn/model_selection/_split.py"
+   ]
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 53,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 54,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 56,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 57,
+   "rc": 0,
+   "changed": [
+    "sklearn/__check_build/build/lib.linux-x86_64-cpython-311/sklearn/__check_build/_check_build.cpython-311-x86_64-linux-gnu.so",
+    "sklearn/__check_build/build/temp.linux-x86_64-cpython-311/_check_build.o"
+   ]
+  },
+  {
+   "i": 58,
+   "rc": 0,
+   "changed": [
+    "build/lib.linux-x86_64-cpython-311/sklearn/__check_build/_check_build.cpython-311-x86_64-linux-gnu.so",
+    "sklearn/__check_build/_check_build.cpython-311-x86_64-linux-gnu.so"
+   ]
+  },
+  {
+   "i": 59,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 60,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 61,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 62,
+   "rc": 0,
+   "changed": [
+    "sklearn/manifold/_utils.c",
+    "sklearn/metrics/cluster/expected_mutual_info_fast.c",
+    "sklearn/metrics/pairwise_fast.c"
+   ]
+  },
+  {
+   "i": 63,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 64,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 65,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 66,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 67,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 68,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 5,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 6,
+   "last": 31,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 32,
+   "last": 40,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 41,
+   "last": 57,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 58,
+   "last": 58,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 59,
+   "last": 62,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 63,
+   "last": 66,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 67,
+   "last": 68,
+   "outcome": "none",
+   "id": 7
+  }
+ ],
+ "seconds": 180
+}

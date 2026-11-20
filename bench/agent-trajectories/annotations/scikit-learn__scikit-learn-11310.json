@@ -1,0 +1,873 @@
+{
+ "instance_id": "scikit-learn__scikit-learn-11310",
+ "source": {
+  "benchmark": "SWE-bench Verified",
+  "track": "bash-only",
+  "agent": "mini-SWE-agent 2.0.0",
+  "agent_version_in_trajectory": "2.1.0",
+  "model": "claude-sonnet-4-5-20250929 (reasoning effort: high)",
+  "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+  "trajectory_url": "https://swe-bench-submissions.s3.amazonaws.com/bash-only/20260217_mini-v2.0.0_claude-4-5-sonnet-high/trajs/scikit-learn__scikit-learn-11310/scikit-learn__scikit-learn-11310.traj.json",
+  "trajectory_sha256": "3ab1152a88461c294a4d8592a96428915b55070df5f6bbb1c13f63781cffb88e",
+  "leaderboard_resolved": true,
+  "exit_status": "Submitted",
+  "repo": "scikit-learn/scikit-learn",
+  "base_commit": "553b5fb8f84ba05c8397f26dd079deece2b05029",
+  "environment": {
+   "image": "docker.io/swebench/sweb.eval.x86_64.scikit-learn_1776_scikit-learn-11310:latest",
+   "cwd": "/testbed",
+   "env": {
+    "PAGER": "cat",
+    "MANPAGER": "cat",
+    "LESS": "-R",
+    "PIP_PROGRESS_BAR": "off",
+    "TQDM_DISABLE": "1"
+   },
+   "forward_env": [],
+   "timeout": 60,
+   "executable": "docker",
+   "run_args": [
+    "--rm"
+   ],
+   "container_timeout": "2h",
+   "pull_timeout": 300,
+   "interpreter": [
+    "bash",
+    "-c"
+   ]
+  },
+  "agent_wall_time_s": 338.4
+ },
+ "workspace": "/testbed",
+ "excluded_from_workspace": [
+  ".git",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".tox",
+  "__pycache__",
+  "*.pyc",
+  "*.egg-info"
+ ],
+ "steps": [
+  {
+   "i": 0,
+   "cmd_sha256": "8794b88ad5ddaf60",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 1,
+   "cmd_sha256": "9e06922ec71b4dd5",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 2,
+   "cmd_sha256": "8129bc2e74f682cc",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 3,
+   "cmd_sha256": "dd2b4499dfd11865",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 4,
+   "cmd_sha256": "051a94f87a4227fb",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 5,
+   "cmd_sha256": "f95294c352f37a43",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 6,
+   "cmd_sha256": "f8e14615e050bbdf",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 7,
+   "cmd_sha256": "44d520e014258935",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 8,
+   "cmd_sha256": "5053313b04743c1b",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 9,
+   "cmd_sha256": "4ce11123f720b16f",
+   "kind": "read",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 10,
+   "cmd_sha256": "4ac7e49e615ab1c0",
+   "kind": "read",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 11,
+   "cmd_sha256": "8730b2685bdcc8ea",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 12,
+   "cmd_sha256": "376e00eadfc609c1",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 13,
+   "cmd_sha256": "ea37210bb11870cb",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 14,
+   "cmd_sha256": "9760d22bca07e4a6",
+   "kind": "write",
+   "recorded_rc": 1,
+   "writes": [
+    "test_refit_time.py"
+   ]
+  },
+  {
+   "i": 15,
+   "cmd_sha256": "49f22a9a50fda9dd",
+   "kind": "eval",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 16,
+   "cmd_sha256": "880b64341781335c",
+   "kind": "env",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 17,
+   "cmd_sha256": "7d49c1d097d168e2",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 18,
+   "cmd_sha256": "3b3fabe0b7394470",
+   "kind": "env",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 19,
+   "cmd_sha256": "be78531cd568e6de",
+   "kind": "env",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 20,
+   "cmd_sha256": "ddb8b8ea7b57d625",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 21,
+   "cmd_sha256": "612d5e9f4b58df0c",
+   "kind": "eval",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 22,
+   "cmd_sha256": "1157bddb84aafb68",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 23,
+   "cmd_sha256": "12567662b0085100",
+   "kind": "env",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 24,
+   "cmd_sha256": "f6faa1debd1b8a6a",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 25,
+   "cmd_sha256": "f2b30a0e5d82b3f9",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 26,
+   "cmd_sha256": "7ccb9223b04b3340",
+   "kind": "eval",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 27,
+   "cmd_sha256": "0a0b70b872ecfd68",
+   "kind": "write",
+   "recorded_rc": 1,
+   "writes": [
+    "sklearn/__check_build/__init__.py"
+   ]
+  },
+  {
+   "i": 28,
+   "cmd_sha256": "26e8abd7f0ec68b3",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 29,
+   "cmd_sha256": "c892754976fd8372",
+   "kind": "read",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 30,
+   "cmd_sha256": "0b0cb316f8c10b0e",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 31,
+   "cmd_sha256": "e96d71fa6893c251",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 32,
+   "cmd_sha256": "b72ea0316308e8b2",
+   "kind": "revert",
+   "recorded_rc": 0,
+   "writes": [
+    "sklearn/__check_build/__init__.py"
+   ]
+  },
+  {
+   "i": 33,
+   "cmd_sha256": "8b75fc69fe9e89da",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 34,
+   "cmd_sha256": "84c610146c293a46",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 35,
+   "cmd_sha256": "44d520e014258935",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 36,
+   "cmd_sha256": "621af910433c5530",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "sklearn/model_selection/_search.py.bak"
+   ]
+  },
+  {
+   "i": 37,
+   "cmd_sha256": "22e08698ea119692",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "sklearn/model_selection/_search.py"
+   ]
+  },
+  {
+   "i": 38,
+   "cmd_sha256": "f2c49df1522e69f7",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "sklearn/model_selection/_search.py"
+   ]
+  },
+  {
+   "i": 39,
+   "cmd_sha256": "d848d2e33482e853",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 40,
+   "cmd_sha256": "21bd7b8f52a7d586",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 41,
+   "cmd_sha256": "1bcf51b67900fcba",
+   "kind": "read",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 42,
+   "cmd_sha256": "a344bcb7b62dc6e4",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 43,
+   "cmd_sha256": "5adf7536bcffdb60",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 44,
+   "cmd_sha256": "0d425739590c47d4",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 45,
+   "cmd_sha256": "d52c103213f2701d",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 46,
+   "cmd_sha256": "39b67f9973d78ebe",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 47,
+   "cmd_sha256": "5a2ba829d14415d5",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 48,
+   "cmd_sha256": "c6d7c25f4c88f4ea",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "sklearn/model_selection/_search.py"
+   ]
+  },
+  {
+   "i": 49,
+   "cmd_sha256": "66de96c1b398ce8a",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 50,
+   "cmd_sha256": "c8cbd29087ac8a41",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 51,
+   "cmd_sha256": "3bb13eeac9df7409",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "sklearn/model_selection/_search.py"
+   ]
+  },
+  {
+   "i": 52,
+   "cmd_sha256": "ffc5a5685a34d2dc",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 53,
+   "cmd_sha256": "613d6ec459180601",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 54,
+   "cmd_sha256": "8384583c8c6923fa",
+   "kind": "read",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 55,
+   "cmd_sha256": "192a8cf3d9760bd3",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "test_refit_time_validation.py"
+   ]
+  },
+  {
+   "i": 56,
+   "cmd_sha256": "ca01f09b39158dda",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "test_logic_flow.py"
+   ]
+  },
+  {
+   "i": 57,
+   "cmd_sha256": "54dbbfa7da3fb0fb",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 58,
+   "cmd_sha256": "e1099330685e3ce5",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 59,
+   "cmd_sha256": "80b996c24e3277fc",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 60,
+   "cmd_sha256": "ed2c82ed6108dbda",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 61,
+   "cmd_sha256": "f3ed7eb204031b51",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "test_refit_time_feature.py"
+   ]
+  },
+  {
+   "i": 62,
+   "cmd_sha256": "60f6757de1091724",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "CHANGES_SUMMARY.md"
+   ]
+  },
+  {
+   "i": 63,
+   "cmd_sha256": "acb28772e6ee1d35",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 64,
+   "cmd_sha256": "cb7e5fa551f9866a",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 65,
+   "cmd_sha256": "95950ccb578e4c3c",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 66,
+   "cmd_sha256": "14dc06def76579e8",
+   "kind": "read",
+   "recorded_rc": null,
+   "writes": []
+  }
+ ],
+ "transactions": {
+  "minimal": [
+   {
+    "first": 0,
+    "last": 26,
+    "outcome": "commit",
+    "id": 0,
+    "writes": 1,
+    "evals": 7
+   },
+   {
+    "first": 27,
+    "last": 31,
+    "outcome": "abort",
+    "checkpoint_before": 27,
+    "replaces": [
+     32
+    ],
+    "files": [
+     "sklearn/__check_build/__init__.py"
+    ],
+    "id": 1,
+    "writes": 1,
+    "evals": 2
+   },
+   {
+    "first": 33,
+    "last": 66,
+    "outcome": "commit",
+    "id": 2,
+    "writes": 10,
+    "evals": 8
+   }
+  ],
+  "per_eval": [
+   {
+    "first": 0,
+    "last": 14,
+    "outcome": "commit",
+    "id": 0,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 15,
+    "last": 15,
+    "outcome": "commit",
+    "id": 1,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 16,
+    "last": 17,
+    "outcome": "commit",
+    "id": 2,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 18,
+    "last": 20,
+    "outcome": "commit",
+    "id": 3,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 21,
+    "last": 21,
+    "outcome": "commit",
+    "id": 4,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 22,
+    "last": 25,
+    "outcome": "commit",
+    "id": 5,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 26,
+    "last": 26,
+    "outcome": "commit",
+    "id": 6,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 27,
+    "last": 31,
+    "outcome": "abort",
+    "checkpoint_before": 27,
+    "replaces": [
+     32
+    ],
+    "files": [
+     "sklearn/__check_build/__init__.py"
+    ],
+    "id": 7,
+    "writes": 1,
+    "evals": 2
+   },
+   {
+    "first": 33,
+    "last": 37,
+    "outcome": "commit",
+    "id": 8,
+    "writes": 2,
+    "evals": 1
+   },
+   {
+    "first": 38,
+    "last": 38,
+    "outcome": "commit",
+    "id": 9,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 39,
+    "last": 48,
+    "outcome": "commit",
+    "id": 10,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 49,
+    "last": 51,
+    "outcome": "commit",
+    "id": 11,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 52,
+    "last": 53,
+    "outcome": "commit",
+    "id": 12,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 54,
+    "last": 55,
+    "outcome": "commit",
+    "id": 13,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 56,
+    "last": 56,
+    "outcome": "commit",
+    "id": 14,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 57,
+    "last": 61,
+    "outcome": "commit",
+    "id": 15,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 62,
+    "last": 66,
+    "outcome": "commit",
+    "id": 16,
+    "writes": 2,
+    "evals": 0
+   }
+  ],
+  "per_write": [
+   {
+    "first": 0,
+    "last": 14,
+    "outcome": "commit",
+    "id": 0,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 15,
+    "last": 26,
+    "outcome": "commit",
+    "id": 1,
+    "writes": 0,
+    "evals": 6
+   },
+   {
+    "first": 27,
+    "last": 31,
+    "outcome": "abort",
+    "checkpoint_before": 27,
+    "replaces": [
+     32
+    ],
+    "files": [
+     "sklearn/__check_build/__init__.py"
+    ],
+    "id": 2,
+    "writes": 1,
+    "evals": 2
+   },
+   {
+    "first": 33,
+    "last": 37,
+    "outcome": "commit",
+    "id": 3,
+    "writes": 2,
+    "evals": 1
+   },
+   {
+    "first": 38,
+    "last": 38,
+    "outcome": "commit",
+    "id": 4,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 39,
+    "last": 48,
+    "outcome": "commit",
+    "id": 5,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 49,
+    "last": 51,
+    "outcome": "commit",
+    "id": 6,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 52,
+    "last": 55,
+    "outcome": "commit",
+    "id": 7,
+    "writes": 1,
+    "evals": 2
+   },
+   {
+    "first": 56,
+    "last": 56,
+    "outcome": "commit",
+    "id": 8,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 57,
+    "last": 61,
+    "outcome": "commit",
+    "id": 9,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 62,
+    "last": 66,
+    "outcome": "commit",
+    "id": 10,
+    "writes": 2,
+    "evals": 0
+   }
+  ]
+ },
+ "revert_events": [
+  {
+   "step": 32,
+   "files_reverted": [
+    "sklearn/__check_build/__init__.py"
+   ],
+   "span": [
+    27,
+    31
+   ],
+   "accepted": true,
+   "reason": "rollback to a checkpoint before the span reproduces the revert",
+   "files": [
+    "sklearn/__check_build/__init__.py"
+   ]
+  }
+ ],
+ "session_outcome": "commit",
+ "summary": {
+  "steps": 67,
+  "revert_events": 1,
+  "accepted_aborts": 1,
+  "minimal": {
+   "transactions": 3,
+   "aborts": 1,
+   "commits": 2,
+   "writing_transactions": 3,
+   "abort_rate_of_writing_transactions": 0.333
+  },
+  "per_eval": {
+   "transactions": 17,
+   "aborts": 1,
+   "commits": 16,
+   "writing_transactions": 10,
+   "abort_rate_of_writing_transactions": 0.1
+  },
+  "per_write": {
+   "transactions": 11,
+   "aborts": 1,
+   "commits": 10,
+   "writing_transactions": 10,
+   "abort_rate_of_writing_transactions": 0.1
+  }
+ },
+ "validation": {
+  "status": "static analysis only",
+  "todo": "replay in the task image and compare workspace hashes (replay.py --validate)"
+ }
+}

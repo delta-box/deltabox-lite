@@ -1,0 +1,638 @@
+{
+ "instance_id": "pydata__xarray-4356",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "6e1edbccf5937acafde226b404c22a7140a54f9ba5b54d3b7866af71e12faef9",
+ "image": "swebench/sweb.eval.x86_64.pydata_1776_xarray-4356",
+ "image_digest": "sha256:43e2c1d578ea6b1b1e64369aae9632569ca254e46c16819fcf4e08529814c406",
+ "resolved": true,
+ "pypi_as_of": 1771248199.764362,
+ "steps": 62,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 31,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 61,
+ "rc_recorded": 61,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 4,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": [
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/EGG-INFO/PKG-INFO",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/EGG-INFO/RECORD",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/EGG-INFO/WHEEL",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/EGG-INFO/entry_points.txt",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/EGG-INFO/licenses/LICENSE",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/EGG-INFO/requires.txt",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/EGG-INFO/top_level.txt",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/.git_archival.txt",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/__init__.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/__main__.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_cli.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_compat.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_config.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_entrypoints.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_file_finders/__init__.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_file_finders/git.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_file_finders/hg.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_file_finders/pathtools.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_get_version_impl.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_integration/__init__.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_integration/deprecation.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_integration/dump_version.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_integration/pyproject_reading.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_integration/setup_cfg.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_integration/setuptools.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_integration/toml.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_integration/version_inference.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_log.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_modify_version.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_node_utils.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_overrides.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_requirement_cls.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_run_cmd.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_types.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_version_cls.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/discover.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/fallbacks.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/git.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/hg.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/hg_git.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/integration.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/py.typed",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/scm_workdir.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/version.py"
+   ]
+  },
+  {
+   "i": 6,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": [
+    "test_logic.py"
+   ]
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": [
+    "test_comprehensive.py"
+   ]
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": [
+    "test_ndim_check.py"
+   ]
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": [
+    "test_partial_reduction.py"
+   ]
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": [
+    "test_np_take.py"
+   ]
+  },
+  {
+   "i": 14,
+   "rc": 1,
+   "changed": [
+    "test_sum_axis.py"
+   ]
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": [
+    "test_scalar_prod.py"
+   ]
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": [
+    "fix_nanops.py"
+   ]
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": [
+    "xarray/core/nanops.py.backup"
+   ]
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": [
+    "apply_fix.py",
+    "xarray/core/nanops.py"
+   ]
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 1,
+   "changed": [
+    "test_edge_cases.py"
+   ]
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": [
+    "debug_test3.py"
+   ]
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": [
+    "check_nat_types.py"
+   ]
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": [
+    "check_nat_types2.py"
+   ]
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": [
+    "check_in_operator.py"
+   ]
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": [
+    "debug_maybe_null_out.py"
+   ]
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 1,
+   "changed": [
+    "test_nat_in.py"
+   ]
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": [
+    "test_nat_in2.py"
+   ]
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": [
+    "test_dtype_check.py"
+   ]
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": [
+    "apply_complete_fix.py",
+    "xarray/core/nanops.py"
+   ]
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": [
+    "fix_indentation.py",
+    "xarray/core/nanops.py"
+   ]
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 1,
+   "changed": [
+    "test_datetime_types.py"
+   ]
+  },
+  {
+   "i": 44,
+   "rc": 1,
+   "changed": [
+    "test_dtype_handling.py"
+   ]
+  },
+  {
+   "i": 45,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 48,
+   "rc": 1,
+   "changed": [
+    "simple_test.py"
+   ]
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": [
+    "simple_test2.py"
+   ]
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 53,
+   "rc": 1,
+   "changed": [
+    "final_comprehensive_test.py"
+   ]
+  },
+  {
+   "i": 54,
+   "rc": 1,
+   "changed": [
+    "final_comprehensive_test2.py"
+   ]
+  },
+  {
+   "i": 55,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 56,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 57,
+   "rc": 0,
+   "changed": [
+    "final_comprehensive_test3.py"
+   ]
+  },
+  {
+   "i": 58,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 59,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 60,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 61,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 3,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 4,
+   "last": 5,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 6,
+   "last": 9,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 10,
+   "last": 10,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 11,
+   "last": 11,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 12,
+   "last": 12,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 13,
+   "last": 13,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 14,
+   "last": 14,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 15,
+   "last": 15,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 16,
+   "last": 16,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 17,
+   "last": 17,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 18,
+   "last": 18,
+   "outcome": "commit",
+   "id": 11
+  },
+  {
+   "first": 19,
+   "last": 21,
+   "outcome": "commit",
+   "id": 12
+  },
+  {
+   "first": 22,
+   "last": 22,
+   "outcome": "commit",
+   "id": 13
+  },
+  {
+   "first": 23,
+   "last": 23,
+   "outcome": "commit",
+   "id": 14
+  },
+  {
+   "first": 24,
+   "last": 24,
+   "outcome": "commit",
+   "id": 15
+  },
+  {
+   "first": 25,
+   "last": 25,
+   "outcome": "commit",
+   "id": 16
+  },
+  {
+   "first": 26,
+   "last": 26,
+   "outcome": "commit",
+   "id": 17
+  },
+  {
+   "first": 27,
+   "last": 28,
+   "outcome": "commit",
+   "id": 18
+  },
+  {
+   "first": 29,
+   "last": 29,
+   "outcome": "commit",
+   "id": 19
+  },
+  {
+   "first": 30,
+   "last": 36,
+   "outcome": "commit",
+   "id": 20
+  },
+  {
+   "first": 37,
+   "last": 37,
+   "outcome": "commit",
+   "id": 21
+  },
+  {
+   "first": 38,
+   "last": 39,
+   "outcome": "commit",
+   "id": 22
+  },
+  {
+   "first": 40,
+   "last": 43,
+   "outcome": "commit",
+   "id": 23
+  },
+  {
+   "first": 44,
+   "last": 44,
+   "outcome": "commit",
+   "id": 24
+  },
+  {
+   "first": 45,
+   "last": 48,
+   "outcome": "commit",
+   "id": 25
+  },
+  {
+   "first": 49,
+   "last": 50,
+   "outcome": "commit",
+   "id": 26
+  },
+  {
+   "first": 51,
+   "last": 53,
+   "outcome": "commit",
+   "id": 27
+  },
+  {
+   "first": 54,
+   "last": 54,
+   "outcome": "commit",
+   "id": 28
+  },
+  {
+   "first": 55,
+   "last": 57,
+   "outcome": "commit",
+   "id": 29
+  },
+  {
+   "first": 58,
+   "last": 59,
+   "outcome": "commit",
+   "id": 30
+  },
+  {
+   "first": 60,
+   "last": 61,
+   "outcome": "none",
+   "id": 31
+  }
+ ],
+ "seconds": 212
+}

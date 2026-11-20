@@ -1,0 +1,270 @@
+{
+ "instance_id": "scikit-learn__scikit-learn-14141",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "a4a4cad39596edcd69a9641c317d8ed44789abbc5e45fe90fb5e488ff4b24254",
+ "image": "swebench/sweb.eval.x86_64.scikit-learn_1776_scikit-learn-14141",
+ "image_digest": "sha256:19965ec2d932dc3b25b1e657b1e1d283f630bac03373e4830e1965ccddb61817",
+ "resolved": true,
+ "pypi_as_of": 1771250229.9575546,
+ "steps": 36,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 7,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 35,
+ "rc_recorded": 35,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": [
+    "test_show_versions.py"
+   ]
+  },
+  {
+   "i": 8,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": [
+    "test_show_versions_direct.py"
+   ]
+  },
+  {
+   "i": 10,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": [
+    "sklearn/utils/_show_versions.py"
+   ]
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": [
+    "verify_joblib.py"
+   ]
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": [
+    "test_joblib_in_deps.py"
+   ]
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": [
+    "test_deps_function.py"
+   ]
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 7,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 8,
+   "last": 9,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 10,
+   "last": 15,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 16,
+   "last": 18,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 19,
+   "last": 21,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 22,
+   "last": 22,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 23,
+   "last": 33,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 34,
+   "last": 35,
+   "outcome": "none",
+   "id": 7
+  }
+ ],
+ "seconds": 115
+}

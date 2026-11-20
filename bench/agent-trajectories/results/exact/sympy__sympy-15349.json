@@ -1,0 +1,236 @@
+{
+ "instance_id": "sympy__sympy-15349",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "c28b3f5b5315e11bc11c61f77c6b909b9015ab4c7cb659bb54959b0bd4ab8223",
+ "image": "swebench/sweb.eval.x86_64.sympy_1776_sympy-15349",
+ "image_digest": "sha256:c20e859396864a73e18e4f7e48f4a98cd6c2a108df1bf8b54debab97acd56d29",
+ "resolved": true,
+ "pypi_as_of": 1771253970.9141715,
+ "steps": 26,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 9,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 25,
+ "rc_recorded": 25,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 1,
+   "changed": [
+    "test_quaternion_issue.py"
+   ]
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": [
+    "detailed_test.py"
+   ]
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": [
+    "verify_formula.py"
+   ]
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": [
+    "sympy/algebras/quaternion.py.backup"
+   ]
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": [
+    "sympy/algebras/quaternion.py"
+   ]
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": [
+    "comprehensive_test.py"
+   ]
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": [
+    "check_test_case.py"
+   ]
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": [
+    "verify_fix_correctness.py"
+   ]
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 4,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 5,
+   "last": 9,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 10,
+   "last": 10,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 11,
+   "last": 11,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 12,
+   "last": 12,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 13,
+   "last": 16,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 17,
+   "last": 21,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 22,
+   "last": 22,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 23,
+   "last": 23,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 24,
+   "last": 25,
+   "outcome": "none",
+   "id": 9
+  }
+ ],
+ "seconds": 97
+}

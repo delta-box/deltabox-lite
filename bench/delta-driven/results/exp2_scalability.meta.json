@@ -1,0 +1,17 @@
+{
+  "env": {
+    "kernel": "7.0.0-34-generic",
+    "cpu": "Intel(R) Core(TM) Ultra 5 245K",
+    "cpus": 14,
+    "workdir": "target/bench-exp2",
+    "workdir_fs": "ext4",
+    "git": "ace4691-dirty",
+    "deltabox": "deltabox 0.4.2",
+    "python": "3.14.4"
+  },
+  "xfs": "target/xfs-mnt",
+  "iters": 20,
+  "warmups": 3,
+  "started": "2026-11-15 21:41:29",
+  "finished": "2026-11-15 21:58:59"
+}

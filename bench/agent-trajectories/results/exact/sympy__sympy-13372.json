@@ -1,0 +1,326 @@
+{
+ "instance_id": "sympy__sympy-13372",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "bd095e47dc5197e57fc38ee1cb045149a22e312e055ff7e330e71474d2dbfa2f",
+ "image": "swebench/sweb.eval.x86_64.sympy_1776_sympy-13372",
+ "image_digest": "sha256:90cbc4e001578a30988a85ee06fdc76e3bbfa8bb59b578ec2d2ade870c3a3c2b",
+ "resolved": true,
+ "pypi_as_of": 1771253105.4516163,
+ "steps": 46,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 3,
+ "aborts": 2,
+ "aborted_steps": 13,
+ "rc_match_recording": 45,
+ "rc_recorded": 45,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": [
+    "test_issue.py"
+   ]
+  },
+  {
+   "i": 6,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": [
+    "sympy/core/evalf.py"
+   ]
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": [
+    "sympy/core/evalf.py"
+   ]
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": [
+    "sympy/core/evalf.py"
+   ]
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": [
+    "sympy/core/basic.py"
+   ]
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": [
+    "sympy/core/basic.py"
+   ]
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 5,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 6,
+   "last": 11,
+   "outcome": "none",
+   "id": 1
+  },
+  {
+   "first": 12,
+   "last": 16,
+   "outcome": "abort",
+   "replaces": [
+    17
+   ],
+   "id": 2
+  },
+  {
+   "first": 18,
+   "last": 23,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 24,
+   "last": 26,
+   "outcome": "none",
+   "id": 4
+  },
+  {
+   "first": 27,
+   "last": 34,
+   "outcome": "abort",
+   "replaces": [
+    35
+   ],
+   "id": 5
+  },
+  {
+   "first": 36,
+   "last": 42,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 43,
+   "last": 45,
+   "outcome": "none",
+   "id": 7
+  }
+ ],
+ "seconds": 90
+}

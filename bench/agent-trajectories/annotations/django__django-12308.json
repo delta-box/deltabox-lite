@@ -1,0 +1,713 @@
+{
+ "instance_id": "django__django-12308",
+ "source": {
+  "benchmark": "SWE-bench Verified",
+  "track": "bash-only",
+  "agent": "mini-SWE-agent 2.0.0",
+  "agent_version_in_trajectory": "2.1.0",
+  "model": "claude-sonnet-4-5-20250929 (reasoning effort: high)",
+  "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+  "trajectory_url": "https://swe-bench-submissions.s3.amazonaws.com/bash-only/20260217_mini-v2.0.0_claude-4-5-sonnet-high/trajs/django__django-12308/django__django-12308.traj.json",
+  "trajectory_sha256": "9353bf897836a5815f934414ea6929434d9228052e96ec001cb21a82b59ca587",
+  "leaderboard_resolved": false,
+  "exit_status": "Submitted",
+  "repo": "django/django",
+  "base_commit": "2e0f04507b17362239ba49830d26fec504d46978",
+  "environment": {
+   "image": "docker.io/swebench/sweb.eval.x86_64.django_1776_django-12308:latest",
+   "cwd": "/testbed",
+   "env": {
+    "PAGER": "cat",
+    "MANPAGER": "cat",
+    "LESS": "-R",
+    "PIP_PROGRESS_BAR": "off",
+    "TQDM_DISABLE": "1"
+   },
+   "forward_env": [],
+   "timeout": 60,
+   "executable": "docker",
+   "run_args": [
+    "--rm"
+   ],
+   "container_timeout": "2h",
+   "pull_timeout": 300,
+   "interpreter": [
+    "bash",
+    "-c"
+   ]
+  },
+  "agent_wall_time_s": 282.6
+ },
+ "workspace": "/testbed",
+ "excluded_from_workspace": [
+  ".git",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".tox",
+  "__pycache__",
+  "*.pyc",
+  "*.egg-info"
+ ],
+ "steps": [
+  {
+   "i": 0,
+   "cmd_sha256": "117cc923f8863b02",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 1,
+   "cmd_sha256": "8bdd2294c95eef67",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 2,
+   "cmd_sha256": "0147b72a8a7060fb",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 3,
+   "cmd_sha256": "731cac9f11d9f162",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 4,
+   "cmd_sha256": "4296aab5bfed63b0",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 5,
+   "cmd_sha256": "36beca2d16832d46",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 6,
+   "cmd_sha256": "ac14e544414a87fe",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 7,
+   "cmd_sha256": "2b4bde6927cd99aa",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 8,
+   "cmd_sha256": "30421837a75f460d",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 9,
+   "cmd_sha256": "f957e3f37d318734",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 10,
+   "cmd_sha256": "239f39e6d29e8879",
+   "kind": "read",
+   "recorded_rc": 1,
+   "writes": []
+  },
+  {
+   "i": 11,
+   "cmd_sha256": "244e28ec13fa1fd7",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 12,
+   "cmd_sha256": "0fde306cc7969def",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 13,
+   "cmd_sha256": "5626bb805b56d82a",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 14,
+   "cmd_sha256": "e17cb000e34de08b",
+   "kind": "write",
+   "recorded_rc": 1,
+   "writes": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 15,
+   "cmd_sha256": "770d54d23e076088",
+   "kind": "env",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 16,
+   "cmd_sha256": "5e86e53ef4f2b30d",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 17,
+   "cmd_sha256": "b0018a187a7022e3",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 18,
+   "cmd_sha256": "54baeab19e7fa44b",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 19,
+   "cmd_sha256": "88024114347b431e",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "django/contrib/admin/utils.py"
+   ]
+  },
+  {
+   "i": 20,
+   "cmd_sha256": "b0018a187a7022e3",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 21,
+   "cmd_sha256": "5e86e53ef4f2b30d",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 22,
+   "cmd_sha256": "5b9a9523376d0dfe",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "test_comprehensive.py"
+   ]
+  },
+  {
+   "i": 23,
+   "cmd_sha256": "308813cd94d15e2a",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "test_invalid_json.py"
+   ]
+  },
+  {
+   "i": 24,
+   "cmd_sha256": "7c9647792957b03a",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "django/contrib/admin/utils.py"
+   ]
+  },
+  {
+   "i": 25,
+   "cmd_sha256": "47d9c8187977399d",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "django/contrib/admin/utils.py"
+   ]
+  },
+  {
+   "i": 26,
+   "cmd_sha256": "b0018a187a7022e3",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 27,
+   "cmd_sha256": "785151cc08f403f8",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 28,
+   "cmd_sha256": "e857cd7c2314e0f2",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 29,
+   "cmd_sha256": "cdc603ffb684c9a2",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 30,
+   "cmd_sha256": "fa34d151a9a73449",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 31,
+   "cmd_sha256": "f5ba2e013ed38486",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 32,
+   "cmd_sha256": "c799893609245af5",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 33,
+   "cmd_sha256": "31cc9981e248d171",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 34,
+   "cmd_sha256": "7d971293a7e91bee",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 35,
+   "cmd_sha256": "7e1f2599c19293ce",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 36,
+   "cmd_sha256": "b3b0ecffdd7c05ef",
+   "kind": "write",
+   "recorded_rc": 1,
+   "writes": [
+    "test_admin_integration.py"
+   ]
+  },
+  {
+   "i": 37,
+   "cmd_sha256": "258d7f04dbce029c",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 38,
+   "cmd_sha256": "27201679af0e78f3",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 39,
+   "cmd_sha256": "2bb4780a6ec756cf",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "test_admin_simple.py"
+   ]
+  },
+  {
+   "i": 40,
+   "cmd_sha256": "20abb364882f37d7",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "test_edge_cases.py"
+   ]
+  },
+  {
+   "i": 41,
+   "cmd_sha256": "0fb75a045b74fa8c",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 42,
+   "cmd_sha256": "209588ac0ba0d327",
+   "kind": "eval",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 43,
+   "cmd_sha256": "ec2fa170e60b39b7",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 44,
+   "cmd_sha256": "561b5ad163fe6ca4",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "test_final.py"
+   ]
+  },
+  {
+   "i": 45,
+   "cmd_sha256": "46a05a4ed93d3f4e",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 46,
+   "cmd_sha256": "d2090a1d319df941",
+   "kind": "write",
+   "recorded_rc": 0,
+   "writes": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 47,
+   "cmd_sha256": "cb7e5fa551f9866a",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 48,
+   "cmd_sha256": "95950ccb578e4c3c",
+   "kind": "read",
+   "recorded_rc": 0,
+   "writes": []
+  },
+  {
+   "i": 49,
+   "cmd_sha256": "14dc06def76579e8",
+   "kind": "read",
+   "recorded_rc": null,
+   "writes": []
+  }
+ ],
+ "transactions": {
+  "minimal": [
+   {
+    "first": 0,
+    "last": 49,
+    "outcome": "commit",
+    "id": 0,
+    "writes": 11,
+    "evals": 18
+   }
+  ],
+  "per_eval": [
+   {
+    "first": 0,
+    "last": 14,
+    "outcome": "commit",
+    "id": 0,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 15,
+    "last": 16,
+    "outcome": "commit",
+    "id": 1,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 17,
+    "last": 19,
+    "outcome": "commit",
+    "id": 2,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 20,
+    "last": 21,
+    "outcome": "commit",
+    "id": 3,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 22,
+    "last": 22,
+    "outcome": "commit",
+    "id": 4,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 23,
+    "last": 23,
+    "outcome": "commit",
+    "id": 5,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 24,
+    "last": 24,
+    "outcome": "commit",
+    "id": 6,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 25,
+    "last": 25,
+    "outcome": "commit",
+    "id": 7,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 26,
+    "last": 27,
+    "outcome": "commit",
+    "id": 8,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 28,
+    "last": 33,
+    "outcome": "commit",
+    "id": 9,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 34,
+    "last": 34,
+    "outcome": "commit",
+    "id": 10,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 35,
+    "last": 35,
+    "outcome": "commit",
+    "id": 11,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 36,
+    "last": 36,
+    "outcome": "commit",
+    "id": 12,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 37,
+    "last": 39,
+    "outcome": "commit",
+    "id": 13,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 40,
+    "last": 40,
+    "outcome": "commit",
+    "id": 14,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 41,
+    "last": 41,
+    "outcome": "commit",
+    "id": 15,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 42,
+    "last": 42,
+    "outcome": "commit",
+    "id": 16,
+    "writes": 0,
+    "evals": 1
+   },
+   {
+    "first": 43,
+    "last": 44,
+    "outcome": "commit",
+    "id": 17,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 45,
+    "last": 49,
+    "outcome": "commit",
+    "id": 18,
+    "writes": 1,
+    "evals": 0
+   }
+  ],
+  "per_write": [
+   {
+    "first": 0,
+    "last": 14,
+    "outcome": "commit",
+    "id": 0,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 15,
+    "last": 19,
+    "outcome": "commit",
+    "id": 1,
+    "writes": 1,
+    "evals": 2
+   },
+   {
+    "first": 20,
+    "last": 22,
+    "outcome": "commit",
+    "id": 2,
+    "writes": 1,
+    "evals": 2
+   },
+   {
+    "first": 23,
+    "last": 23,
+    "outcome": "commit",
+    "id": 3,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 24,
+    "last": 24,
+    "outcome": "commit",
+    "id": 4,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 25,
+    "last": 25,
+    "outcome": "commit",
+    "id": 5,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 26,
+    "last": 36,
+    "outcome": "commit",
+    "id": 6,
+    "writes": 1,
+    "evals": 5
+   },
+   {
+    "first": 37,
+    "last": 39,
+    "outcome": "commit",
+    "id": 7,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 40,
+    "last": 40,
+    "outcome": "commit",
+    "id": 8,
+    "writes": 1,
+    "evals": 1
+   },
+   {
+    "first": 41,
+    "last": 44,
+    "outcome": "commit",
+    "id": 9,
+    "writes": 1,
+    "evals": 3
+   },
+   {
+    "first": 45,
+    "last": 49,
+    "outcome": "commit",
+    "id": 10,
+    "writes": 1,
+    "evals": 0
+   }
+  ]
+ },
+ "revert_events": [],
+ "session_outcome": "abort",
+ "summary": {
+  "steps": 50,
+  "revert_events": 0,
+  "accepted_aborts": 0,
+  "minimal": {
+   "transactions": 1,
+   "aborts": 0,
+   "commits": 1,
+   "writing_transactions": 1,
+   "abort_rate_of_writing_transactions": 0.0
+  },
+  "per_eval": {
+   "transactions": 19,
+   "aborts": 0,
+   "commits": 19,
+   "writing_transactions": 11,
+   "abort_rate_of_writing_transactions": 0.0
+  },
+  "per_write": {
+   "transactions": 11,
+   "aborts": 0,
+   "commits": 11,
+   "writing_transactions": 11,
+   "abort_rate_of_writing_transactions": 0.0
+  }
+ },
+ "validation": {
+  "status": "static analysis only",
+  "todo": "replay in the task image and compare workspace hashes (replay.py --validate)"
+ }
+}

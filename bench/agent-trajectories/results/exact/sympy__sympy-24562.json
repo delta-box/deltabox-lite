@@ -1,0 +1,260 @@
+{
+ "instance_id": "sympy__sympy-24562",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "18d1db5f3dae1ed662502afd50a92dead802c7994e6a0a3cc3a8ba1d1f00a6ae",
+ "image": "swebench/sweb.eval.x86_64.sympy_1776_sympy-24562",
+ "image_digest": "sha256:2a49032560c3c59816920b1e00e0dab696d1061821d0fa8b5c5334ff0c000382",
+ "resolved": true,
+ "pypi_as_of": 1771256207.929932,
+ "steps": 34,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 7,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 33,
+ "rc_recorded": 33,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": [
+    "fix_rational.py"
+   ]
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": [
+    "sympy/core/numbers.py"
+   ]
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": [
+    "test_comprehensive.py"
+   ]
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": [
+    "test_edge_cases.py"
+   ]
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": [
+    "final_verification.py"
+   ]
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 13,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 14,
+   "last": 15,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 16,
+   "last": 16,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 17,
+   "last": 18,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 19,
+   "last": 23,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 24,
+   "last": 29,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 30,
+   "last": 31,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 32,
+   "last": 33,
+   "outcome": "none",
+   "id": 7
+  }
+ ],
+ "seconds": 127
+}

@@ -1,0 +1,609 @@
+{
+ "instance_id": "matplotlib__matplotlib-24177",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "f41f160e99e7147b5ada4c802b76e9a2433cdf163d29e7bc2c1157b032beb10a",
+ "image": "swebench/sweb.eval.x86_64.matplotlib_1776_matplotlib-24177",
+ "image_digest": "sha256:7cd1c8287287da69bee7b60943aeda8b6028fc9613295c486accf719ffa77c39",
+ "resolved": true,
+ "pypi_as_of": 1771246488.1088376,
+ "steps": 77,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 19,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 72,
+ "rc_recorded": 76,
+ "nondeterministic_paths": [
+  "test_all_histtypes.png",
+  "test_histogram.png",
+  "test_horizontal.png",
+  "test_original_bug.png",
+  "test_stacked.png",
+  "tmp/tmp7qn5vvdi.o",
+  "tmp/tmpgtjlqjvk.o",
+  "tmp/tmphf1gwp7c.o",
+  "tmp/tmpjht7quq5.o",
+  "tmp/tmpwtoebede.o",
+  "tmp/tmpz9riotgz.o"
+ ],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [
+  "tmp/*.o"
+ ],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 4,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": [
+    "lib/matplotlib/_c_internal_utils.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/_image.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/_path.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/_qhull.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/_tri.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/_ttconv.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/_version.py",
+    "lib/matplotlib/backends/_backend_agg.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/backends/_tkagg.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/ft2font.cpython-311-x86_64-linux-gnu.so",
+    "tmp/tmp7qn5vvdi.o",
+    "tmp/tmpgtjlqjvk.o",
+    "tmp/tmpjht7quq5.o"
+   ]
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": [
+    "test_histogram.png"
+   ]
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": [
+    "debug_hist.py"
+   ]
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": [
+    "debug_hist2.py"
+   ]
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": [
+    "debug_hist3.py"
+   ]
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": [
+    "debug_hist3.py"
+   ]
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": [
+    "debug_hist4.py"
+   ]
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": [
+    "debug_hist5.py"
+   ]
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": [
+    "lib/matplotlib/axes/_base.py.backup"
+   ]
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": [
+    "lib/matplotlib/axes/_base.py"
+   ]
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": [
+    "test_histogram.png"
+   ]
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": [
+    "test_various_scales.py"
+   ]
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": [
+    "test_all_histtypes.py"
+   ]
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": [
+    "test_all_histtypes.png"
+   ]
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": [
+    "test_stacked.py"
+   ]
+  },
+  {
+   "i": 53,
+   "rc": 0,
+   "changed": [
+    "test_stacked.png"
+   ]
+  },
+  {
+   "i": 54,
+   "rc": 0,
+   "changed": [
+    "test_horizontal.py"
+   ]
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": [
+    "test_horizontal.png"
+   ]
+  },
+  {
+   "i": 56,
+   "rc": 0,
+   "changed": [
+    "test_edge_cases.py"
+   ]
+  },
+  {
+   "i": 57,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 58,
+   "rc": 0,
+   "changed": [
+    "test_original_bug.py"
+   ]
+  },
+  {
+   "i": 59,
+   "rc": 0,
+   "changed": [
+    "test_original_bug.png"
+   ]
+  },
+  {
+   "i": 60,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 61,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 62,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 63,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 64,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 65,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 66,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 67,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 68,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 69,
+   "rc": 0,
+   "changed": [
+    "manual_test_hist_step.py"
+   ]
+  },
+  {
+   "i": 70,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 71,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 72,
+   "rc": 0,
+   "changed": [
+    "final_verification.py"
+   ]
+  },
+  {
+   "i": 73,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 74,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 75,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 76,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 3,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 4,
+   "last": 6,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 7,
+   "last": 24,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 25,
+   "last": 26,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 27,
+   "last": 31,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 32,
+   "last": 33,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 34,
+   "last": 35,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 36,
+   "last": 39,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 40,
+   "last": 42,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 43,
+   "last": 45,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 46,
+   "last": 48,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 49,
+   "last": 50,
+   "outcome": "commit",
+   "id": 11
+  },
+  {
+   "first": 51,
+   "last": 52,
+   "outcome": "commit",
+   "id": 12
+  },
+  {
+   "first": 53,
+   "last": 54,
+   "outcome": "commit",
+   "id": 13
+  },
+  {
+   "first": 55,
+   "last": 56,
+   "outcome": "commit",
+   "id": 14
+  },
+  {
+   "first": 57,
+   "last": 58,
+   "outcome": "commit",
+   "id": 15
+  },
+  {
+   "first": 59,
+   "last": 69,
+   "outcome": "commit",
+   "id": 16
+  },
+  {
+   "first": 70,
+   "last": 72,
+   "outcome": "commit",
+   "id": 17
+  },
+  {
+   "first": 73,
+   "last": 74,
+   "outcome": "commit",
+   "id": 18
+  },
+  {
+   "first": 75,
+   "last": 76,
+   "outcome": "none",
+   "id": 19
+  }
+ ],
+ "seconds": 415
+}

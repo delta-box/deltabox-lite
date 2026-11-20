@@ -1,0 +1,713 @@
+{
+ "instance_id": "pylint-dev__pylint-6528",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "4c02aabd3240b25bedc3ef67e38bac620a112c524dc04ab0fb4b943ccec9583e",
+ "image": "swebench/sweb.eval.x86_64.pylint-dev_1776_pylint-6528",
+ "image_digest": "sha256:ee4012ea99c9f90c3ce7c55c22a8eef7993f6776deb55402296811c071019924",
+ "resolved": false,
+ "pypi_as_of": 1771249092.5486252,
+ "steps": 119,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 8,
+ "aborts": 1,
+ "aborted_steps": 4,
+ "rc_match_recording": 118,
+ "rc_recorded": 118,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": [
+    "test_ignore_recursive/.a/foo.py"
+   ]
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": [
+    "test_ignore_recursive/bar.py"
+   ]
+  },
+  {
+   "i": 22,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 41,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 51,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 53,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 54,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 56,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 57,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 58,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 59,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 60,
+   "rc": 0,
+   "changed": [
+    "pylint/lint/pylinter.py.backup"
+   ]
+  },
+  {
+   "i": 61,
+   "rc": 0,
+   "changed": [
+    "pylint/lint/pylinter.py"
+   ]
+  },
+  {
+   "i": 62,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 63,
+   "rc": 0,
+   "changed": [
+    "pylint/lint/pylinter.py"
+   ]
+  },
+  {
+   "i": 64,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 65,
+   "rc": 0,
+   "changed": [
+    "pylint/lint/pylinter.py"
+   ]
+  },
+  {
+   "i": 66,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 67,
+   "rc": 0,
+   "changed": [
+    "pylint/lint/pylinter.py"
+   ]
+  },
+  {
+   "i": 68,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 69,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 70,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 71,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 72,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 73,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 74,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 75,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 76,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 77,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 78,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 79,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 80,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 81,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 82,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 83,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 84,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 85,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 86,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 87,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 88,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 89,
+   "rc": 20,
+   "changed": []
+  },
+  {
+   "i": 90,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 91,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 92,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 93,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 94,
+   "rc": 0,
+   "changed": [
+    "test_ignore_recursive/subdir/nested/test2.py",
+    "test_ignore_recursive/subdir/test1.py"
+   ]
+  },
+  {
+   "i": 95,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 96,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 97,
+   "rc": 0,
+   "changed": [
+    "test_ignore_recursive/test_file.py"
+   ]
+  },
+  {
+   "i": 98,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 99,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 100,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 101,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 102,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 103,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 104,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 105,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 106,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 107,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 108,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 109,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 110,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 111,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 112,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 113,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 114,
+   "rc": 0,
+   "changed": [
+    "test_ignore_recursive/.a/foo.py",
+    "test_ignore_recursive/bar.py",
+    "test_ignore_recursive/subdir/nested/test2.py",
+    "test_ignore_recursive/subdir/test1.py",
+    "test_ignore_recursive/test_file.py"
+   ]
+  },
+  {
+   "i": 115,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 116,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 117,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 118,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 20,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 21,
+   "last": 21,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 22,
+   "last": 60,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 61,
+   "last": 64,
+   "outcome": "abort",
+   "replaces": [
+    65
+   ],
+   "id": 3
+  },
+  {
+   "first": 66,
+   "last": 67,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 68,
+   "last": 94,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 95,
+   "last": 97,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 98,
+   "last": 114,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 115,
+   "last": 116,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 117,
+   "last": 118,
+   "outcome": "none",
+   "id": 9
+  }
+ ],
+ "seconds": 244
+}

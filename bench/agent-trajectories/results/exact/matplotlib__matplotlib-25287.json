@@ -1,0 +1,340 @@
+{
+ "instance_id": "matplotlib__matplotlib-25287",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "839e556c5f5350a8058504f3ac9f22e067b99e860afe9e5e1b6fded1f0a8ec93",
+ "image": "swebench/sweb.eval.x86_64.matplotlib_1776_matplotlib-25287",
+ "image_digest": "sha256:5b08f138d0d1cf6be4719c6cc803de63ff7d139da5372c0a4be6d87031b08b40",
+ "resolved": true,
+ "pypi_as_of": 1771246684.1359859,
+ "steps": 39,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 11,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 35,
+ "rc_recorded": 38,
+ "nondeterministic_paths": [
+  "tmp/tmp9gcsguvp.o",
+  "tmp/tmp_a3kbz8i.o",
+  "tmp/tmpemsy7mhf.o",
+  "tmp/tmpqi3fmddo.o",
+  "tmp/tmpr8ltls3t.o",
+  "tmp/tmpv5u9rbaj.o"
+ ],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [
+  "tmp/*.o"
+ ],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 1,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": [
+    "lib/matplotlib/_c_internal_utils.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/_image.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/_path.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/_qhull.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/_tri.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/_ttconv.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/_version.py",
+    "lib/matplotlib/backends/_backend_agg.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/backends/_tkagg.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/ft2font.cpython-311-x86_64-linux-gnu.so",
+    "tmp/tmpemsy7mhf.o",
+    "tmp/tmpqi3fmddo.o",
+    "tmp/tmpr8ltls3t.o"
+   ]
+  },
+  {
+   "i": 15,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": [
+    "xtick_before.png",
+    "ytick_before.png"
+   ]
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": [
+    "test_offset_color.py"
+   ]
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": [
+    "lib/matplotlib/axis.py.backup"
+   ]
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": [
+    "fix_axis.py",
+    "lib/matplotlib/axis.py"
+   ]
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": [
+    "test_edge_cases.py"
+   ]
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": [
+    "test_original_case.py"
+   ]
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": [
+    "test_set_tick_params.py"
+   ]
+  },
+  {
+   "i": 34,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": [
+    "final_test.py"
+   ]
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 13,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 14,
+   "last": 14,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 15,
+   "last": 19,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 20,
+   "last": 22,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 23,
+   "last": 23,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 24,
+   "last": 24,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 25,
+   "last": 28,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 29,
+   "last": 29,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 30,
+   "last": 33,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 34,
+   "last": 35,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 36,
+   "last": 37,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 38,
+   "last": 38,
+   "outcome": "none",
+   "id": 11
+  }
+ ],
+ "seconds": 538
+}

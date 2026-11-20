@@ -1,0 +1,187 @@
+{
+ "instance_id": "django__django-14752",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "7789661ab41c64ae704c8b42751fb5e23060ceb1745b9f0c96c3ffc3cede38e1",
+ "image": "swebench/sweb.eval.x86_64.django_1776_django-14752",
+ "image_digest": "sha256:df8caa4518b9d1295e55052e61c939bb583e33dbd57db7d44693bc27077c426d",
+ "resolved": true,
+ "pypi_as_of": 1771241989.9857817,
+ "steps": 21,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 6,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 20,
+ "rc_recorded": 20,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 1,
+   "changed": [
+    "test_autocomplete_refactor.py"
+   ]
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": [
+    "django/contrib/admin/views/autocomplete.py"
+   ]
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 1,
+   "changed": [
+    "test_serialize_result_feature.py"
+   ]
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": [
+    "test_simple_serialize.py"
+   ]
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": [
+    "test_pr_scenario.py"
+   ]
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 4,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 5,
+   "last": 7,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 8,
+   "last": 11,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 12,
+   "last": 12,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 13,
+   "last": 16,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 17,
+   "last": 18,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 19,
+   "last": 20,
+   "outcome": "none",
+   "id": 6
+  }
+ ],
+ "seconds": 114
+}

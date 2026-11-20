@@ -1,0 +1,216 @@
+{
+ "instance_id": "django__django-10999",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "e2467adaf9fc1546e5f070d2a12a3643ab9ee736fcbd3bedddf70de709fbf056",
+ "image": "swebench/sweb.eval.x86_64.django_1776_django-10999",
+ "image_digest": "sha256:4dced474a58f982e59782975ab514f4a3de6ed372a80867256cd51f0a21d3be9",
+ "resolved": false,
+ "pypi_as_of": 1771236599.7286062,
+ "steps": 25,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 7,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 24,
+ "rc_recorded": 24,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 1,
+   "changed": [
+    "test_duration_bug.py"
+   ]
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": [
+    "test_regex_match.py"
+   ]
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": [
+    "django/utils/dateparse.py.backup"
+   ]
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": [
+    "django/utils/dateparse.py",
+    "fix_dateparse.py"
+   ]
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": [
+    "test_fixed_duration.py"
+   ]
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": [
+    "demonstrate_fix.py"
+   ]
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 3,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 4,
+   "last": 6,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 7,
+   "last": 7,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 8,
+   "last": 8,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 9,
+   "last": 11,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 12,
+   "last": 20,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 21,
+   "last": 22,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 23,
+   "last": 24,
+   "outcome": "none",
+   "id": 7
+  }
+ ],
+ "seconds": 99
+}

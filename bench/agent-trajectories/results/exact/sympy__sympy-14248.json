@@ -1,0 +1,849 @@
+{
+ "instance_id": "sympy__sympy-14248",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "4ee1e71768c078353d995016ddc8e83a0dc6de491cbba7615f1a7882f592c0f9",
+ "image": "swebench/sweb.eval.x86_64.sympy_1776_sympy-14248",
+ "image_digest": "sha256:242f98435deb417797cd69e9cd0eb85155b2294fdf609e1601db816774915543",
+ "resolved": false,
+ "pypi_as_of": 1771254058.4086757,
+ "steps": 130,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 20,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 129,
+ "rc_recorded": 129,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 1,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": [
+    "sympy/core/basic.py"
+   ]
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": [
+    "sympy/core/expr.py"
+   ]
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": [
+    "sympy/core/containers.py"
+   ]
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": [
+    "sympy/core/containers.py"
+   ]
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": [
+    "sympy/plotting/plot.py"
+   ]
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 53,
+   "rc": 0,
+   "changed": [
+    "fix_matmul_str.py",
+    "sympy/printing/str.py"
+   ]
+  },
+  {
+   "i": 54,
+   "rc": 0,
+   "changed": [
+    "fix_matadd_str.py",
+    "sympy/printing/str.py"
+   ]
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 56,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 57,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 58,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 59,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 60,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 61,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 62,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 63,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 64,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 65,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 66,
+   "rc": 0,
+   "changed": [
+    "fix_latex.py",
+    "sympy/printing/latex.py"
+   ]
+  },
+  {
+   "i": 67,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 68,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 69,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 70,
+   "rc": 0,
+   "changed": [
+    "fix_latex_matmul.py"
+   ]
+  },
+  {
+   "i": 71,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 72,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 73,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 74,
+   "rc": 0,
+   "changed": [
+    "fix_latex_v2.py",
+    "sympy/printing/latex.py"
+   ]
+  },
+  {
+   "i": 75,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 76,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 77,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 78,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 79,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 80,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 81,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 82,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 83,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 84,
+   "rc": 0,
+   "changed": [
+    "fix_latex_matmul2.py",
+    "sympy/printing/latex.py"
+   ]
+  },
+  {
+   "i": 85,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 86,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 87,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 88,
+   "rc": 0,
+   "changed": [
+    "sympy/printing/latex.py"
+   ]
+  },
+  {
+   "i": 89,
+   "rc": 1,
+   "changed": [
+    "fix_latex_proper.py"
+   ]
+  },
+  {
+   "i": 90,
+   "rc": 0,
+   "changed": [
+    "sympy/printing/latex.py"
+   ]
+  },
+  {
+   "i": 91,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 92,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 93,
+   "rc": 0,
+   "changed": [
+    "sympy/printing/pretty/pretty.py"
+   ]
+  },
+  {
+   "i": 94,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 95,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 96,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 97,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 98,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 99,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 100,
+   "rc": 0,
+   "changed": [
+    "sympy/printing/pretty/pretty.py"
+   ]
+  },
+  {
+   "i": 101,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 102,
+   "rc": 0,
+   "changed": [
+    "test_fix.py"
+   ]
+  },
+  {
+   "i": 103,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 104,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 105,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 106,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 107,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 108,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 109,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 110,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 111,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 112,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 113,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 114,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 115,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 116,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 117,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 118,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 119,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 120,
+   "rc": 0,
+   "changed": [
+    "sympy/printing/latex.py"
+   ]
+  },
+  {
+   "i": 121,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 122,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 123,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 124,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 125,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 126,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 127,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 128,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 129,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 6,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 7,
+   "last": 21,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 22,
+   "last": 28,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 29,
+   "last": 31,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 32,
+   "last": 33,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 34,
+   "last": 35,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 36,
+   "last": 53,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 54,
+   "last": 54,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 55,
+   "last": 66,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 67,
+   "last": 70,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 71,
+   "last": 74,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 75,
+   "last": 84,
+   "outcome": "commit",
+   "id": 11
+  },
+  {
+   "first": 85,
+   "last": 88,
+   "outcome": "commit",
+   "id": 12
+  },
+  {
+   "first": 89,
+   "last": 89,
+   "outcome": "commit",
+   "id": 13
+  },
+  {
+   "first": 90,
+   "last": 90,
+   "outcome": "commit",
+   "id": 14
+  },
+  {
+   "first": 91,
+   "last": 93,
+   "outcome": "commit",
+   "id": 15
+  },
+  {
+   "first": 94,
+   "last": 100,
+   "outcome": "commit",
+   "id": 16
+  },
+  {
+   "first": 101,
+   "last": 102,
+   "outcome": "commit",
+   "id": 17
+  },
+  {
+   "first": 103,
+   "last": 120,
+   "outcome": "commit",
+   "id": 18
+  },
+  {
+   "first": 121,
+   "last": 124,
+   "outcome": "commit",
+   "id": 19
+  },
+  {
+   "first": 125,
+   "last": 129,
+   "outcome": "none",
+   "id": 20
+  }
+ ],
+ "seconds": 113
+}

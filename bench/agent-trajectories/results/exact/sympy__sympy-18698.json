@@ -1,0 +1,747 @@
+{
+ "instance_id": "sympy__sympy-18698",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "b604ecf8c5caf3fe6e35a6b0eaa081096543f4ad35c1d99470370b224b420d5a",
+ "image": "swebench/sweb.eval.x86_64.sympy_1776_sympy-18698",
+ "image_digest": "sha256:fddcc1afcb282e97ebe724c0df5d5f045593eee2265ca078ce9895e292019a4e",
+ "resolved": false,
+ "pypi_as_of": 1771255043.484925,
+ "steps": 82,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 32,
+ "aborts": 1,
+ "aborted_steps": 1,
+ "rc_match_recording": 81,
+ "rc_recorded": 81,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 1,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 1,
+   "changed": [
+    "test_trace.py"
+   ]
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": [
+    "test_trace.py"
+   ]
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": [
+    "test_fix.py"
+   ]
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": [
+    "fix.patch"
+   ]
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": [
+    "add_function.py",
+    "sympy/polys/polytools.py"
+   ]
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": [
+    "sympy/polys/polytools.py",
+    "update_generic_factor_list.py"
+   ]
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": [
+    "test_edge_cases.py"
+   ]
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": [
+    "test_factor_list.py"
+   ]
+  },
+  {
+   "i": 28,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 4,
+   "changed": []
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": [
+    "test_multivariate.py"
+   ]
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": [
+    "sympy/polys/polytools.py"
+   ]
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": [
+    "test_expr2.py"
+   ]
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": [
+    "test_sqf_algorithm.py"
+   ]
+  },
+  {
+   "i": 43,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": [
+    "test_expand_univariate.py"
+   ]
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": [
+    "test_expand_multivariate.py"
+   ]
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": [
+    "test_expand_multivariate2.py"
+   ]
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": [
+    "test_poly_sqf.py"
+   ]
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": [
+    "sympy/polys/polytools.py"
+   ]
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": [
+    "test_mul_args.py"
+   ]
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": [
+    "test_poly_factor.py"
+   ]
+  },
+  {
+   "i": 53,
+   "rc": 0,
+   "changed": [
+    "sympy/polys/polytools.py"
+   ]
+  },
+  {
+   "i": 54,
+   "rc": 0,
+   "changed": [
+    "test_original_behavior.py"
+   ]
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": [
+    "trace_sqf.py"
+   ]
+  },
+  {
+   "i": 56,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 57,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 58,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 59,
+   "rc": 0,
+   "changed": [
+    "test_together.py"
+   ]
+  },
+  {
+   "i": 60,
+   "rc": 0,
+   "changed": [
+    "test_together2.py"
+   ]
+  },
+  {
+   "i": 61,
+   "rc": 0,
+   "changed": [
+    "sympy/polys/polytools.py"
+   ]
+  },
+  {
+   "i": 62,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 63,
+   "rc": 0,
+   "changed": [
+    "test_poly_mult.py"
+   ]
+  },
+  {
+   "i": 64,
+   "rc": 0,
+   "changed": [
+    "sympy/polys/polytools.py",
+    "update_fix.py"
+   ]
+  },
+  {
+   "i": 65,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 66,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 67,
+   "rc": 0,
+   "changed": [
+    "test_gens.py"
+   ]
+  },
+  {
+   "i": 68,
+   "rc": 0,
+   "changed": [
+    "sympy/polys/polytools.py",
+    "update_fix2.py"
+   ]
+  },
+  {
+   "i": 69,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 70,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 71,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 72,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 73,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 74,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 75,
+   "rc": 0,
+   "changed": [
+    "add_function.py",
+    "fix.patch",
+    "reproduce_issue.py",
+    "test_edge_cases.py",
+    "test_expand_multivariate.py",
+    "test_expand_multivariate2.py",
+    "test_expand_univariate.py",
+    "test_expr2.py",
+    "test_factor_list.py",
+    "test_fix.py",
+    "test_gens.py",
+    "test_mul_args.py",
+    "test_multivariate.py",
+    "test_original_behavior.py",
+    "test_poly_factor.py",
+    "test_poly_mult.py",
+    "test_poly_sqf.py",
+    "test_sqf_algorithm.py",
+    "test_together.py",
+    "test_together2.py",
+    "test_trace.py",
+    "trace_sqf.py",
+    "update_fix.py",
+    "update_fix2.py",
+    "update_generic_factor_list.py"
+   ]
+  },
+  {
+   "i": 76,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 77,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 78,
+   "rc": 0,
+   "changed": [
+    "final_test.py"
+   ]
+  },
+  {
+   "i": 79,
+   "rc": 0,
+   "changed": [
+    "final_test.py"
+   ]
+  },
+  {
+   "i": 80,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 81,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 9,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 10,
+   "last": 14,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 15,
+   "last": 15,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 16,
+   "last": 17,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 18,
+   "last": 18,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 19,
+   "last": 21,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 22,
+   "last": 24,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 25,
+   "last": 26,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 27,
+   "last": 27,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 28,
+   "last": 36,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 37,
+   "last": 38,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 39,
+   "last": 41,
+   "outcome": "commit",
+   "id": 11
+  },
+  {
+   "first": 42,
+   "last": 42,
+   "outcome": "commit",
+   "id": 12
+  },
+  {
+   "first": 43,
+   "last": 46,
+   "outcome": "commit",
+   "id": 13
+  },
+  {
+   "first": 47,
+   "last": 47,
+   "outcome": "commit",
+   "id": 14
+  },
+  {
+   "first": 48,
+   "last": 48,
+   "outcome": "commit",
+   "id": 15
+  },
+  {
+   "first": 49,
+   "last": 49,
+   "outcome": "commit",
+   "id": 16
+  },
+  {
+   "first": 50,
+   "last": 50,
+   "outcome": "commit",
+   "id": 17
+  },
+  {
+   "first": 51,
+   "last": 51,
+   "outcome": "commit",
+   "id": 18
+  },
+  {
+   "first": 52,
+   "last": 52,
+   "outcome": "commit",
+   "id": 19
+  },
+  {
+   "first": 53,
+   "last": 53,
+   "outcome": "commit",
+   "id": 20
+  },
+  {
+   "first": 54,
+   "last": 54,
+   "outcome": "commit",
+   "id": 21
+  },
+  {
+   "first": 55,
+   "last": 55,
+   "outcome": "commit",
+   "id": 22
+  },
+  {
+   "first": 56,
+   "last": 59,
+   "outcome": "commit",
+   "id": 23
+  },
+  {
+   "first": 60,
+   "last": 60,
+   "outcome": "commit",
+   "id": 24
+  },
+  {
+   "first": 61,
+   "last": 61,
+   "outcome": "commit",
+   "id": 25
+  },
+  {
+   "first": 62,
+   "last": 63,
+   "outcome": "commit",
+   "id": 26
+  },
+  {
+   "first": 64,
+   "last": 64,
+   "outcome": "commit",
+   "id": 27
+  },
+  {
+   "first": 65,
+   "last": 67,
+   "outcome": "commit",
+   "id": 28
+  },
+  {
+   "first": 68,
+   "last": 68,
+   "outcome": "commit",
+   "id": 29
+  },
+  {
+   "first": 69,
+   "last": 75,
+   "outcome": "commit",
+   "id": 30
+  },
+  {
+   "first": 76,
+   "last": 76,
+   "outcome": "commit",
+   "id": 31
+  },
+  {
+   "first": 77,
+   "last": 77,
+   "outcome": "none",
+   "id": 32
+  },
+  {
+   "first": 78,
+   "last": 78,
+   "outcome": "abort",
+   "replaces": [
+    79
+   ],
+   "id": 33
+  },
+  {
+   "first": 80,
+   "last": 81,
+   "outcome": "none",
+   "id": 34
+  }
+ ],
+ "seconds": 144
+}

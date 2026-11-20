@@ -1,0 +1,526 @@
+{
+ "instance_id": "matplotlib__matplotlib-24149",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "a23de212c2327d3c7d8a853dc050eb775da08bb9bb55fc87674ac7acba149f29",
+ "image": "swebench/sweb.eval.x86_64.matplotlib_1776_matplotlib-24149",
+ "image_digest": "sha256:14294abcab0e82584eb761a715cc8de0365957f0375746cc6800c0f3c5a0d402",
+ "resolved": true,
+ "pypi_as_of": 1771246377.2295744,
+ "steps": 67,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 17,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 62,
+ "rc_recorded": 66,
+ "nondeterministic_paths": [
+  "tmp/tmp1mlrm__s.o",
+  "tmp/tmp1tj25cuq.o",
+  "tmp/tmpddv240eg.o",
+  "tmp/tmpkmbzqypq.o",
+  "tmp/tmpuptt119g.o",
+  "tmp/tmpxw7dnqp8.o"
+ ],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [
+  "tmp/*.o"
+ ],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 1,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": [
+    "lib/matplotlib/_c_internal_utils.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/_image.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/_path.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/_qhull.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/_tri.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/_ttconv.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/_version.py",
+    "lib/matplotlib/backends/_backend_agg.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/backends/_tkagg.cpython-311-x86_64-linux-gnu.so",
+    "lib/matplotlib/ft2font.cpython-311-x86_64-linux-gnu.so",
+    "tmp/tmpddv240eg.o",
+    "tmp/tmpkmbzqypq.o",
+    "tmp/tmpxw7dnqp8.o"
+   ]
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 15,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 17,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": [
+    "lib/matplotlib/axes/_axes.py.backup"
+   ]
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": [
+    "lib/matplotlib/axes/_axes.py"
+   ]
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": [
+    "test_edge_cases.py"
+   ]
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 29,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": [
+    "test_broken_barh.py"
+   ]
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": [
+    "lib/matplotlib/axes/_axes.py"
+   ]
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": [
+    "lib/matplotlib/axes/_axes.py"
+   ]
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": [
+    "lib/matplotlib/axes/_axes.py"
+   ]
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 41,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 0,
+   "changed": [
+    "test_errorbar.py"
+   ]
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": [
+    "lib/matplotlib/axes/_axes.py"
+   ]
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 49,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": [
+    "test_scatter.py"
+   ]
+  },
+  {
+   "i": 53,
+   "rc": 0,
+   "changed": [
+    "lib/matplotlib/axes/_axes.py"
+   ]
+  },
+  {
+   "i": 54,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 56,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 57,
+   "rc": 0,
+   "changed": [
+    "comprehensive_test.py"
+   ]
+  },
+  {
+   "i": 58,
+   "rc": 0,
+   "changed": [
+    "test_normal_data.py"
+   ]
+  },
+  {
+   "i": 59,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 60,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 61,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 62,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 63,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 64,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 65,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 66,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 1,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 2,
+   "last": 4,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 5,
+   "last": 10,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 11,
+   "last": 21,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 22,
+   "last": 22,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 23,
+   "last": 25,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 26,
+   "last": 31,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 32,
+   "last": 32,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 33,
+   "last": 34,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 35,
+   "last": 36,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 37,
+   "last": 43,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 44,
+   "last": 46,
+   "outcome": "commit",
+   "id": 11
+  },
+  {
+   "first": 47,
+   "last": 52,
+   "outcome": "commit",
+   "id": 12
+  },
+  {
+   "first": 53,
+   "last": 53,
+   "outcome": "commit",
+   "id": 13
+  },
+  {
+   "first": 54,
+   "last": 57,
+   "outcome": "commit",
+   "id": 14
+  },
+  {
+   "first": 58,
+   "last": 58,
+   "outcome": "commit",
+   "id": 15
+  },
+  {
+   "first": 59,
+   "last": 63,
+   "outcome": "commit",
+   "id": 16
+  },
+  {
+   "first": 64,
+   "last": 66,
+   "outcome": "none",
+   "id": 17
+  }
+ ],
+ "seconds": 466
+}

@@ -1,0 +1,509 @@
+{
+ "instance_id": "pytest-dev__pytest-7571",
+ "run": "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+ "trajectory_sha256": "fe6fd8179a11456eff1201d3798d244726d9275283a0d9e1933a81cae6c1dfe8",
+ "image": "swebench/sweb.eval.x86_64.pytest-dev_1776_pytest-7571",
+ "image_digest": "sha256:a4cdd92a11a554106948342c614cbcaa9a7fc7f42b261859c9deef149a673cfe",
+ "resolved": true,
+ "pypi_as_of": 1771249653.0328748,
+ "steps": 60,
+ "verified": true,
+ "diverged_at": null,
+ "rounds": 1,
+ "commits": 15,
+ "aborts": 0,
+ "aborted_steps": 0,
+ "rc_match_recording": 59,
+ "rc_recorded": 59,
+ "nondeterministic_paths": [],
+ "nondeterministic_rc_steps": [],
+ "random_name_kinds": [],
+ "dropped_aborts": [],
+ "overlapping_reverts": [],
+ "per_step": [
+  {
+   "i": 0,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 1,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 2,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 3,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 4,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 5,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 6,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 7,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 8,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 9,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 10,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 11,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 12,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 13,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 14,
+   "rc": 0,
+   "changed": [
+    ".eggs/README.txt",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/EGG-INFO/PKG-INFO",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/EGG-INFO/RECORD",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/EGG-INFO/WHEEL",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/EGG-INFO/entry_points.txt",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/EGG-INFO/licenses/LICENSE",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/EGG-INFO/requires.txt",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/EGG-INFO/top_level.txt",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/.git_archival.txt",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/__init__.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/__main__.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_cli.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_compat.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_config.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_entrypoints.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_file_finders/__init__.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_file_finders/git.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_file_finders/hg.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_file_finders/pathtools.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_get_version_impl.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_integration/__init__.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_integration/deprecation.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_integration/dump_version.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_integration/pyproject_reading.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_integration/setup_cfg.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_integration/setuptools.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_integration/toml.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_integration/version_inference.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_log.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_modify_version.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_node_utils.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_overrides.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_requirement_cls.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_run_cmd.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_types.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/_version_cls.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/discover.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/fallbacks.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/git.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/hg.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/hg_git.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/integration.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/py.typed",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/scm_workdir.py",
+    ".eggs/setuptools_scm-9.2.2-py3.11.egg/setuptools_scm/version.py",
+    "src/_pytest/_version.py"
+   ]
+  },
+  {
+   "i": 15,
+   "rc": 2,
+   "changed": []
+  },
+  {
+   "i": 16,
+   "rc": 0,
+   "changed": [
+    "test_caplog_issue.py"
+   ]
+  },
+  {
+   "i": 17,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 18,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 19,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 20,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 21,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 22,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 23,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 24,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 25,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 26,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 27,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 28,
+   "rc": 0,
+   "changed": [
+    "reproduce_issue.py"
+   ]
+  },
+  {
+   "i": 29,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 30,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 31,
+   "rc": 0,
+   "changed": [
+    "src/_pytest/logging.py"
+   ]
+  },
+  {
+   "i": 32,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 33,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 34,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 35,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 36,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 37,
+   "rc": 0,
+   "changed": [
+    "test_fix_comprehensive.py"
+   ]
+  },
+  {
+   "i": 38,
+   "rc": 0,
+   "changed": [
+    "test_at_level.py"
+   ]
+  },
+  {
+   "i": 39,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 40,
+   "rc": 0,
+   "changed": [
+    "final_test.py"
+   ]
+  },
+  {
+   "i": 41,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 42,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 43,
+   "rc": 1,
+   "changed": []
+  },
+  {
+   "i": 44,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 45,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 46,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 47,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 48,
+   "rc": 0,
+   "changed": [
+    "test_handler_level_restoration.py"
+   ]
+  },
+  {
+   "i": 49,
+   "rc": 1,
+   "changed": [
+    "test_logger_level_restoration.py"
+   ]
+  },
+  {
+   "i": 50,
+   "rc": 0,
+   "changed": [
+    "test_debug.py"
+   ]
+  },
+  {
+   "i": 51,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 52,
+   "rc": 0,
+   "changed": [
+    "test_logger_level_restoration_v2.py"
+   ]
+  },
+  {
+   "i": 53,
+   "rc": 0,
+   "changed": [
+    "test_at_level_integration.py"
+   ]
+  },
+  {
+   "i": 54,
+   "rc": 0,
+   "changed": [
+    "test_bug_report_exact.py"
+   ]
+  },
+  {
+   "i": 55,
+   "rc": 0,
+   "changed": [
+    "final_test.py",
+    "reproduce_issue.py",
+    "test_at_level.py",
+    "test_at_level_integration.py",
+    "test_bug_report_exact.py",
+    "test_caplog_issue.py",
+    "test_debug.py",
+    "test_fix_comprehensive.py",
+    "test_handler_level_restoration.py",
+    "test_logger_level_restoration.py",
+    "test_logger_level_restoration_v2.py"
+   ]
+  },
+  {
+   "i": 56,
+   "rc": 0,
+   "changed": [
+    "patch.txt"
+   ]
+  },
+  {
+   "i": 57,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 58,
+   "rc": 0,
+   "changed": []
+  },
+  {
+   "i": 59,
+   "rc": 0,
+   "changed": []
+  }
+ ],
+ "transactions": [
+  {
+   "first": 0,
+   "last": 14,
+   "outcome": "commit",
+   "id": 0
+  },
+  {
+   "first": 15,
+   "last": 16,
+   "outcome": "commit",
+   "id": 1
+  },
+  {
+   "first": 17,
+   "last": 28,
+   "outcome": "commit",
+   "id": 2
+  },
+  {
+   "first": 29,
+   "last": 31,
+   "outcome": "commit",
+   "id": 3
+  },
+  {
+   "first": 32,
+   "last": 37,
+   "outcome": "commit",
+   "id": 4
+  },
+  {
+   "first": 38,
+   "last": 38,
+   "outcome": "commit",
+   "id": 5
+  },
+  {
+   "first": 39,
+   "last": 40,
+   "outcome": "commit",
+   "id": 6
+  },
+  {
+   "first": 41,
+   "last": 48,
+   "outcome": "commit",
+   "id": 7
+  },
+  {
+   "first": 49,
+   "last": 49,
+   "outcome": "commit",
+   "id": 8
+  },
+  {
+   "first": 50,
+   "last": 50,
+   "outcome": "commit",
+   "id": 9
+  },
+  {
+   "first": 51,
+   "last": 52,
+   "outcome": "commit",
+   "id": 10
+  },
+  {
+   "first": 53,
+   "last": 53,
+   "outcome": "commit",
+   "id": 11
+  },
+  {
+   "first": 54,
+   "last": 54,
+   "outcome": "commit",
+   "id": 12
+  },
+  {
+   "first": 55,
+   "last": 55,
+   "outcome": "commit",
+   "id": 13
+  },
+  {
+   "first": 56,
+   "last": 56,
+   "outcome": "commit",
+   "id": 14
+  },
+  {
+   "first": 57,
+   "last": 59,
+   "outcome": "none",
+   "id": 15
+  }
+ ],
+ "seconds": 108
+}
