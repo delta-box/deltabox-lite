@@ -737,35 +737,6 @@ mod tests {
         }
     }
 
-    /// Windows counterpart of `background_children_are_stopped_when_the_command_exits`:
-    /// the job object holds the tree, so the leftover is counted and stopped.
-    #[cfg(windows)]
-    #[test]
-    fn background_children_are_stopped_when_the_command_exits_on_windows() {
-        let shell = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
-            .join("System32")
-            .join("cmd.exe");
-        let started = Instant::now();
-        let result = exec(ExecRequest {
-            argv: vec![
-                shell.to_string_lossy().into_owned(),
-                "/c".into(),
-                "start /b ping -n 30 127.0.0.1 >nul & echo started".into(),
-            ],
-            cwd: None,
-            env: None,
-        })
-        .unwrap();
-        assert!(
-            started.elapsed() < Duration::from_secs(15),
-            "waited on the background child: {result:?}"
-        );
-        assert_eq!(result.exit_code, Some(0), "{result:?}");
-        assert_eq!(result.stdout.trim(), "started", "{result:?}");
-        assert!(result.background_terminated >= 1, "{result:?}");
-        assert!(!result.output_detached, "{result:?}");
-    }
-
     // macOS ships no `setsid` command.
     #[cfg(target_os = "linux")]
     #[test]
@@ -870,5 +841,30 @@ mod windows_tests {
             "cancel did not end the command tree"
         );
         assert_ne!(result.exit_code, Some(0));
+    }
+
+    /// Windows counterpart of `background_children_are_stopped_when_the_command_exits`:
+    /// the job object holds the tree, so the leftover is counted and stopped.
+    #[test]
+    fn background_children_are_stopped_when_the_command_exits_on_windows() {
+        let started = Instant::now();
+        let result = exec(ExecRequest {
+            argv: vec![
+                "cmd".into(),
+                "/c".into(),
+                "start /b ping -n 30 127.0.0.1 >nul & echo started".into(),
+            ],
+            cwd: None,
+            env: None,
+        })
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "waited on the background child: {result:?}"
+        );
+        assert_eq!(result.exit_code, Some(0), "{result:?}");
+        assert_eq!(result.stdout.trim(), "started", "{result:?}");
+        assert!(result.background_terminated >= 1, "{result:?}");
+        assert!(!result.output_detached, "{result:?}");
     }
 }

@@ -737,8 +737,13 @@ fn recovery_rolls_back_a_crashed_commit_without_a_frozen_checkpoint() {
 /// Shell script that writes published.txt now and, from a detached process
 /// that outlives the exec, late.txt once `trigger` exists.
 fn background_writer(trigger: &Path) -> String {
+    // The exec stops whatever is still in its process group when its main
+    // process exits, so wait until the writer has left the group: it creates
+    // a marker (outside the project, so it adds no pending change) only after
+    // `setsid` has moved it into its own session. A marker file, not a FIFO:
+    // opening a FIFO blocks in the Linux sandbox's syscall supervisor.
     format!(
-        "printf published > published.txt; (setsid sh -c 'while [ ! -e {} ]; do sleep 0.01; done; printf late > late.txt' >/dev/null 2>&1 &)",
+        "printf published > published.txt; ready=\"${{TMPDIR:-/tmp}}/writer-ready-$$\"; (setsid sh -c ': > \"$1\"; while [ ! -e {} ]; do sleep 0.01; done; printf late > late.txt' sh \"$ready\" >/dev/null 2>&1 &); while [ ! -e \"$ready\" ]; do sleep 0.01; done; rm -f \"$ready\"",
         trigger.display()
     )
 }
