@@ -78,7 +78,8 @@ async function main() {
     assert.equal(streamedErr.join(''), 'err-line\n')
     assert.equal(sawFirstBeforeExit, true, 'expected first stdout chunk before wait() resolved')
 
-    // Background child inheriting stdout/stderr must not block spawn() or exec().
+    // A background child is stopped when the main process exits, so it does
+    // not block spawn() or exec().
     const bgStart = Date.now()
     const bgSpawn = native.spawn(session.session_id, {
       argv: ['/bin/sh', '-c', 'sleep 30 & echo started'],
@@ -91,6 +92,7 @@ async function main() {
     bgSpawn.close()
     assert.equal(bgExit.exit_code, 0)
     assert.equal(bgOut.join(''), 'started\n')
+    assert.equal(bgExit.background_terminated, 1)
     assert.ok(Date.now() - bgStart < 5000, 'spawn() hung waiting on background child pipe')
 
     const bgExecStart = Date.now()
@@ -103,6 +105,7 @@ async function main() {
     )
     assert.equal(bgExec.exit_code, 0)
     assert.equal(bgExec.stdout, 'started\n')
+    assert.equal(bgExec.background_terminated, 1)
     assert.ok(Date.now() - bgExecStart < 5000, 'exec() hung waiting on background child pipe')
 
     // Handle-based kill() terminates a running command promptly.

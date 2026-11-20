@@ -131,10 +131,131 @@ pub fn kill_process_group(pgid: i32) {
     }
 }
 
+/// How long processes left behind by a finished command get to exit after
+/// SIGTERM before they are sent SIGKILL.
+pub const SURVIVOR_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// End everything still running in a command's process group after its main
+/// process has exited, and return how many processes were found.
+///
+/// A command owns the processes it starts: `sleep 30 & echo started` returns
+/// once `sh` exits, and the `sleep` is stopped here instead of outliving the
+/// command (and its review scope) unseen. This mirrors `bwrap --unshare-pid`
+/// and container runtimes, where the sandbox ends with its main process.
+/// Survivors get SIGTERM, up to `grace` to exit, then SIGKILL.
+///
+/// A descendant that left the group (`setsid`) is not reached; the caller's
+/// bounded pipe drain still keeps it from hanging the command.
+#[cfg(unix)]
+pub fn terminate_survivors(pgid: i32, grace: std::time::Duration) -> u32 {
+    if pgid <= 1 {
+        return 0;
+    }
+    let found = live_group_members(pgid);
+    if found == 0 {
+        return 0;
+    }
+    // SAFETY: killpg has no memory-safety preconditions.
+    unsafe {
+        libc::killpg(pgid, libc::SIGTERM);
+    }
+    let deadline = std::time::Instant::now() + grace;
+    while live_group_members(pgid) > 0 {
+        if std::time::Instant::now() >= deadline {
+            kill_process_group(pgid);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    found
+}
+
+/// Count running (non-zombie) processes in a process group. The group's
+/// leader has already been reaped, so the pgid cannot name a new group.
+#[cfg(target_os = "linux")]
+fn live_group_members(pgid: i32) -> u32 {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return group_exists(pgid);
+    };
+    entries
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .filter_map(|entry| std::fs::read_to_string(entry.path().join("stat")).ok())
+        .filter(|stat| {
+            // Fields after the parenthesised command name: state ppid pgrp ...
+            let Some((_, rest)) = stat.rsplit_once(')') else {
+                return false;
+            };
+            let mut fields = rest.split_whitespace();
+            let state = fields.next();
+            let pgrp = fields.nth(1).and_then(|value| value.parse::<i32>().ok());
+            pgrp == Some(pgid) && state != Some("Z") && state != Some("X")
+        })
+        .count() as u32
+}
+
+/// Without a cheap per-group process listing, report whether the group still
+/// has any member at all (zombies included, so the grace period may run out
+/// before SIGKILL; the result is the same).
+#[cfg(all(unix, not(target_os = "linux")))]
+fn live_group_members(pgid: i32) -> u32 {
+    group_exists(pgid)
+}
+
+#[cfg(unix)]
+fn group_exists(pgid: i32) -> u32 {
+    // SAFETY: signal 0 only checks that the group exists and may be signalled.
+    u32::from(unsafe { libc::killpg(pgid, 0) } == 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[cfg(unix)]
+    #[test]
+    fn terminate_survivors_stops_background_children_of_an_exited_command() {
+        use std::io::Read;
+        use std::os::unix::process::CommandExt;
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "sleep 30 & echo started"])
+            .stdout(std::process::Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pgid = child.id() as i32;
+        let mut stdout = child.stdout.take().unwrap();
+        assert!(child.wait().unwrap().success());
+
+        let started = std::time::Instant::now();
+        assert_eq!(terminate_survivors(pgid, SURVIVOR_GRACE), 1);
+        // The sleep held stdout open; once it is stopped the pipe reaches EOF.
+        let mut output = String::new();
+        stdout.read_to_string(&mut output).unwrap();
+        assert_eq!(output, "started\n");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(terminate_survivors(pgid, SURVIVOR_GRACE), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminate_survivors_is_a_no_op_for_a_command_without_children() {
+        use std::os::unix::process::CommandExt;
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "true"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pgid = child.id() as i32;
+        child.wait().unwrap();
+        assert_eq!(terminate_survivors(pgid, SURVIVOR_GRACE), 0);
+    }
 
     #[test]
     fn register_without_scope_is_a_no_op() {

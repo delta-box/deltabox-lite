@@ -45,7 +45,9 @@ async function runForIsolation(NativeDeltabox, helperBinary, isolation) {
     assert.equal(streamedErr.join(''), 'err-line\n')
     assert.equal(sawFirstBeforeExit, true, `expected incremental stdout before wait() in ${isolation} mode`)
 
-    // 2. Background descendant inheriting stdout/stderr must not block spawn() or exec().
+    // 2. A command owns its process tree: a background descendant is stopped
+    // when the main process exits, so it neither blocks spawn()/exec() nor
+    // keeps running unseen afterwards.
     const bgStart = Date.now()
     const bgSpawn = native.spawn(session.session_id, {
       argv: ['/bin/sh', '-c', 'sleep 30 & echo started'],
@@ -58,6 +60,8 @@ async function runForIsolation(NativeDeltabox, helperBinary, isolation) {
     bgSpawn.close()
     assert.equal(bgExit.exit_code, 0)
     assert.equal(bgOut.join(''), 'started\n')
+    assert.equal(bgExit.background_terminated, 1, `expected the background sleep to be stopped in ${isolation} mode`)
+    assert.equal(bgExit.output_detached, false)
     assert.ok(Date.now() - bgStart < 5000, `spawn() hung on background child in ${isolation} mode`)
 
     const bgExecStart = Date.now()
@@ -70,7 +74,31 @@ async function runForIsolation(NativeDeltabox, helperBinary, isolation) {
     )
     assert.equal(bgExec.exit_code, 0)
     assert.equal(bgExec.stdout, 'started\n')
+    assert.equal(bgExec.background_terminated, 1)
     assert.ok(Date.now() - bgExecStart < 5000, `exec() hung on background child in ${isolation} mode`)
+
+    // The stopped process is really gone (or a zombie awaiting its reaper).
+    const pidExec = await native.exec(
+      session.session_id,
+      ['/bin/sh', '-c', 'sleep 30 & echo $!'],
+      project,
+      undefined,
+      `exec background pid (${isolation})`,
+    )
+    const pid = pidExec.stdout.trim()
+    assert.match(pid, /^\d+$/)
+    const alive = await native.exec(
+      session.session_id,
+      ['/bin/sh', '-c', `ps -o stat= -p ${pid} | grep -qv Z`],
+      project,
+      undefined,
+      `check background pid (${isolation})`,
+    )
+    assert.notEqual(alive.exit_code, 0, `background sleep ${pid} survived its command in ${isolation} mode`)
+
+    // A command without background children reports nothing stopped.
+    const plain = await native.exec(session.session_id, ['/bin/sh', '-c', 'echo plain'], project)
+    assert.equal(plain.background_terminated, 0)
 
     // 3. Handle-based kill() terminates a running command promptly.
     const killStart = Date.now()

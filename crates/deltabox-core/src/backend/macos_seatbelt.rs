@@ -9,7 +9,7 @@ use crate::protocol::{AbortResult, CommitResult, ExecRequest, ExecResult, Sessio
 use crate::snapshot::{
     build_scan_entries, clone_or_copy_file, diff_snapshots, preserve_symlink_times,
 };
-use crate::output::{OutputStream, PipeReader, POST_EXIT_DRAIN_TIMEOUT};
+use crate::output::{OutputStream, PipeReader};
 use crate::worker::{scan_root, ScanEntry};
 use base64::Engine;
 use std::collections::{BTreeSet, HashMap};
@@ -537,17 +537,17 @@ impl SandboxBackend for SeatbeltBackend {
         let out_reader = PipeReader::spawn(stdout, OutputStream::Stdout, sink.clone());
         let err_reader = PipeReader::spawn(stderr, OutputStream::Stderr, sink);
         let status = child.wait()?;
-        // Drain any buffered output briefly without hanging if a background
-        // descendant still holds stdout/stderr open.
-        let drain_deadline = Instant::now() + POST_EXIT_DRAIN_TIMEOUT;
-        let (stdout, out_truncated) = out_reader.finish_by(drain_deadline);
-        let (stderr, err_truncated) = err_reader.finish_by(drain_deadline);
+        // The command owns its process tree: stop what it left running, then
+        // collect output.
+        let settled = crate::output::settle(Some(pgid), out_reader, err_reader);
         Ok(ExecResult {
             exit_code: status.code(),
-            stdout,
-            stderr,
+            stdout: settled.stdout,
+            stderr: settled.stderr,
             duration_ms: start.elapsed().as_millis() as u64,
-            truncated: out_truncated || err_truncated,
+            truncated: settled.truncated,
+            background_terminated: settled.background_terminated,
+            output_detached: settled.output_detached,
             network_denials: state
                 .network_proxy
                 .as_ref()

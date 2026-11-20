@@ -391,9 +391,8 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
     // `wait` owns descendant termination and teardown, so it always runs.
     let exit = process.wait();
     drop(registration);
-    let drain_deadline = std::time::Instant::now() + crate::output::POST_EXIT_DRAIN_TIMEOUT;
-    let (stdout, out_cut) = out.finish_by(drain_deadline);
-    let (stderr, err_cut) = err.finish_by(drain_deadline);
+    // `wait` already tore down the job object, so nothing is left to stop.
+    let settled = crate::output::settle(None, out, err);
     // The proxy outlives the command (it is dropped on return), so its denials are complete here.
     let network_denials = proxy
         .as_ref()
@@ -401,11 +400,13 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
         .unwrap_or_default();
     Ok(ExecResult {
         exit_code: Some(exit?),
-        stdout,
-        stderr,
+        stdout: settled.stdout,
+        stderr: settled.stderr,
         duration_ms: started.elapsed().as_millis() as u64,
-        truncated: out_cut || err_cut,
+        truncated: settled.truncated,
         network_denials,
+        background_terminated: 0,
+        output_detached: settled.output_detached,
     })
 }
 

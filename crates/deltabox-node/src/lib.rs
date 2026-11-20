@@ -146,6 +146,14 @@ pub struct NativeExitResult {
     pub truncated: bool,
     #[napi(js_name = "network_denials")]
     pub network_denials: Vec<NativeNetworkDenial>,
+    /// Processes left running in the command's process group that were
+    /// stopped when its main process exited.
+    #[napi(js_name = "background_terminated")]
+    pub background_terminated: u32,
+    /// A descendant outside the process group still held stdout/stderr after
+    /// the drain window; output may be incomplete.
+    #[napi(js_name = "output_detached")]
+    pub output_detached: bool,
 }
 
 #[napi(object)]
@@ -352,6 +360,14 @@ pub struct NativeExecResult {
     pub truncated: bool,
     #[napi(js_name = "network_denials")]
     pub network_denials: Vec<NativeNetworkDenial>,
+    /// Processes left running in the command's process group that were
+    /// stopped when its main process exited.
+    #[napi(js_name = "background_terminated")]
+    pub background_terminated: u32,
+    /// A descendant outside the process group still held stdout/stderr after
+    /// the drain window; output may be incomplete.
+    #[napi(js_name = "output_detached")]
+    pub output_detached: bool,
 }
 
 #[napi(object)]
@@ -1126,6 +1142,8 @@ fn exec_result(value: ExecResult) -> NativeExecResult {
                 reason: v.reason,
             })
             .collect(),
+        background_terminated: value.background_terminated,
+        output_detached: value.output_detached,
     }
 }
 
@@ -1142,6 +1160,8 @@ fn exit_result(value: ExecResult) -> NativeExitResult {
                 reason: v.reason,
             })
             .collect(),
+        background_terminated: value.background_terminated,
+        output_detached: value.output_detached,
     }
 }
 

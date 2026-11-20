@@ -5,7 +5,7 @@
 //! over process isolation; the default coordinator mode remains sandboxed.
 
 use crate::error::{Error, Result};
-use crate::output::{OutputSink, PipeReader, POST_EXIT_DRAIN_TIMEOUT};
+use crate::output::{OutputSink, PipeReader};
 use crate::protocol::{ExecRequest, ExecResult};
 use crate::worker::MAX_EXEC_OUTPUT_BYTES;
 use std::collections::BTreeMap;
@@ -197,6 +197,10 @@ impl PersistentBash {
             duration_ms: started.elapsed().as_millis() as u64,
             truncated: stdout.truncated || stderr.truncated,
             network_denials: Vec::new(),
+            // The persistent shell outlives each command by design; its jobs
+            // are not stopped per command.
+            background_terminated: 0,
+            output_detached: false,
         })
     }
 
@@ -458,18 +462,26 @@ pub fn exec(request: ExecRequest) -> Result<ExecResult> {
     let status = child
         .wait()
         .map_err(|error| Error::Backend(format!("exec wait failed: {error}")))?;
-    // Drain any buffered output briefly without hanging if a background
-    // descendant still holds stdout/stderr open.
-    let drain_deadline = Instant::now() + POST_EXIT_DRAIN_TIMEOUT;
-    let (stdout, stdout_truncated) = stdout_reader.finish_by(drain_deadline);
-    let (stderr, stderr_truncated) = stderr_reader.finish_by(drain_deadline);
+    // The command owns its process tree: stop what it left running, then
+    // collect output. On Windows, terminating the job does the same (without
+    // a count), so the pipes close before the drain starts.
+    #[cfg(unix)]
+    let settled = crate::output::settle(Some(pgid), stdout_reader, stderr_reader);
+    #[cfg(windows)]
+    if let Some(job) = &job {
+        job.terminate();
+    }
+    #[cfg(not(unix))]
+    let settled = crate::output::settle(None, stdout_reader, stderr_reader);
     Ok(ExecResult {
         exit_code: status.code(),
-        stdout,
-        stderr,
+        stdout: settled.stdout,
+        stderr: settled.stderr,
         duration_ms: started.elapsed().as_millis() as u64,
-        truncated: stdout_truncated || stderr_truncated,
+        truncated: settled.truncated,
         network_denials: Vec::new(),
+        background_terminated: settled.background_terminated,
+        output_detached: settled.output_detached,
     })
 }
 
@@ -652,6 +664,86 @@ mod tests {
         while process_is_alive(child) {
             assert!(Instant::now() < deadline, "grandchild survived the cancel");
             std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn background_children_are_stopped_when_the_command_exits() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("child.pid");
+        let started = Instant::now();
+        let result = exec(ExecRequest {
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                format!(
+                    "sleep 60 & echo $! > '{}'; echo started",
+                    pid_file.display()
+                ),
+            ],
+            cwd: None,
+            env: None,
+        })
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "waited on the background child"
+        );
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(result.stdout, "started\n");
+        assert_eq!(result.background_terminated, 1);
+        assert!(!result.output_detached);
+        let child: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process_is_alive(child) {
+            assert!(
+                Instant::now() < deadline,
+                "background child outlived its command"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    // macOS ships no `setsid` command.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_child_that_leaves_the_process_group_is_reported_as_detached() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("child.pid");
+        let started = Instant::now();
+        let result = exec(ExecRequest {
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                format!(
+                    "setsid sh -c 'echo $$ > \"{}\"; exec sleep 60' & sleep 0.2; echo started",
+                    pid_file.display()
+                ),
+            ],
+            cwd: None,
+            env: None,
+        })
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "waited on the escaped child"
+        );
+        assert_eq!(result.stdout, "started\n");
+        assert_eq!(result.background_terminated, 0);
+        assert!(result.output_detached);
+        let child: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // SAFETY: killing a pid this test started.
+        unsafe {
+            libc::kill(child, libc::SIGKILL);
         }
     }
 

@@ -14,8 +14,8 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// How long [`PipeReader::finish`] waits for EOF after the main process has
-/// exited and its process group has been cleaned up. Guards against a
+/// How long [`settle`] waits for EOF after the main process has exited and its
+/// process group has been stopped. Guards against a
 /// descendant that escaped its process group (e.g. via `setsid`) while still
 /// holding a pipe write end open.
 pub(crate) const POST_EXIT_DRAIN_TIMEOUT: Duration = Duration::from_millis(200);
@@ -141,19 +141,67 @@ impl PipeReader {
 
     /// Wait up to `timeout` for EOF, then stop forwarding and return whatever
     /// was captured so far.
-    pub(crate) fn finish(self, timeout: Duration) -> (String, bool) {
-        let _ = self.done.recv_timeout(timeout);
+    pub(crate) fn finish(self, timeout: Duration) -> Captured {
+        let complete = self.done.recv_timeout(timeout).is_ok();
         self.active.store(false, Ordering::Release);
         let buf = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
-        (
-            String::from_utf8_lossy(&buf.bytes).into_owned(),
-            buf.truncated,
-        )
+        Captured {
+            text: String::from_utf8_lossy(&buf.bytes).into_owned(),
+            truncated: buf.truncated,
+            complete,
+        }
     }
 
     /// Wait until `deadline` for EOF, sharing one drain window across pipes.
-    pub(crate) fn finish_by(self, deadline: Instant) -> (String, bool) {
+    pub(crate) fn finish_by(self, deadline: Instant) -> Captured {
         self.finish(deadline.saturating_duration_since(Instant::now()))
+    }
+}
+
+/// What a [`PipeReader`] captured.
+pub(crate) struct Captured {
+    pub text: String,
+    pub truncated: bool,
+    /// The pipe reached EOF. False when something outside the command's
+    /// process group still held it open after the drain window.
+    pub complete: bool,
+}
+
+/// Output and cleanup of a command whose main process has exited.
+pub(crate) struct Settled {
+    pub stdout: String,
+    pub stderr: String,
+    pub truncated: bool,
+    /// Processes still running in the command's process group that were stopped.
+    pub background_terminated: u32,
+    /// A process outside the group (e.g. `setsid`) still held stdout/stderr.
+    pub output_detached: bool,
+}
+
+/// Finish a command after its main process exited: stop what it left running
+/// in its process group (`pgid`, Unix only), then collect its output.
+///
+/// Stopping the group first means the pipes normally reach EOF at once; the
+/// drain window only matters for a descendant that escaped the group.
+pub(crate) fn settle(pgid: Option<i32>, stdout: PipeReader, stderr: PipeReader) -> Settled {
+    #[cfg(unix)]
+    let background_terminated = pgid.map_or(0, |pgid| {
+        crate::cancel::terminate_survivors(pgid, crate::cancel::SURVIVOR_GRACE)
+    });
+    #[cfg(not(unix))]
+    let background_terminated = {
+        let _ = pgid;
+        0
+    };
+    let deadline = Instant::now() + POST_EXIT_DRAIN_TIMEOUT;
+    let out = stdout.finish_by(deadline);
+    let err = stderr.finish_by(deadline);
+    Settled {
+        stdout: out.text,
+        stderr: err.text,
+        truncated: out.truncated || err.truncated,
+        background_terminated,
+        output_detached: !(out.complete && err.complete),
     }
 }
 
@@ -168,10 +216,7 @@ mod tests {
 
     impl OutputSink for CollectSink {
         fn write(&self, stream: OutputStream, bytes: &[u8]) {
-            self.0
-                .lock()
-                .unwrap()
-                .push((stream, bytes.to_vec()));
+            self.0.lock().unwrap().push((stream, bytes.to_vec()));
         }
     }
 
@@ -208,9 +253,10 @@ mod tests {
             OutputStream::Stdout,
             Some(sink.clone()),
         );
-        let (text, truncated) = reader.finish(Duration::from_secs(2));
-        assert_eq!(text, "hello world");
-        assert!(!truncated);
+        let captured = reader.finish(Duration::from_secs(2));
+        assert_eq!(captured.text, "hello world");
+        assert!(!captured.truncated);
+        assert!(captured.complete);
         assert_eq!(
             *sink.0.lock().unwrap(),
             vec![(OutputStream::Stdout, b"hello world".to_vec())]
@@ -233,10 +279,11 @@ mod tests {
         write_end.flush().unwrap();
 
         let started = Instant::now();
-        let (text, truncated) = reader.finish(Duration::from_millis(80));
+        let captured = reader.finish(Duration::from_millis(80));
         assert!(started.elapsed() < Duration::from_secs(2));
-        assert_eq!(text, "started\n");
-        assert!(!truncated);
+        assert_eq!(captured.text, "started\n");
+        assert!(!captured.truncated);
+        assert!(!captured.complete);
         drop(write_end);
     }
 }

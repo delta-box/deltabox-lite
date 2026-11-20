@@ -52,6 +52,19 @@ export interface NativeExecResult {
   duration_ms: number
   truncated: boolean
   network_denials: Array<{ target: string; reason: string }>
+  /**
+   * Processes the command left running in its process group (for example
+   * `cmd &`) that were stopped when its main process exited. A command owns
+   * everything it starts. Always 0 on Windows, where the job object is torn
+   * down without a count.
+   */
+  background_terminated: number
+  /**
+   * A descendant that escaped the process group (for example via `setsid`)
+   * still held stdout/stderr, so output may be incomplete and that process
+   * may still be running.
+   */
+  output_detached: boolean
 }
 
 export interface NativeExitResult {
@@ -59,6 +72,19 @@ export interface NativeExitResult {
   duration_ms: number
   truncated: boolean
   network_denials: Array<{ target: string; reason: string }>
+  /**
+   * Processes the command left running in its process group (for example
+   * `cmd &`) that were stopped when its main process exited. A command owns
+   * everything it starts. Always 0 on Windows, where the job object is torn
+   * down without a count.
+   */
+  background_terminated: number
+  /**
+   * A descendant that escaped the process group (for example via `setsid`)
+   * still held stdout/stderr, so output may be incomplete and that process
+   * may still be running.
+   */
+  output_detached: boolean
 }
 
 export interface NativeSpawnOptions {
@@ -95,8 +121,9 @@ export interface NativeChildProcess {
    */
   onStderr(callback: (chunk: Buffer) => void): void
   /**
-   * Wait for the command to exit. Resolves once the main process exits and
-   * sandbox accounting completes, decoupled from descendant pipe EOF.
+   * Wait for the command to exit. Resolves once the main process exits,
+   * anything it left running in its process group has been stopped, and
+   * sandbox accounting completes.
    */
   wait(): Promise<NativeExitResult>
   /** Terminate this command's whole process tree. */

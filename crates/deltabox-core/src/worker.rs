@@ -68,6 +68,12 @@ pub struct WorkerExecResult {
     pub duration_ms: u64,
     #[serde(default)]
     pub truncated: bool,
+    /// See [`crate::protocol::ExecResult::background_terminated`].
+    #[serde(default)]
+    pub background_terminated: u32,
+    /// See [`crate::protocol::ExecResult::output_detached`].
+    #[serde(default)]
+    pub output_detached: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -326,18 +332,23 @@ fn run_exec(
     let status = child
         .wait()
         .map_err(|error| Error::Backend(format!("exec wait failed: {error}")));
+    // Keep the group registered for SIGTERM cancel until its leftovers are
+    // stopped, so a cancel during the grace period still reaches them.
+    #[cfg(unix)]
+    let settled = crate::output::settle(Some(pgid), out_reader, err_reader);
+    #[cfg(not(unix))]
+    let settled = crate::output::settle(None, out_reader, err_reader);
     #[cfg(unix)]
     ACTIVE_COMMAND_PGID.store(0, std::sync::atomic::Ordering::SeqCst);
     let status = status?;
-    let drain_deadline = std::time::Instant::now() + crate::output::POST_EXIT_DRAIN_TIMEOUT;
-    let (out_text, out_trunc) = out_reader.finish_by(drain_deadline);
-    let (err_text, err_trunc) = err_reader.finish_by(drain_deadline);
     Ok(WorkerExecResult {
         exit_code: status.code(),
-        stdout: out_text,
-        stderr: err_text,
+        stdout: settled.stdout,
+        stderr: settled.stderr,
         duration_ms: now_ms() - start,
-        truncated: out_trunc || err_trunc,
+        truncated: settled.truncated,
+        background_terminated: settled.background_terminated,
+        output_detached: settled.output_detached,
     })
 }
 
