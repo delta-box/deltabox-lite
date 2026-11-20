@@ -48,6 +48,7 @@ struct SessionRuntime {
 enum InnerCmd {
     Exec {
         req: ExecRequest,
+        sink: Option<Arc<dyn crate::output::OutputSink>>,
         resp: std_mpsc::Sender<ChanResult<ExecResult>>,
     },
     Scan {
@@ -241,7 +242,8 @@ impl SandboxBackend for SandlockBackend {
                 }
             })
         });
-        let mut result = self.call(session_id, |resp| InnerCmd::Exec { req, resp }, None)?;
+        let sink = crate::output::current();
+        let mut result = self.call(session_id, |resp| InnerCmd::Exec { req, sink, resp }, None)?;
         if let Some(proxy) = proxy {
             result.network_denials = proxy.denials();
         }
@@ -515,6 +517,7 @@ async fn serve_loop(
     std::fs::create_dir_all(&fs_storage)?;
     let mut sandbox = build_sandbox(&spec, &worker_bin, direct_write)?;
     let mut pending: HashMap<u64, oneshot::Sender<ChanResult<serde_json::Value>>> = HashMap::new();
+    let mut output_sinks: HashMap<u64, Arc<dyn crate::output::OutputSink>> = HashMap::new();
     let mut next_id: u64 = 1;
     let mut fatal: Option<String> = None;
 
@@ -537,12 +540,19 @@ async fn serve_loop(
             evt = async { evt_rx.as_mut().expect("event receiver").recv().await } => {
                 match evt {
                     Some(Some(event)) => {
-                        handle_event(event, &mut pending, &mut ready, &mut fatal);
+                        handle_event(
+                            event,
+                            &mut pending,
+                            &mut output_sinks,
+                            &mut ready,
+                            &mut fatal,
+                        );
                     }
                     Some(None) | None => {
                         if fatal.is_none() {
                             fatal = Some("worker exited unexpectedly".into());
                             fail_all(&mut pending, "worker exited");
+                            output_sinks.clear();
                         }
                         evt_rx = Some(dead_channel());
                     }
@@ -551,7 +561,7 @@ async fn serve_loop(
             cmd = cmd_rx.recv() => {
                 let Some(cmd) = cmd else { break };
                 match cmd {
-                    InnerCmd::Exec { req, resp } => {
+                    InnerCmd::Exec { req, sink, resp } => {
                         if let Some(f) = &fatal {
                             let _ = resp.send(Err(f.clone()));
                             continue;
@@ -564,16 +574,24 @@ async fn serve_loop(
                         next_id += 1;
                         let (otx, orx) = oneshot::channel();
                         pending.insert(id, otx);
+                        let stream_output = if let Some(sink) = sink {
+                            output_sinks.insert(id, sink);
+                            true
+                        } else {
+                            false
+                        };
                         let line = serde_json::to_string(&WorkerCommand::Exec {
                             id,
                             exec: WorkerExec {
                                 argv: req.argv,
                                 cwd: req.cwd,
                                 env: req.env.unwrap_or_default(),
+                                stream_output,
                             },
                         })?;
                         if writer_tx.as_ref().expect("writer").send(line).is_err() {
                             pending.remove(&id);
+                            output_sinks.remove(&id);
                             let _ = resp.send(Err("worker pipe closed".into()));
                             continue;
                         }
@@ -761,17 +779,32 @@ fn maybe_test_crash(point: &str) {
 fn handle_event(
     event: WorkerEvent,
     pending: &mut HashMap<u64, oneshot::Sender<ChanResult<serde_json::Value>>>,
+    output_sinks: &mut HashMap<u64, Arc<dyn crate::output::OutputSink>>,
     ready: &mut bool,
     fatal: &mut Option<String>,
 ) {
     match event {
         WorkerEvent::Ready => *ready = true,
+        WorkerEvent::Output {
+            id,
+            stream,
+            data_base64,
+        } => {
+            if let Some(sink) = output_sinks.get(&id) {
+                use base64::Engine as _;
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&data_base64) {
+                    sink.write(stream, &bytes);
+                }
+            }
+        }
         WorkerEvent::Ok { id, result } => {
+            output_sinks.remove(&id);
             if let Some(tx) = pending.remove(&id) {
                 let _ = tx.send(Ok(result));
             }
         }
         WorkerEvent::Err { id, message } => {
+            output_sinks.remove(&id);
             if let Some(tx) = pending.remove(&id) {
                 let _ = tx.send(Err(message));
             }
@@ -779,6 +812,7 @@ fn handle_event(
         WorkerEvent::Fatal(message) => {
             *fatal = Some(message);
             fail_all(pending, "worker fatal");
+            output_sinks.clear();
         }
     }
 }

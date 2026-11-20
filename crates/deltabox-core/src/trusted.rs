@@ -5,13 +5,15 @@
 //! over process isolation; the default coordinator mode remains sandboxed.
 
 use crate::error::{Error, Result};
+use crate::output::{OutputSink, PipeReader};
 use crate::protocol::{ExecRequest, ExecResult};
-use crate::worker::{read_capped, MAX_EXEC_OUTPUT_BYTES};
+use crate::worker::MAX_EXEC_OUTPUT_BYTES;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 use uuid::Uuid;
@@ -151,8 +153,17 @@ impl PersistentBash {
             .map_err(|error| Error::Backend(format!("persistent bash write failed: {error}")))?;
         self.ambient_environment = ambient_environment;
 
-        let mut stdout = MarkerCollector::status(stdout_prefix);
-        let mut stderr = MarkerCollector::exact(stderr_marker);
+        let sink = crate::output::current();
+        let mut stdout = MarkerCollector::status(
+            stdout_prefix,
+            crate::output::OutputStream::Stdout,
+            sink.clone(),
+        );
+        let mut stderr = MarkerCollector::exact(
+            stderr_marker,
+            crate::output::OutputStream::Stderr,
+            sink,
+        );
         while !stdout.done() || !stderr.done() {
             match self.output.recv() {
                 Ok(OutputChunk {
@@ -186,6 +197,10 @@ impl PersistentBash {
             duration_ms: started.elapsed().as_millis() as u64,
             truncated: stdout.truncated || stderr.truncated,
             network_denials: Vec::new(),
+            // The persistent shell outlives each command by design; its jobs
+            // are not stopped per command.
+            background_terminated: 0,
+            output_detached: false,
         })
     }
 
@@ -204,6 +219,8 @@ impl Drop for PersistentBash {
 struct MarkerCollector {
     marker: Vec<u8>,
     parse_status: bool,
+    stream: crate::output::OutputStream,
+    sink: Option<Arc<dyn OutputSink>>,
     scan: Vec<u8>,
     output: Vec<u8>,
     status: Option<i32>,
@@ -212,10 +229,16 @@ struct MarkerCollector {
 }
 
 impl MarkerCollector {
-    fn exact(marker: Vec<u8>) -> Self {
+    fn exact(
+        marker: Vec<u8>,
+        stream: crate::output::OutputStream,
+        sink: Option<Arc<dyn OutputSink>>,
+    ) -> Self {
         Self {
             marker,
             parse_status: false,
+            stream,
+            sink,
             scan: Vec::new(),
             output: Vec::new(),
             status: None,
@@ -224,10 +247,16 @@ impl MarkerCollector {
         }
     }
 
-    fn status(prefix: Vec<u8>) -> Self {
+    fn status(
+        prefix: Vec<u8>,
+        stream: crate::output::OutputStream,
+        sink: Option<Arc<dyn OutputSink>>,
+    ) -> Self {
         Self {
             marker: prefix,
             parse_status: true,
+            stream,
+            sink,
             scan: Vec::new(),
             output: Vec::new(),
             status: None,
@@ -287,6 +316,11 @@ impl MarkerCollector {
     }
 
     fn append_output(&mut self, bytes: &[u8]) {
+        if !bytes.is_empty() {
+            if let Some(sink) = &self.sink {
+                sink.write(self.stream, bytes);
+            }
+        }
         let room = MAX_EXEC_OUTPUT_BYTES.saturating_sub(self.output.len());
         self.output
             .extend_from_slice(&bytes[..bytes.len().min(room)]);
@@ -404,41 +438,57 @@ pub fn exec(request: ExecRequest) -> Result<ExecResult> {
         .spawn()
         .map_err(|error| Error::Backend(format!("exec spawn failed: {error}")))?;
     #[cfg(unix)]
-    let _cancel = {
-        let pgid = child.id() as i32;
-        crate::cancel::register(move || crate::cancel::kill_process_group(pgid))
-    };
+    let pgid = child.id() as i32;
+    #[cfg(unix)]
+    let _cancel = crate::cancel::register(move || crate::cancel::kill_process_group(pgid));
     // Windows has no process groups; a job object plays the same role. If the
     // job cannot be created the command still runs, it just cannot be
     // cancelled as a tree.
     #[cfg(windows)]
-    let _cancel = job::Job::containing(&child)
-        .map(std::sync::Arc::new)
-        .map(|job| crate::cancel::register(move || job.terminate()));
+    let job = job::Job::containing(&child).map(std::sync::Arc::new);
+    #[cfg(windows)]
+    let _cancel = job.as_ref().map(|job| {
+        let job = std::sync::Arc::clone(job);
+        crate::cancel::register(move || job.terminate())
+    });
+    let sink = crate::output::current();
     let stdout = child.stdout.take().expect("stdout is piped");
     let stderr = child.stderr.take().expect("stderr is piped");
-    let stdout_reader = thread::spawn(move || read_capped(stdout));
-    let stderr_reader = thread::spawn(move || read_capped(stderr));
+    let stdout_reader = PipeReader::spawn(stdout, crate::output::OutputStream::Stdout, sink.clone());
+    let stderr_reader = PipeReader::spawn(stderr, crate::output::OutputStream::Stderr, sink);
 
     // The command lives exactly as long as this call; there is no wall-clock
     // limit here. Callers end it through their cancel scope.
     let status = child
         .wait()
         .map_err(|error| Error::Backend(format!("exec wait failed: {error}")))?;
-
-    let (stdout, stdout_truncated) = stdout_reader
-        .join()
-        .map_err(|_| Error::Backend("stdout reader failed".into()))?;
-    let (stderr, stderr_truncated) = stderr_reader
-        .join()
-        .map_err(|_| Error::Backend("stderr reader failed".into()))?;
+    // The command owns its process tree: stop what it left running, then
+    // collect output. On Windows the job object holds the tree; its main
+    // process has exited, so whatever is still active in it is a leftover.
+    #[cfg(unix)]
+    let settled = crate::output::settle(Some(pgid), stdout_reader, stderr_reader);
+    #[cfg(windows)]
+    let settled = {
+        let survivors = job.as_ref().map_or(0, |job| {
+            let survivors = job.active_processes();
+            if survivors > 0 {
+                job.terminate();
+            }
+            survivors
+        });
+        let mut settled = crate::output::settle(None, stdout_reader, stderr_reader);
+        settled.background_terminated = survivors;
+        settled
+    };
     Ok(ExecResult {
         exit_code: status.code(),
-        stdout,
-        stderr,
+        stdout: settled.stdout,
+        stderr: settled.stderr,
         duration_ms: started.elapsed().as_millis() as u64,
-        truncated: stdout_truncated || stderr_truncated,
+        truncated: settled.truncated,
         network_denials: Vec::new(),
+        background_terminated: settled.background_terminated,
+        output_detached: settled.output_detached,
     })
 }
 
@@ -449,9 +499,10 @@ mod job {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
+        JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+        TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
     pub struct Job(HANDLE);
@@ -493,6 +544,26 @@ mod job {
             // SAFETY: `self.0` is a live job handle.
             unsafe {
                 TerminateJobObject(self.0, 1);
+            }
+        }
+
+        /// Processes still running in the job.
+        pub fn active_processes(&self) -> u32 {
+            // SAFETY: `self.0` is a live job handle and `info` is a correctly
+            // sized out-buffer for this information class.
+            unsafe {
+                let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = std::mem::zeroed();
+                if QueryInformationJobObject(
+                    self.0,
+                    JobObjectBasicAccountingInformation,
+                    &mut info as *mut _ as *mut core::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                    std::ptr::null_mut(),
+                ) == 0
+                {
+                    return 0;
+                }
+                info.ActiveProcesses
             }
         }
     }
@@ -626,6 +697,86 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn background_children_are_stopped_when_the_command_exits() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("child.pid");
+        let started = Instant::now();
+        let result = exec(ExecRequest {
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                format!(
+                    "sleep 60 & echo $! > '{}'; echo started",
+                    pid_file.display()
+                ),
+            ],
+            cwd: None,
+            env: None,
+        })
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "waited on the background child"
+        );
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(result.stdout, "started\n");
+        assert_eq!(result.background_terminated, 1);
+        assert!(!result.output_detached);
+        let child: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process_is_alive(child) {
+            assert!(
+                Instant::now() < deadline,
+                "background child outlived its command"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    // macOS ships no `setsid` command.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_child_that_leaves_the_process_group_is_reported_as_detached() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("child.pid");
+        let started = Instant::now();
+        let result = exec(ExecRequest {
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                format!(
+                    "setsid sh -c 'echo $$ > \"{}\"; exec sleep 60' & sleep 0.2; echo started",
+                    pid_file.display()
+                ),
+            ],
+            cwd: None,
+            env: None,
+        })
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "waited on the escaped child"
+        );
+        assert_eq!(result.stdout, "started\n");
+        assert_eq!(result.background_terminated, 0);
+        assert!(result.output_detached);
+        let child: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // SAFETY: killing a pid this test started.
+        unsafe {
+            libc::kill(child, libc::SIGKILL);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn cancel_kills_a_running_persistent_bash_command() {
         let directory = tempfile::tempdir().unwrap();
         let pid_file = directory.path().join("child.pid");
@@ -690,5 +841,30 @@ mod windows_tests {
             "cancel did not end the command tree"
         );
         assert_ne!(result.exit_code, Some(0));
+    }
+
+    /// Windows counterpart of `background_children_are_stopped_when_the_command_exits`:
+    /// the job object holds the tree, so the leftover is counted and stopped.
+    #[test]
+    fn background_children_are_stopped_when_the_command_exits_on_windows() {
+        let started = Instant::now();
+        let result = exec(ExecRequest {
+            argv: vec![
+                "cmd".into(),
+                "/c".into(),
+                "start /b ping -n 30 127.0.0.1 >nul & echo started".into(),
+            ],
+            cwd: None,
+            env: None,
+        })
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "waited on the background child: {result:?}"
+        );
+        assert_eq!(result.exit_code, Some(0), "{result:?}");
+        assert_eq!(result.stdout.trim(), "started", "{result:?}");
+        assert!(result.background_terminated >= 1, "{result:?}");
+        assert!(!result.output_detached, "{result:?}");
     }
 }

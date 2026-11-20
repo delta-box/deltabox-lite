@@ -134,6 +134,8 @@ enum Command {
         generation: u64,
         spec: SessionSpec,
         request: ExecRequest,
+        #[serde(default)]
+        stream_output: bool,
     },
     Reset,
     Shutdown,
@@ -158,6 +160,10 @@ enum ResultValue {
     Pong,
     Started,
     NetworkStarted { version: u32 },
+    Output {
+        stream: crate::output::OutputStream,
+        data_base64: String,
+    },
     Exec(ExecResult),
     Reset,
     ShuttingDown,
@@ -336,6 +342,7 @@ pub fn exec(
     spec: SessionSpec,
     exec_request: ExecRequest,
 ) -> Result<ExecResult> {
+    let stream_output = crate::output::current().is_some();
     match request(
         endpoint,
         Command::Exec {
@@ -343,6 +350,7 @@ pub fn exec(
             generation,
             spec,
             request: exec_request,
+            stream_output,
         },
     )? {
         ResultValue::Exec(result) => Ok(result),
@@ -525,6 +533,7 @@ fn handle_connection<B: CommandBackend>(
             generation,
             spec,
             request,
+            stream_output,
         } => {
             let operation = OperationLock::acquire(operation_lock)?;
             // The prepared response begins the lock handoff. The caller must
@@ -547,11 +556,23 @@ fn handle_connection<B: CommandBackend>(
             // gone, so nothing can race with a dying process.
             let (cancel_scope, cancel) = crate::cancel::scope();
             let watcher = DisconnectWatcher::start(&stream, cancel.clone())?;
+            let socket_sink = if stream_output {
+                Some(Arc::new(SocketOutputSink::new(stream.try_clone()?)))
+            } else {
+                None
+            };
+            let _output_scope = socket_sink
+                .as_ref()
+                .map(|sink| crate::output::enter(Arc::clone(sink) as Arc<dyn crate::output::OutputSink>));
             let result = executor
                 .lock()
                 .map_err(|_| Error::Backend("command executor lock poisoned".into()))
                 .and_then(|mut executor| executor.exec(&session_id, generation, &spec, request))
                 .map(ResultValue::Exec);
+            drop(_output_scope);
+            if let Some(sink) = socket_sink {
+                sink.close();
+            }
             // Stop watching before anything else: the watcher holds a clone of
             // the socket, which must be released so the client sees the reply.
             drop(watcher);
@@ -678,9 +699,80 @@ fn request_on(mut stream: UnixStream, token: &str, command: Command) -> Result<R
         serde_json::to_writer(reader.get_mut(), &StartConfirmation { start: true })?;
         reader.get_mut().write_all(b"\n")?;
         reader.get_mut().flush()?;
-        return read_result(&mut reader);
+        let mut streamed_any = false;
+        loop {
+            match read_result(&mut reader)? {
+                ResultValue::Output {
+                    stream,
+                    data_base64,
+                } => {
+                    streamed_any = true;
+                    use base64::Engine as _;
+                    if let Ok(bytes) =
+                        base64::engine::general_purpose::STANDARD.decode(&data_base64)
+                    {
+                        crate::output::emit(stream, &bytes);
+                    }
+                }
+                ResultValue::Exec(result) => {
+                    if !streamed_any {
+                        crate::output::emit(
+                            crate::output::OutputStream::Stdout,
+                            result.stdout.as_bytes(),
+                        );
+                        crate::output::emit(
+                            crate::output::OutputStream::Stderr,
+                            result.stderr.as_bytes(),
+                        );
+                    }
+                    return Ok(ResultValue::Exec(result));
+                }
+                other => return Ok(other),
+            }
+        }
     }
     Ok(result)
+}
+
+struct SocketOutputSink {
+    stream: Mutex<Option<UnixStream>>,
+}
+
+impl SocketOutputSink {
+    fn new(stream: UnixStream) -> Self {
+        Self {
+            stream: Mutex::new(Some(stream)),
+        }
+    }
+
+    fn close(&self) {
+        let _ = self.stream.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+}
+
+impl crate::output::OutputSink for SocketOutputSink {
+    fn write(&self, stream: crate::output::OutputStream, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        use base64::Engine as _;
+        let data_base64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let mut guard = self.stream.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(socket) = guard.as_mut() else {
+            return;
+        };
+        if write_response(
+            socket,
+            Response::ok(ResultValue::Output {
+                stream,
+                data_base64,
+            }),
+        )
+        .is_err()
+        {
+            *guard = None;
+        }
+    }
 }
 
 /// Watches the client end of an exec connection. When the client hangs up
@@ -1101,6 +1193,8 @@ mod tests {
                 duration_ms: 1,
                 truncated: false,
                 network_denials: Vec::new(),
+                background_terminated: 0,
+                output_detached: false,
             })
         }
     }
@@ -1372,6 +1466,7 @@ mod tests {
                     generation: 1,
                     spec: spec(&root),
                     request: exec_request("must-not-run"),
+                    stream_output: false,
                 },
             },
         )
@@ -1579,6 +1674,7 @@ mod tests {
                     generation: 1,
                     spec: spec(directory.path()),
                     request: exec_request("forever"),
+                    stream_output: false,
                 },
             },
         )

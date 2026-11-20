@@ -697,6 +697,8 @@ mod tests {
                 duration_ms: 1,
                 truncated: false,
                 network_denials: Vec::new(),
+                background_terminated: 0,
+                output_detached: false,
             })
         }
         fn read_file(&mut self, _session_id: &str, _path: &Path) -> Result<Option<Vec<u8>>> {

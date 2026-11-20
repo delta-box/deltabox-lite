@@ -576,6 +576,44 @@ fn killed_cli_does_not_poison_session_or_publish_partial_work() {
     assert!(!project.path().join("killed.txt").exists());
 }
 
+/// A command owns its process tree: `cmd &` does not hold the command open,
+/// is stopped when the main process exits, and is reported. Same contract as
+/// the Windows tests in `windows_mxc.rs` and `trusted.rs`.
+#[test]
+fn background_children_are_stopped_when_their_command_exits() {
+    let project = tempfile::tempdir().unwrap();
+    let sid = start(project.path());
+    let started = Instant::now();
+    let result = exec(project.path(), &sid, "sleep 30 & echo $!");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "exec waited for its background child: {result}"
+    );
+    assert_eq!(result["exit_code"], 0, "{result}");
+    assert_eq!(result["background_terminated"], 1, "{result}");
+    assert!(result.get("output_detached").is_none(), "{result}");
+    let pid = result["stdout"].as_str().unwrap().trim().to_owned();
+    assert!(pid.parse::<u32>().is_ok(), "{result}");
+    // Neither backend uses a PID namespace, so the pid names a host process.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Command::new("kill")
+        .args(["-0", &pid])
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "background sleep {pid} outlived its command"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let plain = exec(project.path(), &sid, "echo plain");
+    assert!(plain.get("background_terminated").is_none(), "{plain}");
+}
+
 #[test]
 fn per_session_metadata_survives_missing_global_registry() {
     let project = tempfile::tempdir().unwrap();

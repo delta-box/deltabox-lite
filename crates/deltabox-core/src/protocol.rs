@@ -511,6 +511,21 @@ pub struct ExecResult {
     /// Authenticated proxy denials only; direct OS-level denials have no destination event.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub network_denials: Vec<NetworkDenial>,
+    /// Processes the command left running in its process group (e.g. `cmd &`)
+    /// that were stopped when its main process exited. A command owns
+    /// everything it starts; background jobs do not outlive it. The Windows
+    /// sandbox (MXC) stops them too but cannot count them, and reports 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub background_terminated: u32,
+    /// A descendant that escaped the process group (e.g. `setsid`) still held
+    /// stdout/stderr after the drain window, so output may be incomplete and
+    /// that process may still be running.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub output_detached: bool,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

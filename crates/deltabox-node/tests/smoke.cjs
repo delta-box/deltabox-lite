@@ -54,6 +54,82 @@ async function main() {
     assert.equal(exec.exit_code, 0)
     assert.equal(exec.stdout, 'shared-from-node:explicit')
 
+    // Streaming spawn(): stdout and stderr arrive incrementally before wait() resolves.
+    const streamedOut = []
+    const streamedErr = []
+    let sawFirstBeforeExit = false
+    let waitedDone = false
+    const spawned = native.spawn(session.session_id, {
+      argv: ['/bin/sh', '-c', 'printf "first\\n"; sleep 0.25; printf "second\\n"; printf "err-line\\n" >&2'],
+      cwd: project,
+      label: 'native spawn stream',
+    })
+    spawned.onStdout((chunk) => {
+      const text = chunk.toString('utf8')
+      streamedOut.push(text)
+      if (!waitedDone && text.includes('first')) sawFirstBeforeExit = true
+    })
+    spawned.onStderr((chunk) => {
+      streamedErr.push(chunk.toString('utf8'))
+    })
+    const exit = await spawned.wait()
+    waitedDone = true
+    spawned.close()
+    assert.equal(exit.exit_code, 0)
+    assert.equal(streamedOut.join(''), 'first\nsecond\n')
+    assert.equal(streamedErr.join(''), 'err-line\n')
+    assert.equal(sawFirstBeforeExit, true, 'expected first stdout chunk before wait() resolved')
+
+    // A background child is stopped when the main process exits, so it does
+    // not block spawn() or exec().
+    const bgStart = Date.now()
+    const bgSpawn = native.spawn(session.session_id, {
+      argv: ['/bin/sh', '-c', 'sleep 30 & echo started'],
+      cwd: project,
+      label: 'native spawn background',
+    })
+    const bgOut = []
+    bgSpawn.onStdout((chunk) => bgOut.push(chunk.toString('utf8')))
+    const bgExit = await bgSpawn.wait()
+    bgSpawn.close()
+    assert.equal(bgExit.exit_code, 0)
+    assert.equal(bgOut.join(''), 'started\n')
+    assert.equal(bgExit.background_terminated, 1)
+    assert.ok(Date.now() - bgStart < 5000, 'spawn() hung waiting on background child pipe')
+
+    const bgExecStart = Date.now()
+    const bgExec = await native.exec(
+      session.session_id,
+      ['/bin/sh', '-c', 'sleep 30 & echo started'],
+      project,
+      undefined,
+      'native exec background',
+    )
+    assert.equal(bgExec.exit_code, 0)
+    assert.equal(bgExec.stdout, 'started\n')
+    assert.equal(bgExec.background_terminated, 1)
+    assert.ok(Date.now() - bgExecStart < 5000, 'exec() hung waiting on background child pipe')
+
+    // Handle-based kill() terminates a running command promptly.
+    const killStart = Date.now()
+    const toKill = native.spawn(session.session_id, {
+      argv: ['/bin/sh', '-c', 'echo ready; sleep 60'],
+      cwd: project,
+      label: 'native spawn kill',
+    })
+    toKill.onStdout((chunk) => {
+      if (chunk.toString('utf8').includes('ready')) toKill.kill()
+    })
+    const killOutcome = await toKill.wait().then(
+      (res) => ({ ok: true, res }),
+      (err) => ({ ok: false, err }),
+    )
+    toKill.close()
+    assert.ok(Date.now() - killStart < 5000, 'kill() did not end spawned command promptly')
+    if (killOutcome.ok) {
+      assert.notEqual(killOutcome.res.exit_code, 0)
+    }
+
     const review = await native.beginReview(session.session_id, 'task', 'native smoke')
     assert.equal((await native.reviewStatus(session.session_id)).kind, 'task')
     const content = Buffer.from([0, 1, 2, 253, 254, 255])

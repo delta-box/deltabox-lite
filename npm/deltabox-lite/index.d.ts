@@ -53,6 +53,84 @@ export interface NativeExecResult {
   duration_ms: number
   truncated: boolean
   network_denials: Array<{ target: string; reason: string }>
+  /**
+   * Processes the command left running in its process group (for example
+   * `cmd &`) that were stopped when its main process exited. A command owns
+   * everything it starts. The Windows sandbox (MXC) stops them too but
+   * cannot count them, and reports 0.
+   */
+  background_terminated: number
+  /**
+   * A descendant that escaped the process group (for example via `setsid`)
+   * still held stdout/stderr, so output may be incomplete and that process
+   * may still be running.
+   */
+  output_detached: boolean
+}
+
+export interface NativeExitResult {
+  exit_code: number | null
+  duration_ms: number
+  truncated: boolean
+  network_denials: Array<{ target: string; reason: string }>
+  /**
+   * Processes the command left running in its process group (for example
+   * `cmd &`) that were stopped when its main process exited. A command owns
+   * everything it starts. The Windows sandbox (MXC) stops them too but
+   * cannot count them, and reports 0.
+   */
+  background_terminated: number
+  /**
+   * A descendant that escaped the process group (for example via `setsid`)
+   * still held stdout/stderr, so output may be incomplete and that process
+   * may still be running.
+   */
+  output_detached: boolean
+}
+
+export interface NativeSpawnOptions {
+  argv: string[]
+  cwd?: string
+  environment?: NativeEnvironmentEntry[]
+  label?: string
+  executionProfile?: NativeExecutionProfile
+  networkAllow?: string[]
+  /**
+   * Exact absolute paths this command may read and execute (rx). Rejected when
+   * the session policy sets `filesystem.allow_approval = false`; never persisted.
+   */
+  fsReadAllow?: string[]
+  /**
+   * Absolute paths whose directory this command may read, write and execute
+   * (rwx): it can create, rename and delete files there. A file or a new path
+   * grants its directory, created if missing. Writes outside the workspace
+   * cannot be rolled back.
+   */
+  fsWriteAllow?: string[]
+}
+
+/** Handle to a streaming command started with {@link NativeDeltaboxInstance.spawn}. */
+export interface NativeChildProcess {
+  /**
+   * Register a listener for stdout chunks. Chunks emitted before attachment
+   * are buffered and delivered in order.
+   */
+  onStdout(callback: (chunk: Buffer) => void): void
+  /**
+   * Register a listener for stderr chunks. Chunks emitted before attachment
+   * are buffered and delivered in order.
+   */
+  onStderr(callback: (chunk: Buffer) => void): void
+  /**
+   * Wait for the command to exit. Resolves once the main process exits,
+   * anything it left running in its process group has been stopped, and
+   * sandbox accounting completes.
+   */
+  wait(): Promise<NativeExitResult>
+  /** Terminate this command's whole process tree. */
+  kill(): void
+  /** Stop delivering output callbacks and release native stream listeners. */
+  close(): void
 }
 
 /**
@@ -177,6 +255,12 @@ export interface NativeDeltaboxInstance {
    * themselves into a new session or process group are not reached.
    */
   cancelExec(execId: string): boolean
+  /**
+   * Start a command and return a streaming process handle. Prefer this over
+   * {@link exec} when the host wants live stdout/stderr chunks or handle-based
+   * cancellation via {@link NativeChildProcess.kill}.
+   */
+  spawn(sessionId: string, options: NativeSpawnOptions): NativeChildProcess
   readFile(sessionId: string, path: string): Promise<Buffer>
   writeFile(sessionId: string, path: string, content: Buffer): Promise<void>
   recordFileChanges(sessionId: string, paths: string[]): Promise<void>
