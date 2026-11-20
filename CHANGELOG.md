@@ -11,6 +11,8 @@ Unreleased section below into the new version's section.
 
 ### Added
 
+- Node clients can call `sync(sessionId)` to reconcile sibling publications in private sessions.
+
 - `deltabox session list` (`SessionCoordinator::list_sessions`) with
   `--status running|orphaned|stopped` and `--json` output, plus `orphaned` on
   `SessionInfo` (`session status`) so dead attached owners are visible without
