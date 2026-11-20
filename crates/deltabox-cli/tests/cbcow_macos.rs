@@ -532,10 +532,9 @@ fn strict_private_mode_is_durable_across_cli_processes() {
     let socket = runtime.join("command.sock");
     assert_eq!(session.status()["durability"], "strict");
     assert_eq!(session.exec("printf one > a.txt")["exit_code"], 0);
-    let first_ready: Value = serde_json::from_slice(&std::fs::read(&ready).unwrap()).unwrap();
-    let helper_pid = first_ready["pid"].as_u64().unwrap();
-    let helper_nonce = first_ready["nonce"].as_str().unwrap().to_owned();
-    assert!(socket.exists());
+    // Each command runs in the calling CLI process; no command helper exists.
+    assert!(!ready.exists());
+    assert!(!socket.exists());
     let checkpoint = session.run([
         "checkpoint",
         &session.id,
@@ -546,8 +545,6 @@ fn strict_private_mode_is_durable_across_cli_processes() {
     let checkpoint: Value = serde_json::from_slice(&checkpoint.stdout).unwrap();
     let checkpoint = checkpoint["id"].as_str().unwrap();
     assert_eq!(session.exec("printf two > a.txt")["exit_code"], 0);
-    let second_ready: Value = serde_json::from_slice(&std::fs::read(&ready).unwrap()).unwrap();
-    assert_eq!(second_ready["pid"].as_u64(), Some(helper_pid));
     let abort = session.run([
         "abort",
         &session.id,
@@ -581,13 +578,78 @@ fn strict_private_mode_is_durable_across_cli_processes() {
         .output()
         .unwrap();
     assert_ok(&changed_environment);
-    let changed_ready: Value = serde_json::from_slice(&std::fs::read(&ready).unwrap()).unwrap();
-    assert_ne!(changed_ready["nonce"].as_str(), Some(helper_nonce.as_str()));
+    assert!(!socket.exists());
 
     session.stop();
     assert!(!ready.exists());
     assert!(!socket.exists());
     assert!(!runtime.exists());
+}
+
+/// A caller SIGKILLed mid-command runs no cleanup and macOS has no
+/// parent-death signal, so the command's tree outlives it. The next operation
+/// that takes the session lock must stop that tree before doing anything else.
+#[test]
+fn the_next_operation_stops_a_command_left_by_a_killed_caller() {
+    let session = Session::start_with("cbcow-through", false);
+    let projects = session.state.path().join("projects");
+    let project_state = std::fs::read_dir(projects)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let record: Value = serde_json::from_slice(
+        &std::fs::read(project_state.join(&session.id).join("macos-native.json")).unwrap(),
+    )
+    .unwrap();
+    let fence = PathBuf::from(record["state_root"].as_str().unwrap()).join("command-group.json");
+
+    let mut caller = Command::new(bin())
+        .env("DELTABOX_STATE_DIR", session.state.path())
+        .current_dir(session.project.path())
+        .args([
+            "exec",
+            &session.id,
+            "--project",
+            session.project.path().to_str().unwrap(),
+            "--",
+            "/bin/sh",
+            "-c",
+            "sleep 60 & sleep 60",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !fence.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the command never started"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let recorded: Value = serde_json::from_slice(&std::fs::read(&fence).unwrap()).unwrap();
+    let pgid = recorded["pgid"].as_i64().unwrap() as i32;
+    caller.kill().unwrap();
+    caller.wait().unwrap();
+    // SAFETY: signal 0 only checks that the group exists.
+    let alive = |pgid| unsafe { libc::killpg(pgid, 0) } == 0;
+    assert!(alive(pgid), "the command must outlive its SIGKILLed caller");
+
+    // Any operation that takes the session lock runs the fence first.
+    session.status();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while alive(pgid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the next operation did not stop the orphaned command"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!fence.exists());
+    assert_eq!(session.exec("printf ok")["stdout"], "ok");
 }
 
 fn assert_ok(output: &Output) {
@@ -637,14 +699,9 @@ fn read_write_profiles_preserve_macos_tracking_and_protected_state() {
                     .unwrap();
             let engine_state = PathBuf::from(record["state_root"].as_str().unwrap());
             let base = engine_state.join("engine/base/a.txt");
-            let token = engine_state.join("command-token");
-            let token_before = std::fs::read(&token).unwrap();
-            for path in [
-                &base,
-                &token,
-                &metadata.join("session.json"),
-                &session.command_runtime().join("command.ready"),
-            ] {
+            // Written while a command runs, so it exists during each probe.
+            let fence = engine_state.join("command-group.json");
+            for path in [&base, &fence, &metadata.join("session.json")] {
                 let probe = format!(
                     "if cat '{0}'; then exit 1; fi; if printf corrupt > '{0}'; then exit 2; fi; if rm '{0}'; then exit 3; fi",
                     path.display());
@@ -655,10 +712,14 @@ fn read_write_profiles_preserve_macos_tracking_and_protected_state() {
                     "protected {}: {result}",
                     path.display()
                 );
-                assert!(path.exists());
+                // The fence record is removed when the probing command ends;
+                // the probe's exit code already shows it was untouchable.
+                if path != &fence {
+                    assert!(path.exists());
+                }
             }
             assert_eq!(std::fs::read_to_string(&base).unwrap(), "accepted");
-            assert_eq!(std::fs::read(&token).unwrap(), token_before);
+            assert!(!fence.exists(), "a finished command leaves no fence record");
             // Even allow_audit networking must not reach the privileged helpers.
             for socket in [
                 session.command_runtime().join("command.sock"),

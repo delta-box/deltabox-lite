@@ -61,6 +61,37 @@ pub trait SandboxBackend: Send + Sync {
     ) -> Result<AbortResult>;
 }
 
+/// Run one sandboxed command with a sandbox built for it alone: start the
+/// backend's session from `spec`, run the command, and tear the session down.
+///
+/// The command is bound to the calling thread's cancel scope, so `kill()`,
+/// `cancelExec` and the CLI's signal handling end its process tree. Its
+/// process group is recorded in `fence` while it runs, so that if this
+/// process dies without cleaning up, the next session operation stops it
+/// (see `crate::fence`). The caller must hold the session's operation lock.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn run_once(
+    mut backend: impl SandboxBackend,
+    session_id: &str,
+    spec: &crate::protocol::SessionSpec,
+    request: ExecRequest,
+    fence: std::path::PathBuf,
+) -> Result<ExecResult> {
+    backend.start_session(session_id, spec)?;
+    let result = {
+        let _fence = crate::fence::scope(fence);
+        backend.exec(session_id, request)
+    };
+    let stopped = backend.stop_session(session_id);
+    match (result, stopped) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(crate::error::Error::Backend(format!(
+            "{error}; sandbox cleanup failed: {cleanup}"
+        ))),
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub mod linux_sandlock;
 #[cfg(target_os = "linux")]

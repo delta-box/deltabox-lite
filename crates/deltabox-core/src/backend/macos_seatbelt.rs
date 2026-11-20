@@ -528,10 +528,11 @@ impl SandboxBackend for SeatbeltBackend {
         // its children, not only the direct child.
         std::os::unix::process::CommandExt::process_group(&mut command, 0);
         let mut child = command.spawn()?;
-        let _cancel = {
-            let pgid = child.id() as i32;
-            crate::cancel::register(move || crate::cancel::kill_process_group(pgid))
-        };
+        let pgid = child.id() as i32;
+        let _cancel = crate::cancel::register(move || crate::cancel::kill_process_group(pgid));
+        // If this caller dies without cleaning up, the next session operation
+        // stops this group (see `crate::fence`).
+        crate::fence::record(pgid);
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
         let out_thread = std::thread::spawn(move || read_capped(stdout));

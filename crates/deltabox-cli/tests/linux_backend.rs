@@ -5,24 +5,107 @@ use deltabox_core::backend::linux_sandlock::SandlockBackend;
 #[cfg(target_os = "macos")]
 use deltabox_core::backend::macos_seatbelt::SeatbeltBackend;
 use deltabox_core::backend::SandboxBackend;
+#[cfg(target_os = "macos")]
 use deltabox_core::protocol::{
     AbortParams, CheckpointParams, CommitParams, DiffParams, ExecParams,
 };
+use deltabox_core::protocol::{ExecRequest, ExecResult, SessionSpec};
+#[cfg(target_os = "macos")]
 use deltabox_core::session::SessionManager;
-use std::path::PathBuf;
-
-#[cfg(target_os = "linux")]
-fn worker_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_deltabox"))
-}
+use std::path::{Path, PathBuf};
 
 fn native_backend() -> Box<dyn SandboxBackend> {
     #[cfg(target_os = "linux")]
-    return Box::new(SandlockBackend::new(Some(worker_bin())));
+    return Box::new(SandlockBackend::new());
     #[cfg(target_os = "macos")]
     return Box::new(SeatbeltBackend::new());
 }
 
+/// Run one command through the backend directly, with the default agent
+/// policy over `project`. This is how session managers drive it: one session
+/// per command, no copy-on-write layer.
+fn exec_direct(
+    project: &Path,
+    script: &str,
+    cwd: Option<PathBuf>,
+    env: Option<Vec<(String, String)>>,
+) -> ExecResult {
+    // Backends compare real paths, and macOS temp dirs sit behind
+    // /var -> /private/var. That includes the store: Seatbelt's shadow copy of
+    // the project, where the command runs, lives inside it.
+    let project = std::fs::canonicalize(project).unwrap();
+    let cwd = cwd.map(|cwd| std::fs::canonicalize(cwd).unwrap());
+    // Outside the project: Seatbelt's shadow mode copies the project into the
+    // store, which must not copy itself.
+    let store = tempfile::tempdir().unwrap();
+    let spec = SessionSpec {
+        project: project.clone(),
+        host_project: None,
+        store_dir: std::fs::canonicalize(store.path()).unwrap(),
+        policy: deltabox_core::policy::Policy::default_agent(),
+        resolved_deny_paths: None,
+    };
+    let mut backend = native_backend();
+    backend.start_session("direct", &spec).unwrap();
+    let result = backend
+        .exec(
+            "direct",
+            ExecRequest {
+                argv: vec!["sh".into(), "-c".into(), script.into()],
+                cwd,
+                env,
+            },
+        )
+        .unwrap();
+    backend.stop_session("direct").unwrap();
+    result
+}
+
+#[test]
+fn exec_captures_output_and_exit_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let result = exec_direct(dir.path(), "echo out; echo err 1>&2; exit 3", None, None);
+    assert_eq!(result.exit_code, Some(3));
+    assert_eq!(result.stdout, "out\n");
+    assert_eq!(result.stderr, "err\n");
+    assert!(!result.truncated);
+}
+
+#[test]
+fn secrets_are_denied_to_a_direct_command() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".env"), "SECRET=1\n").unwrap();
+    let result = exec_direct(
+        dir.path(),
+        "cat .env; printf x > .env",
+        Some(dir.path().into()),
+        None,
+    );
+    assert_ne!(result.exit_code, Some(0), "reading .env must be denied");
+    assert!(!result.stdout.contains("SECRET"));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(".env")).unwrap(),
+        "SECRET=1\n"
+    );
+}
+
+#[test]
+fn direct_exec_applies_cwd_env_and_a_clean_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+    std::env::set_var("DELTABOX_TEST_CALLER_SECRET", "leaked");
+    let result = exec_direct(
+        dir.path(),
+        "pwd; printf '%s|%s' \"$DBX_VAR\" \"${DELTABOX_TEST_CALLER_SECRET:-}\"",
+        Some(dir.path().join("sub")),
+        Some(vec![("DBX_VAR".into(), "hello-env".into())]),
+    );
+    assert_eq!(result.exit_code, Some(0), "{result:?}");
+    assert!(result.stdout.contains("sub"), "cwd passthrough: {result:?}");
+    assert!(result.stdout.ends_with("hello-env|"), "env: {result:?}");
+}
+
+#[cfg(target_os = "macos")]
 fn start_project() -> (tempfile::TempDir, SessionManager, String) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("hello.txt"), "hello\n").unwrap();
@@ -32,6 +115,7 @@ fn start_project() -> (tempfile::TempDir, SessionManager, String) {
     (dir, manager, info.session_id)
 }
 
+#[cfg(target_os = "macos")]
 fn exec_sh(manager: &mut SessionManager, session_id: &str, script: &str) -> (i32, String, String) {
     let result = manager
         .exec(ExecParams {
@@ -49,6 +133,8 @@ fn exec_sh(manager: &mut SessionManager, session_id: &str, script: &str) -> (i32
     (result.exit_code.unwrap_or(-1), result.stdout, result.stderr)
 }
 
+// Exercises the copy-on-write session mode, which only Seatbelt keeps.
+#[cfg(target_os = "macos")]
 #[test]
 fn exec_captures_output_and_keeps_host_clean() {
     let (dir, mut manager, sid) = start_project();
@@ -91,6 +177,8 @@ fn exec_captures_output_and_keeps_host_clean() {
     assert!(!dir.path().join("created.txt").exists());
 }
 
+// Exercises the copy-on-write session mode, which only Seatbelt keeps.
+#[cfg(target_os = "macos")]
 #[test]
 fn checkpoint_abort_roundtrip() {
     let (_dir, mut manager, sid) = start_project();
@@ -127,6 +215,8 @@ fn checkpoint_abort_roundtrip() {
     assert_ne!(code, 0, "b.txt must be gone after abort");
 }
 
+// Exercises the copy-on-write session mode, which only Seatbelt keeps.
+#[cfg(target_os = "macos")]
 #[test]
 fn commit_applies_to_host() {
     let (dir, mut manager, sid) = start_project();
@@ -152,6 +242,8 @@ fn commit_applies_to_host() {
     assert_eq!(manager.status(&sid).unwrap().pending_changes, 0);
 }
 
+// Exercises the copy-on-write session mode, which only Seatbelt keeps.
+#[cfg(target_os = "macos")]
 #[test]
 fn deletion_state_survives_checkpoint_and_abort() {
     let (dir, mut manager, sid) = start_project();
@@ -185,6 +277,8 @@ fn deletion_state_survives_checkpoint_and_abort() {
     );
 }
 
+// Exercises the copy-on-write session mode, which only Seatbelt keeps.
+#[cfg(target_os = "macos")]
 #[test]
 fn secrets_are_hard_denied() {
     let dir = tempfile::tempdir().unwrap();
@@ -201,6 +295,8 @@ fn secrets_are_hard_denied() {
     );
 }
 
+// Exercises the copy-on-write session mode, which only Seatbelt keeps.
+#[cfg(target_os = "macos")]
 #[test]
 fn stop_discards_pending() {
     let (dir, mut manager, sid) = start_project();
@@ -209,6 +305,8 @@ fn stop_discards_pending() {
     assert!(!dir.path().join("pending.txt").exists());
 }
 
+// Exercises the copy-on-write session mode, which only Seatbelt keeps.
+#[cfg(target_os = "macos")]
 #[test]
 fn checkpoint_before_deletion_abort_restores() {
     let dir = tempfile::tempdir().unwrap();
@@ -249,6 +347,8 @@ fn checkpoint_before_deletion_abort_restores() {
     assert!(dir.path().join("sub/deep/a.txt").exists());
 }
 
+// Exercises the copy-on-write session mode, which only Seatbelt keeps.
+#[cfg(target_os = "macos")]
 #[test]
 fn delete_then_checkpoint_then_commit_applies_deletion() {
     let dir = tempfile::tempdir().unwrap();
@@ -278,6 +378,8 @@ fn delete_then_checkpoint_then_commit_applies_deletion() {
     );
 }
 
+// Exercises the copy-on-write session mode, which only Seatbelt keeps.
+#[cfg(target_os = "macos")]
 #[test]
 fn binary_edit_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
@@ -316,6 +418,8 @@ fn binary_edit_roundtrip() {
     assert_eq!(out.trim(), "010203", "abort restores binary content");
 }
 
+// Exercises the copy-on-write session mode, which only Seatbelt keeps.
+#[cfg(target_os = "macos")]
 #[test]
 fn exec_cwd_and_env() {
     let dir = tempfile::tempdir().unwrap();
@@ -347,6 +451,8 @@ fn exec_cwd_and_env() {
     assert!(result.stdout.contains("hello-env"), "env override");
 }
 
+// Exercises the copy-on-write session mode, which only Seatbelt keeps.
+#[cfg(target_os = "macos")]
 #[test]
 fn fs_read_write_roundtrip() {
     let (dir, mut manager, sid) = start_project();
@@ -389,6 +495,8 @@ fn fs_read_write_roundtrip() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "tracked content");
 }
 
+// Exercises the copy-on-write session mode, which only Seatbelt keeps.
+#[cfg(target_os = "macos")]
 #[test]
 fn fs_ops_deny_secrets_and_outside_paths() {
     let dir = tempfile::tempdir().unwrap();

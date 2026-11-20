@@ -1,147 +1,42 @@
 //! Linux backend powered by sandlock-core.
 //!
-//! A confined worker process owns the COW upper layer across exec calls. The
-//! supervisor (this process) drives the worker over piped stdio and performs
-//! checkpoint freezing, commit merges, and abort restores on the COW layer.
+//! Each command gets its own sandbox, built in the calling process from the
+//! session policy: Landlock and seccomp confinement, a network proxy when the
+//! policy needs one, and resource limits. The command runs as the sandbox's
+//! confined child in its own process group, its output is read straight from
+//! pipes, and the sandbox is dropped when the command ends. There is no
+//! long-lived worker and no IPC.
+//!
+//! Commands write directly to the session's working tree; the session
+//! managers (`cbcow`, `durable`) own all change tracking. The copy-on-write
+//! operations of [`SandboxBackend`] are therefore unsupported here.
 
 use super::SandboxBackend;
 use crate::error::{Error, Result};
 use crate::policy::{NetworkMode, Policy};
 use crate::protocol::{AbortResult, CommitResult, ExecRequest, ExecResult, SessionSpec};
-use crate::snapshot::{copy_tree, move_paths_to_dir};
-use crate::worker::{ScanEntry, WorkerCommand, WorkerEvent, WorkerExec};
-use sandlock_core::sandbox::{BranchAction, ByteSize, Process, StdioMode};
+use crate::worker::{read_capped, ScanEntry};
+use sandlock_core::sandbox::{ByteSize, StdioMode};
 use sandlock_core::{Protection, Sandbox};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::mpsc as std_mpsc;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::{mpsc as tokio_mpsc, oneshot};
+use std::time::Instant;
 
-const READY_TIMEOUT: Duration = Duration::from_secs(15);
-/// Bound for the worker's internal file operations (scan, write). Running
-/// commands are deliberately not bounded here; they end when they exit or when
-/// the request that started them is cancelled.
-const FILE_OP_TIMEOUT: Duration = Duration::from_secs(600);
+/// Environment variables a command inherits from the caller. Everything else
+/// is cleared; the request adds its own explicit values on top.
+const INHERITED_ENV: &[&str] = &[
+    "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "PATH", "SHELL", "TERM", "TZ", "USER",
+];
 
-/// Result type used for channels between the caller and the session runtime.
-type ChanResult<T> = std::result::Result<T, String>;
-
+#[derive(Default)]
 pub struct SandlockBackend {
-    worker_bin: PathBuf,
-    direct_write: bool,
-    sessions: HashMap<String, SessionRuntime>,
-}
-
-struct SessionRuntime {
-    tx: tokio_mpsc::Sender<InnerCmd>,
-    thread: Option<std::thread::JoinHandle<()>>,
-    spec: SessionSpec,
-    network_proxy: Option<crate::network::NetworkProxy>,
-    /// PID of the session's worker process, 0 until it has started.
-    worker_pid: Arc<AtomicI32>,
-}
-
-enum InnerCmd {
-    Exec {
-        req: ExecRequest,
-        resp: std_mpsc::Sender<ChanResult<ExecResult>>,
-    },
-    Scan {
-        resp: std_mpsc::Sender<ChanResult<Vec<String>>>,
-    },
-    CurrentUpper {
-        resp: std_mpsc::Sender<PathBuf>,
-    },
-    Freeze {
-        dest: PathBuf,
-        prev: Option<PathBuf>,
-        resp: std_mpsc::Sender<ChanResult<()>>,
-    },
-    Commit {
-        head_dir: PathBuf,
-        deleted: Vec<String>,
-        resp: std_mpsc::Sender<ChanResult<usize>>,
-    },
-    Abort {
-        resp: std_mpsc::Sender<ChanResult<()>>,
-    },
-    Stop {
-        resp: std_mpsc::Sender<ChanResult<()>>,
-    },
-    Ping {
-        resp: std_mpsc::Sender<ChanResult<()>>,
-    },
-    Write {
-        path: PathBuf,
-        content: Vec<u8>,
-        resp: std_mpsc::Sender<ChanResult<()>>,
-    },
+    sessions: HashMap<String, SessionSpec>,
 }
 
 impl SandlockBackend {
-    pub fn new(worker_bin: Option<PathBuf>) -> Self {
-        let worker_bin = worker_bin.unwrap_or_else(|| {
-            std::env::current_exe().unwrap_or_else(|_| PathBuf::from("deltabox"))
-        });
-        Self {
-            worker_bin,
-            direct_write: false,
-            sessions: HashMap::new(),
-        }
-    }
-
-    /// Run directly against a private, caller-owned transaction tree.
-    /// Sandlock still provides Landlock, seccomp, network, and resource
-    /// isolation, but its syscall-level COW layer is disabled.
-    pub fn new_direct(worker_bin: Option<PathBuf>) -> Self {
-        let mut backend = Self::new(worker_bin);
-        backend.direct_write = true;
-        backend
-    }
-
-    fn call<T: Send + 'static>(
-        &self,
-        session_id: &str,
-        make: impl FnOnce(std_mpsc::Sender<ChanResult<T>>) -> InnerCmd,
-        timeout: Option<Duration>,
-    ) -> Result<T> {
-        let runtime = self
-            .sessions
-            .get(session_id)
-            .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
-        let (tx, rx) = std_mpsc::channel();
-        runtime
-            .tx
-            .blocking_send(make(tx))
-            .map_err(|_| Error::Backend("session runtime closed".into()))?;
-        let res = match timeout {
-            Some(timeout) => rx
-                .recv_timeout(timeout)
-                .map_err(|_| Error::Backend("session command timed out".into()))?,
-            None => rx
-                .recv()
-                .map_err(|_| Error::Backend("session runtime closed".into()))?,
-        };
-        res.map_err(Error::Backend)
-    }
-}
-
-impl Default for SandlockBackend {
-    fn default() -> Self {
-        Self::new(None)
-    }
-}
-
-impl Drop for SandlockBackend {
-    fn drop(&mut self) {
-        let sessions: Vec<String> = self.sessions.keys().cloned().collect();
-        for session_id in sessions {
-            let _ = self.stop_session(&session_id);
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
@@ -158,647 +53,189 @@ impl SandboxBackend for SandlockBackend {
         if self.sessions.contains_key(session_id) {
             return Err(Error::SessionExists(session_id.to_string()));
         }
-        let (tx, rx) = tokio_mpsc::channel(16);
-        let (ready_tx, ready_rx) = std_mpsc::channel();
-        let mut thread_spec = spec.clone();
-        let network_proxy = crate::network::NetworkProxy::prepare(&mut thread_spec.policy)?;
-        let worker_bin = self.worker_bin.clone();
-        let direct_write = self.direct_write;
-        let sid = session_id.to_string();
-        let worker_pid = Arc::new(AtomicI32::new(0));
-        let runtime_worker_pid = Arc::clone(&worker_pid);
-        let thread = std::thread::spawn(move || {
-            run_session(
-                sid,
-                thread_spec,
-                worker_bin,
-                direct_write,
-                rx,
-                ready_tx,
-                runtime_worker_pid,
-            )
-        });
-        ready_rx
-            .recv_timeout(READY_TIMEOUT)
-            .map_err(|_| Error::Backend("session startup timed out".into()))?
-            .map_err(Error::Backend)?;
-        self.sessions.insert(
-            session_id.to_string(),
-            SessionRuntime {
-                tx,
-                thread: Some(thread),
-                spec: spec.clone(),
-                network_proxy,
-                worker_pid,
-            },
-        );
+        spec.policy.validate()?;
+        self.sessions.insert(session_id.to_string(), spec.clone());
         Ok(())
     }
 
     fn stop_session(&mut self, session_id: &str) -> Result<()> {
-        let Some(runtime) = self.sessions.remove(session_id) else {
-            return Ok(());
-        };
-        let (tx, rx) = std_mpsc::channel();
-        let _ = runtime.tx.blocking_send(InnerCmd::Stop { resp: tx });
-        let _ = rx.recv_timeout(Duration::from_secs(15));
-        if let Some(thread) = runtime.thread {
-            let _ = thread.join();
-        }
+        self.sessions.remove(session_id);
         Ok(())
     }
 
     fn ping(&mut self, session_id: &str) -> Result<()> {
-        self.call(
-            session_id,
-            |resp| InnerCmd::Ping { resp },
-            Some(Duration::from_secs(10)),
-        )
+        self.session(session_id).map(|_| ())
     }
 
-    fn exec(&mut self, session_id: &str, mut req: ExecRequest) -> Result<ExecResult> {
-        let proxy = self
-            .sessions
-            .get(session_id)
-            .and_then(|v| v.network_proxy.as_ref());
-        if let Some(proxy) = proxy {
-            proxy.environment(&mut req);
-        }
-        // Bind the command to this call: if the request is cancelled, ask the
-        // worker to kill the command's process group and exit (SIGTERM).
-        let worker_pid = self
-            .sessions
-            .get(session_id)
-            .map(|runtime| Arc::clone(&runtime.worker_pid));
-        let _cancel = worker_pid.map(|worker_pid| {
-            crate::cancel::register(move || {
-                let pid = worker_pid.load(Ordering::SeqCst);
-                if pid > 1 {
-                    // SAFETY: kill has no memory-safety preconditions.
-                    unsafe {
-                        libc::kill(pid, libc::SIGTERM);
-                    }
-                }
-            })
-        });
-        let mut result = self.call(session_id, |resp| InnerCmd::Exec { req, resp }, None)?;
-        if let Some(proxy) = proxy {
-            result.network_denials = proxy.denials();
-        }
-        Ok(result)
+    fn exec(&mut self, session_id: &str, req: ExecRequest) -> Result<ExecResult> {
+        let spec = self.session(session_id)?.clone();
+        exec(spec, req)
     }
 
-    fn read_file(&mut self, session_id: &str, path: &Path) -> Result<Option<Vec<u8>>> {
-        let Some(runtime) = self.sessions.get(session_id) else {
-            return Err(Error::SessionNotFound(session_id.to_string()));
-        };
-        let project = runtime.spec.project.clone();
-        let policy = runtime.spec.policy.clone();
-        let rel = path
-            .strip_prefix(&project)
-            .map_err(|_| Error::InvalidPolicy("fs.read outside project".into()))?;
-        if policy.path_is_denied(rel) {
-            return Err(Error::Backend("path denied by policy".into()));
-        }
-        let _ = runtime;
-        let upper = self.current_upper(session_id)?;
-        let candidates = [upper.join(rel), project.join(rel)];
-        for candidate in candidates {
-            if let Ok(link_meta) = std::fs::symlink_metadata(&candidate) {
-                if link_meta.file_type().is_symlink() {
-                    return Err(Error::Backend(
-                        "fs.read refuses symlinks in the legacy backend".into(),
-                    ));
-                }
-                let canonical = candidate.canonicalize()?;
-                let allowed_root = if candidate.starts_with(&upper) {
-                    &upper
-                } else {
-                    &project
-                };
-                if !canonical.starts_with(allowed_root.canonicalize()?) {
-                    return Err(Error::Backend("fs.read symlink escapes project".into()));
-                }
-                let meta = std::fs::metadata(&canonical)?;
-                if meta.is_file() {
-                    if meta.len() > 16 * 1024 * 1024 {
-                        return Err(Error::Backend("fs.read file exceeds 16 MiB limit".into()));
-                    }
-                    return Ok(Some(std::fs::read(canonical)?));
-                }
-            }
-        }
-        Ok(None)
+    fn read_file(&mut self, _session_id: &str, _path: &Path) -> Result<Option<Vec<u8>>> {
+        Err(unsupported())
     }
 
-    fn write_file(&mut self, session_id: &str, path: &Path, content: Vec<u8>) -> Result<()> {
-        let Some(runtime) = self.sessions.get(session_id) else {
-            return Err(Error::SessionNotFound(session_id.to_string()));
-        };
-        let project = runtime.spec.project.clone();
-        let policy = runtime.spec.policy.clone();
-        let rel = path
-            .strip_prefix(&project)
-            .map_err(|_| Error::InvalidPolicy("fs.write outside project".into()))?;
-        if policy.path_is_denied(rel) {
-            return Err(Error::Backend("path denied by policy".into()));
-        }
-        if policy
-            .limits
-            .max_write_bytes
-            .is_some_and(|limit| content.len() as u64 > limit)
-        {
-            return Err(Error::Backend("fs.write exceeds max_write_bytes".into()));
-        }
-        let _ = runtime;
-        let path = rel.to_path_buf();
-        self.call(
-            session_id,
-            move |resp| InnerCmd::Write {
-                path,
-                content,
-                resp,
-            },
-            Some(FILE_OP_TIMEOUT),
-        )
+    fn write_file(&mut self, _session_id: &str, _path: &Path, _content: Vec<u8>) -> Result<()> {
+        Err(unsupported())
     }
 
-    fn scan(&mut self, session_id: &str) -> Result<Vec<ScanEntry>> {
-        let paths: Vec<String> = self.call(
-            session_id,
-            |resp| InnerCmd::Scan { resp },
-            Some(FILE_OP_TIMEOUT),
-        )?;
-        let Some(runtime) = self.sessions.get(session_id) else {
-            return Err(Error::SessionNotFound(session_id.to_string()));
-        };
-        let project = runtime.spec.project.clone();
-        let upper = self.current_upper(session_id)?;
-        Ok(crate::snapshot::build_scan_entries(
-            &paths, &upper, &project,
-        ))
+    fn scan(&mut self, _session_id: &str) -> Result<Vec<ScanEntry>> {
+        Err(unsupported())
     }
 
-    fn current_upper(&mut self, session_id: &str) -> Result<PathBuf> {
-        let runtime = self
-            .sessions
-            .get(session_id)
-            .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
-        let (tx, rx) = std_mpsc::channel();
-        runtime
-            .tx
-            .blocking_send(InnerCmd::CurrentUpper { resp: tx })
-            .map_err(|_| Error::Backend("session runtime closed".into()))?;
-        rx.recv_timeout(Duration::from_secs(10))
-            .map_err(|_| Error::Backend("current_upper timed out".into()))
+    fn current_upper(&mut self, _session_id: &str) -> Result<PathBuf> {
+        Err(unsupported())
     }
 
     fn freeze_upper(
         &mut self,
-        session_id: &str,
-        dest_dir: &Path,
-        prev_upper: Option<&Path>,
+        _session_id: &str,
+        _dest_dir: &Path,
+        _prev_upper: Option<&Path>,
     ) -> Result<()> {
-        let dest = dest_dir.to_path_buf();
-        let prev = prev_upper.map(|p| p.to_path_buf());
-        self.call(
-            session_id,
-            move |resp| InnerCmd::Freeze { dest, prev, resp },
-            Some(Duration::from_secs(120)),
-        )
+        Err(unsupported())
     }
 
     fn commit_changes(
         &mut self,
-        session_id: &str,
-        checkpoint_id: &str,
-        head_dir: &Path,
-        deleted: Vec<String>,
+        _session_id: &str,
+        _checkpoint_id: &str,
+        _head_dir: &Path,
+        _deleted: Vec<String>,
     ) -> Result<CommitResult> {
-        let Some(runtime) = self.sessions.remove(session_id) else {
-            return Err(Error::SessionNotFound(session_id.to_string()));
-        };
-        let head_dir = head_dir.to_path_buf();
-        let (tx, rx) = std_mpsc::channel();
-        runtime
-            .tx
-            .blocking_send(InnerCmd::Commit {
-                head_dir,
-                deleted,
-                resp: tx,
-            })
-            .map_err(|_| Error::Backend("session runtime closed".into()))?;
-        let applied = rx
-            .recv_timeout(Duration::from_secs(300))
-            .map_err(|_| Error::Backend("commit timed out".into()))?
-            .map_err(Error::Backend)?;
-        if let Some(thread) = runtime.thread {
-            let _ = thread.join();
-        }
-        self.start_session(session_id, &runtime.spec)?;
-        Ok(CommitResult {
-            checkpoint_id: checkpoint_id.to_string(),
-            applied,
-            folded_publications: None,
-        })
-    }
-
-    fn materialize_changes(
-        &mut self,
-        session_id: &str,
-        head_dir: &Path,
-        deleted: Vec<String>,
-    ) -> Result<usize> {
-        let Some(runtime) = self.sessions.remove(session_id) else {
-            return Err(Error::SessionNotFound(session_id.to_string()));
-        };
-        let (tx, rx) = std_mpsc::channel();
-        runtime
-            .tx
-            .blocking_send(InnerCmd::Commit {
-                head_dir: head_dir.to_path_buf(),
-                deleted,
-                resp: tx,
-            })
-            .map_err(|_| Error::Backend("session runtime closed".into()))?;
-        let applied = rx
-            .recv_timeout(Duration::from_secs(300))
-            .map_err(|_| Error::Backend("materialize timed out".into()))?
-            .map_err(Error::Backend)?;
-        if let Some(thread) = runtime.thread {
-            let _ = thread.join();
-        }
-        Ok(applied)
+        Err(unsupported())
     }
 
     fn abort_changes(
         &mut self,
-        session_id: &str,
-        checkpoint_id: &str,
-        head_dir: &Path,
-        deleted: Vec<String>,
+        _session_id: &str,
+        _checkpoint_id: &str,
+        _head_dir: &Path,
+        _deleted: Vec<String>,
     ) -> Result<AbortResult> {
-        let Some(runtime) = self.sessions.remove(session_id) else {
-            return Err(Error::SessionNotFound(session_id.to_string()));
-        };
-        let (tx, rx) = std_mpsc::channel();
-        runtime
-            .tx
-            .blocking_send(InnerCmd::Abort { resp: tx })
-            .map_err(|_| Error::Backend("session runtime closed".into()))?;
-        rx.recv_timeout(Duration::from_secs(300))
-            .map_err(|_| Error::Backend("abort timed out".into()))?
-            .map_err(Error::Backend)?;
-        if let Some(thread) = runtime.thread {
-            let _ = thread.join();
-        }
-        let project = runtime.spec.project.clone();
-        self.start_session(session_id, &runtime.spec)?;
-        let upper = self.current_upper(session_id)?;
-        let checkpoint_upper = head_dir.join("upper");
-        let copied = if checkpoint_upper.exists() {
-            copy_tree(&checkpoint_upper, &upper)?
-        } else {
-            0
-        };
-        let moved = move_paths_to_dir(&project, &deleted, &head_dir.join("hidden"))?;
-        let restored = copied + moved;
-        Ok(AbortResult {
-            checkpoint_id: checkpoint_id.to_string(),
-            restored,
-        })
+        Err(unsupported())
     }
 }
 
-fn run_session(
-    session_id: String,
-    spec: SessionSpec,
-    worker_bin: PathBuf,
-    direct_write: bool,
-    rx: tokio_mpsc::Receiver<InnerCmd>,
-    ready_tx: std_mpsc::Sender<ChanResult<()>>,
-    worker_pid: Arc<AtomicI32>,
-) {
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
+impl SandlockBackend {
+    fn session(&self, session_id: &str) -> Result<&SessionSpec> {
+        self.sessions
+            .get(session_id)
+            .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))
+    }
+}
+
+fn unsupported() -> Error {
+    Error::Unsupported(
+        "the Linux backend runs commands against the session's working tree; \
+         change tracking belongs to the session manager"
+            .into(),
+    )
+}
+
+/// Run one command in a sandbox built for it alone.
+fn exec(mut spec: SessionSpec, mut req: ExecRequest) -> Result<ExecResult> {
+    if req.argv.is_empty() {
+        return Err(Error::InvalidPolicy("empty argv".into()));
+    }
+    // A proxy per command keeps grants and denials attributed to it.
+    let proxy = crate::network::NetworkProxy::prepare(&mut spec.policy)?;
+    if let Some(proxy) = &proxy {
+        proxy.environment(&mut req);
+    }
+    let cwd = req.cwd.clone().unwrap_or_else(|| spec.project.clone());
+    let sandbox = build_sandbox(&spec)?.cwd(&cwd);
+    let sandbox = command_environment(&spec, &req)
+        .into_iter()
+        .fold(sandbox, |sandbox, (key, value)| sandbox.env_var(key, value));
+    let mut sandbox = sandbox
+        .build()
+        .map_err(|e| Error::Backend(format!("sandlock build: {e}")))?;
+
+    // The seccomp-notify supervisor runs on this runtime for the command's
+    // whole life. Its worker threads also outlive the command, which matters:
+    // the child's PR_SET_PDEATHSIG fires when the thread that forked it exits.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
-    {
-        Ok(rt) => rt,
-        Err(e) => {
-            let _ = ready_tx.send(Err(format!("tokio runtime: {e}")));
-            return;
-        }
-    };
-    let result = runtime.block_on(serve_loop(
-        spec,
-        worker_bin,
-        direct_write,
-        rx,
-        ready_tx,
-        worker_pid,
-    ));
-    if let Err(e) = result {
-        eprintln!("deltabox: session {session_id} runtime error: {e}");
-    }
-}
-
-async fn serve_loop(
-    spec: SessionSpec,
-    worker_bin: PathBuf,
-    direct_write: bool,
-    mut cmd_rx: tokio_mpsc::Receiver<InnerCmd>,
-    ready_tx: std_mpsc::Sender<ChanResult<()>>,
-    worker_pid: Arc<AtomicI32>,
-) -> Result<()> {
-    let fs_storage = spec.store_dir.join("cow");
-    std::fs::create_dir_all(&fs_storage)?;
-    let mut sandbox = build_sandbox(&spec, &worker_bin, direct_write)?;
-    let mut pending: HashMap<u64, oneshot::Sender<ChanResult<serde_json::Value>>> = HashMap::new();
-    let mut next_id: u64 = 1;
-    let mut fatal: Option<String> = None;
-
-    let (mut process, current_upper, writer_tx, mut evt_rx) =
-        match spawn_worker(&mut sandbox, &worker_bin, &spec, &fs_storage, direct_write).await {
-            Ok((p, upper, wtx, erx)) => (Some(p), upper, Some(wtx), Some(erx)),
-            Err(e) => {
-                let _ = ready_tx.send(Err(e.to_string()));
-                return Err(e);
-            }
+        .map_err(|e| Error::Backend(format!("tokio runtime: {e}")))?;
+    let started = Instant::now();
+    let (exit_code, stdout, stderr) = runtime.block_on(async {
+        let argv: Vec<&str> = req.argv.iter().map(String::as_str).collect();
+        // stdin is never inherited: from a terminal, sandlock would make the
+        // command the terminal's foreground process group.
+        let mut process = sandbox
+            .popen(&argv, StdioMode::Null, StdioMode::Piped, StdioMode::Piped)
+            .await
+            .map_err(|e| Error::Backend(format!("exec spawn failed: {e}")))?;
+        // sandlock puts the command in its own process group.
+        let pgid = process.pid().unwrap_or(0);
+        let _cancel = crate::cancel::register(move || crate::cancel::kill_process_group(pgid));
+        crate::fence::record(pgid);
+        // Read the pipes on plain threads: blocking reads on the runtime would
+        // starve the supervisor and deadlock the command.
+        let stdout = process.take_stdout().map(read_pipe);
+        let stderr = process.take_stderr().map(read_pipe);
+        let status = process
+            .wait()
+            .await
+            .map_err(|e| Error::Backend(format!("exec wait failed: {e}")))?;
+        let collect = |reader: Option<std::thread::JoinHandle<(String, bool)>>| {
+            reader.map_or_else(
+                || Ok((String::new(), false)),
+                |reader| {
+                    reader
+                        .join()
+                        .map_err(|_| Error::Backend("output reader failed".into()))
+                },
+            )
         };
-    if let Some(pid) = process.as_ref().and_then(|p| p.pid()) {
-        worker_pid.store(pid, Ordering::SeqCst);
-    }
-    let _ = ready_tx.send(Ok(()));
-    let mut ready = true;
-
-    loop {
-        tokio::select! {
-            evt = async { evt_rx.as_mut().expect("event receiver").recv().await } => {
-                match evt {
-                    Some(Some(event)) => {
-                        handle_event(event, &mut pending, &mut ready, &mut fatal);
-                    }
-                    Some(None) | None => {
-                        if fatal.is_none() {
-                            fatal = Some("worker exited unexpectedly".into());
-                            fail_all(&mut pending, "worker exited");
-                        }
-                        evt_rx = Some(dead_channel());
-                    }
-                }
-            }
-            cmd = cmd_rx.recv() => {
-                let Some(cmd) = cmd else { break };
-                match cmd {
-                    InnerCmd::Exec { req, resp } => {
-                        if let Some(f) = &fatal {
-                            let _ = resp.send(Err(f.clone()));
-                            continue;
-                        }
-                        if !ready {
-                            let _ = resp.send(Err("worker not ready".into()));
-                            continue;
-                        }
-                        let id = next_id;
-                        next_id += 1;
-                        let (otx, orx) = oneshot::channel();
-                        pending.insert(id, otx);
-                        let line = serde_json::to_string(&WorkerCommand::Exec {
-                            id,
-                            exec: WorkerExec {
-                                argv: req.argv,
-                                cwd: req.cwd,
-                                env: req.env.unwrap_or_default(),
-                            },
-                        })?;
-                        if writer_tx.as_ref().expect("writer").send(line).is_err() {
-                            pending.remove(&id);
-                            let _ = resp.send(Err("worker pipe closed".into()));
-                            continue;
-                        }
-                        tokio::spawn(async move {
-                            let out = match orx.await {
-                                Ok(Ok(value)) => {
-                                    serde_json::from_value::<ExecResult>(value)
-                                        .map_err(|e| e.to_string())
-                                }
-                                Ok(Err(e)) => Err(e),
-                                Err(_) => Err("worker disconnected".into()),
-                            };
-                            let _ = resp.send(out);
-                        });
-                    }
-                    InnerCmd::Scan { resp } => {
-                        if let Some(f) = &fatal {
-                            let _ = resp.send(Err(f.clone()));
-                            continue;
-                        }
-                        if !ready {
-                            let _ = resp.send(Err("worker not ready".into()));
-                            continue;
-                        }
-                        let id = next_id;
-                        next_id += 1;
-                        let (otx, orx) = oneshot::channel();
-                        pending.insert(id, otx);
-                        let line = serde_json::to_string(&WorkerCommand::Scan { id })?;
-                        if writer_tx.as_ref().expect("writer").send(line).is_err() {
-                            pending.remove(&id);
-                            let _ = resp.send(Err("worker pipe closed".into()));
-                            continue;
-                        }
-                        tokio::spawn(async move {
-                            let out = match orx.await {
-                                Ok(Ok(value)) => serde_json::from_value::<Vec<String>>(value)
-                                    .map_err(|e| e.to_string()),
-                                Ok(Err(e)) => Err(e),
-                                Err(_) => Err("worker disconnected".into()),
-                            };
-                            let _ = resp.send(out);
-                        });
-                    }
-                    InnerCmd::CurrentUpper { resp } => {
-                        let _ = resp.send(current_upper.clone());
-                    }
-                    InnerCmd::Freeze { dest, prev, resp } => {
-                        let r = crate::snapshot::copy_tree_incremental(
-                            &current_upper,
-                            prev.as_deref(),
-                            &dest.join("upper"),
-                        )
-                        .map(|_| ());
-                        let _ = resp.send(r.map_err(|e| e.to_string()));
-                    }
-                    InnerCmd::Commit {
-                        head_dir,
-                        deleted,
-                        resp,
-                    } => {
-                        if let Some(mut p) = process.take() {
-                            let _ = p.kill();
-                            let _ = p.wait().await;
-                        }
-                        fail_all(&mut pending, "session interrupted");
-                        let result: crate::error::Result<usize> = (|| {
-                            if direct_write {
-                                return Ok(0);
-                            }
-                            let copied = copy_tree(&current_upper, &spec.project)?;
-                            maybe_test_crash("materialize_after_copy");
-                            let moved = move_paths_to_dir(
-                                &spec.project,
-                                &deleted,
-                                &head_dir.join("hidden"),
-                            )?;
-                            if let Some(branch) = upper_branch_dir(&current_upper) {
-                                let _ = std::fs::remove_dir_all(branch);
-                            }
-                            Ok(copied + moved)
-                        })();
-                        let _ = resp.send(result.map_err(|e| e.to_string()));
-                        break;
-                    }
-                    InnerCmd::Abort { resp } => {
-                        if let Some(mut p) = process.take() {
-                            let _ = p.kill();
-                            let _ = p.wait().await;
-                        }
-                        fail_all(&mut pending, "session interrupted");
-                        if !direct_write {
-                            if let Some(branch) = upper_branch_dir(&current_upper) {
-                                let _ = std::fs::remove_dir_all(branch);
-                            }
-                        }
-                        let _ = resp.send(Ok(()));
-                        break;
-                    }
-                    InnerCmd::Stop { resp } => {
-                        if let Some(mut p) = process.take() {
-                            let _ = p.kill();
-                            let _ = p.wait().await;
-                        }
-                        fail_all(&mut pending, "session interrupted");
-                        if !direct_write {
-                            if let Some(branch) = upper_branch_dir(&current_upper) {
-                                let _ = std::fs::remove_dir_all(branch);
-                            }
-                        }
-                        let _ = resp.send(Ok(()));
-                        break;
-                    }
-                    InnerCmd::Ping { resp } => {
-                        if !ready {
-                            let _ = resp.send(Err("worker not ready".into()));
-                            continue;
-                        }
-                        let id = next_id;
-                        next_id += 1;
-                        let (otx, orx) = oneshot::channel();
-                        pending.insert(id, otx);
-                        let line = serde_json::to_string(&WorkerCommand::Ping { id })?;
-                        if writer_tx.as_ref().expect("writer").send(line).is_err() {
-                            pending.remove(&id);
-                            let _ = resp.send(Err("worker pipe closed".into()));
-                            continue;
-                        }
-                        tokio::spawn(async move {
-                            let out = match orx.await {
-                                Ok(Ok(_)) => Ok(()),
-                                Ok(Err(e)) => Err(e),
-                                Err(_) => Err("worker disconnected".into()),
-                            };
-                            let _ = resp.send(out);
-                        });
-                    }
-                    InnerCmd::Write {
-                        path,
-                        content,
-                        resp,
-                    } => {
-                        use base64::Engine;
-                        if !ready {
-                            let _ = resp.send(Err("worker not ready".into()));
-                            continue;
-                        }
-                        let id = next_id;
-                        next_id += 1;
-                        let (otx, orx) = oneshot::channel();
-                        pending.insert(id, otx);
-                        let line = serde_json::to_string(&WorkerCommand::Write {
-                            id,
-                            path: path.to_string_lossy().into_owned(),
-                            content_base64: base64::engine::general_purpose::STANDARD
-                                .encode(&content),
-                        })?;
-                        if writer_tx.as_ref().expect("writer").send(line).is_err() {
-                            pending.remove(&id);
-                            let _ = resp.send(Err("worker pipe closed".into()));
-                            continue;
-                        }
-                        tokio::spawn(async move {
-                            let out = match orx.await {
-                                Ok(Ok(_)) => Ok(()),
-                                Ok(Err(e)) => Err(e),
-                                Err(_) => Err("worker disconnected".into()),
-                            };
-                            let _ = resp.send(out);
-                        });
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
+        Ok::<_, Error>((status.code(), collect(stdout)?, collect(stderr)?))
+    })?;
+    drop(sandbox);
+    drop(runtime);
+    Ok(ExecResult {
+        exit_code,
+        stdout: stdout.0,
+        stderr: stderr.0,
+        duration_ms: started.elapsed().as_millis() as u64,
+        truncated: stdout.1 || stderr.1,
+        network_denials: proxy.map(|proxy| proxy.denials()).unwrap_or_default(),
+    })
 }
 
-fn maybe_test_crash(point: &str) {
-    if cfg!(debug_assertions) && std::env::var("DELTABOX_TEST_CRASH_AT").as_deref() == Ok(point) {
-        std::process::abort();
-    }
+fn read_pipe(fd: OwnedFd) -> std::thread::JoinHandle<(String, bool)> {
+    std::thread::spawn(move || read_capped(std::fs::File::from(fd)))
 }
 
-fn handle_event(
-    event: WorkerEvent,
-    pending: &mut HashMap<u64, oneshot::Sender<ChanResult<serde_json::Value>>>,
-    ready: &mut bool,
-    fatal: &mut Option<String>,
-) {
-    match event {
-        WorkerEvent::Ready => *ready = true,
-        WorkerEvent::Ok { id, result } => {
-            if let Some(tx) = pending.remove(&id) {
-                let _ = tx.send(Ok(result));
-            }
-        }
-        WorkerEvent::Err { id, message } => {
-            if let Some(tx) = pending.remove(&id) {
-                let _ = tx.send(Err(message));
-            }
-        }
-        WorkerEvent::Fatal(message) => {
-            *fatal = Some(message);
-            fail_all(pending, "worker fatal");
-        }
-    }
-}
-
-fn fail_all(
-    pending: &mut HashMap<u64, oneshot::Sender<ChanResult<serde_json::Value>>>,
-    message: &str,
-) {
-    for (_, tx) in pending.drain() {
-        let _ = tx.send(Err(message.to_string()));
-    }
-}
-
-fn dead_channel() -> tokio_mpsc::Receiver<Option<WorkerEvent>> {
-    let (_, rx) = tokio_mpsc::channel(1);
-    rx
-}
-
-fn upper_branch_dir(upper: &Path) -> Option<PathBuf> {
-    upper.parent().map(|p| p.to_path_buf())
+/// The command's environment: a small allowlist from the caller, private
+/// scratch `HOME` and `TMPDIR`, then the request's explicit values.
+fn command_environment(spec: &SessionSpec, req: &ExecRequest) -> Vec<(String, String)> {
+    let home = spec.store_dir.join(crate::state_layout::SCRATCH_HOME);
+    let tmp = spec.store_dir.join(crate::state_layout::SCRATCH_TMP);
+    INHERITED_ENV
+        .iter()
+        .filter_map(|key| {
+            std::env::var(key)
+                .ok()
+                .map(|value| (key.to_string(), value))
+        })
+        .chain([
+            ("HOME".to_string(), home.display().to_string()),
+            ("TMPDIR".to_string(), tmp.display().to_string()),
+            (
+                "XDG_CACHE_HOME".to_string(),
+                home.join(".cache").display().to_string(),
+            ),
+            (
+                "XDG_CONFIG_HOME".to_string(),
+                home.join(".config").display().to_string(),
+            ),
+        ])
+        .chain(req.env.iter().flatten().cloned())
+        .collect()
 }
 
 /// Landlock ABI version of the running kernel (0 when unavailable). The
@@ -832,7 +269,9 @@ pub fn degraded_protections() -> Option<Vec<String>> {
     (!degraded.is_empty()).then_some(degraded)
 }
 
-fn build_sandbox(spec: &SessionSpec, worker_bin: &Path, direct_write: bool) -> Result<Sandbox> {
+/// The sandbox configuration a session's policy asks for. The caller adds the
+/// command's working directory and environment, then builds it.
+fn build_sandbox(spec: &SessionSpec) -> Result<sandlock_core::sandbox::SandboxBuilder> {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     spec.project.hash(&mut hasher);
@@ -846,9 +285,7 @@ fn build_sandbox(spec: &SessionSpec, worker_bin: &Path, direct_write: bool) -> R
         .allow_degraded(Protection::FsIoctlDev)
         .allow_degraded(Protection::SignalScope)
         .allow_degraded(Protection::AbstractUnixSocketScope)
-        .cwd(&spec.project)
-        .on_exit(BranchAction::Keep)
-        .on_error(BranchAction::Keep)
+        .clean_env(true)
         .fs_read(&spec.project)
         .fs_write(&spec.project)
         .fs_read("/proc")
@@ -858,11 +295,6 @@ fn build_sandbox(spec: &SessionSpec, worker_bin: &Path, direct_write: bool) -> R
         .fs_read("/tmp")
         .fs_read_if_exists("/lib64")
         .fs_read_if_exists("/usr/local");
-    if !direct_write {
-        builder = builder
-            .workdir(&spec.project)
-            .fs_storage(spec.store_dir.join(crate::state_layout::SCRATCH_STORAGE));
-    }
     match spec.policy.network.mode {
         NetworkMode::AllowAudit => {
             builder = builder.net_allow("*");
@@ -880,9 +312,6 @@ fn build_sandbox(spec: &SessionSpec, worker_bin: &Path, direct_write: bool) -> R
             .fs_write(&sandbox_home)
             .fs_read(&sandbox_tmp)
             .fs_write(&sandbox_tmp);
-    }
-    if let Some(parent) = worker_bin.parent() {
-        builder = builder.fs_read(parent);
     }
     // Landlock adds a rule by opening the ruled path, so one absent allowlist
     // entry aborts confinement for every command. Absent entries grant
@@ -920,9 +349,7 @@ fn build_sandbox(spec: &SessionSpec, worker_bin: &Path, direct_write: bool) -> R
     if let Some(pct) = spec.policy.limits.max_cpu_percent {
         builder = builder.max_cpu(pct);
     }
-    builder
-        .build()
-        .map_err(|e| Error::Backend(format!("sandlock build: {e}")))
+    Ok(builder)
 }
 
 fn resolve_read_paths(policy: &Policy, project: &Path) -> Vec<PathBuf> {
@@ -1005,151 +432,6 @@ pub(crate) fn resolve_deny_paths(policy: &Policy, project: &Path) -> Result<Vec<
     Ok(out)
 }
 
-async fn spawn_worker<'a>(
-    sandbox: &'a mut Sandbox,
-    worker_bin: &Path,
-    spec: &SessionSpec,
-    fs_storage: &Path,
-    direct_write: bool,
-) -> Result<(
-    Process<'a>,
-    PathBuf,
-    std_mpsc::Sender<String>,
-    tokio_mpsc::Receiver<Option<WorkerEvent>>,
-)> {
-    let before = list_branch_dirs(fs_storage)?;
-    let argv = [
-        worker_bin.to_string_lossy().into_owned(),
-        "worker".to_string(),
-        "--root".to_string(),
-        spec.project.to_string_lossy().into_owned(),
-        "--runtime".to_string(),
-        spec.store_dir.to_string_lossy().into_owned(),
-    ];
-    let argv_refs: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
-    let mut process = sandbox
-        .popen(
-            &argv_refs,
-            StdioMode::Piped,
-            StdioMode::Piped,
-            StdioMode::Piped,
-        )
-        .await
-        .map_err(|e| Error::Backend(format!("worker popen: {e}")))?;
-    let stdin = std::fs::File::from(
-        process
-            .take_stdin()
-            .ok_or_else(|| Error::Backend("worker stdin not piped".into()))?,
-    );
-    let stdout = process
-        .take_stdout()
-        .ok_or_else(|| Error::Backend("worker stdout not piped".into()))?;
-    let stderr = process
-        .take_stderr()
-        .ok_or_else(|| Error::Backend("worker stderr not piped".into()))?;
-
-    let (wtx, wrx) = std_mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        let mut writer = stdin;
-        while let Ok(line) = wrx.recv() {
-            if writer.write_all(line.as_bytes()).is_err()
-                || writer.write_all(b"\n").is_err()
-                || writer.flush().is_err()
-            {
-                break;
-            }
-        }
-    });
-
-    let (etx, mut erx) = tokio_mpsc::channel::<Option<WorkerEvent>>(64);
-    std::thread::spawn(move || {
-        let file = std::fs::File::from(stdout);
-        let mut reader = BufReader::new(file);
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    let event = serde_json::from_str::<WorkerEvent>(trimmed)
-                        .unwrap_or_else(|e| WorkerEvent::Fatal(format!("bad worker event: {e}")));
-                    if etx.blocking_send(Some(event)).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        let _ = etx.blocking_send(None);
-    });
-    std::thread::spawn(move || {
-        let file = std::fs::File::from(stderr);
-        let mut reader = BufReader::new(file);
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => {
-                    let trimmed = line.trim_end();
-                    if !trimmed.is_empty() {
-                        eprintln!("deltabox-worker: {trimmed}");
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    tokio::time::timeout(READY_TIMEOUT, async {
-        loop {
-            match erx.recv().await {
-                Some(Some(WorkerEvent::Ready)) => break,
-                Some(Some(WorkerEvent::Fatal(m))) => {
-                    return Err(Error::Backend(format!("worker fatal: {m}")))
-                }
-                Some(Some(_)) => continue,
-                Some(None) => return Err(Error::Backend("worker exited before ready".into())),
-                None => return Err(Error::Backend("worker event channel closed".into())),
-            }
-        }
-        Ok::<(), Error>(())
-    })
-    .await
-    .map_err(|_| Error::Backend("worker ready timeout".into()))??;
-
-    let upper = if direct_write {
-        spec.project.clone()
-    } else {
-        let after = list_branch_dirs(fs_storage)?;
-        let new_branch = after
-            .into_iter()
-            .find(|name| !before.contains(name))
-            .ok_or_else(|| Error::Backend("COW branch not created".into()))?;
-        fs_storage.join(new_branch).join("upper")
-    };
-    Ok((process, upper, wtx, erx))
-}
-
-fn list_branch_dirs(fs_storage: &Path) -> Result<Vec<String>> {
-    let mut out = Vec::new();
-    if !fs_storage.exists() {
-        return Ok(out);
-    }
-    for entry in std::fs::read_dir(fs_storage)? {
-        let entry = entry?;
-        if entry.path().is_dir() {
-            out.push(entry.file_name().to_string_lossy().into_owned());
-        }
-    }
-    out.sort();
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1180,7 +462,7 @@ mod tests {
             policy: Policy::default_agent(),
             resolved_deny_paths: None,
         };
-        let sandbox = build_sandbox(&spec, Path::new("/bin/sh"), true).unwrap();
+        let sandbox = build_sandbox(&spec).unwrap().build().unwrap();
         assert!(sandbox.fs_denied.contains(&backing));
     }
 
@@ -1198,7 +480,7 @@ mod tests {
             policy: Policy::default_agent(),
             resolved_deny_paths: None,
         };
-        let sandbox = build_sandbox(&spec, Path::new("/bin/sh"), true).unwrap();
+        let sandbox = build_sandbox(&spec).unwrap().build().unwrap();
         assert!(!sandbox.fs_denied.contains(&project));
     }
 }

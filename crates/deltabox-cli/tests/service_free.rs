@@ -1350,7 +1350,7 @@ fn direct_write_and_exec_storage_limits_are_enforced_atomically() {
 }
 
 #[test]
-fn optional_serve_recovers_after_worker_failure() {
+fn optional_serve_recovers_after_a_signalled_command() {
     let project = tempfile::tempdir().unwrap();
     let mut serve = Command::new(bin())
         .arg("serve")
@@ -1383,18 +1383,30 @@ fn optional_serve_recovers_after_worker_failure() {
             "method": "session.exec",
             "params": {
                 "session_id": sid,
-                "argv": ["sh", "-c", if cfg!(target_os = "linux") { "kill -KILL $PPID" } else { "kill -KILL $$" }],
+                "argv": ["sh", "-c", "kill -KILL $$"],
             },
         }));
-        if cfg!(target_os = "linux") {
-            assert!(
-                failed["error"].is_object(),
-                "worker failure was hidden: {failed}"
-            );
-        } else {
-            assert!(
-                failed["result"]["exit_code"].is_null(),
-                "signalled command was hidden: {failed}"
+        assert!(
+            failed["result"]["exit_code"].is_null(),
+            "signalled command was hidden: {failed}"
+        );
+
+        // Commands run as children of the caller. Landlock signal scoping
+        // (ABI 6 and later) keeps a command from signalling it; older kernels
+        // report that protection as degraded.
+        #[cfg(target_os = "linux")]
+        if deltabox_core::backend::linux_sandlock::landlock_abi() >= 6 {
+            let parent = rpc(serde_json::json!({
+                "id": 20,
+                "method": "session.exec",
+                "params": {
+                    "session_id": sid,
+                    "argv": ["sh", "-c", "kill -KILL $PPID"],
+                },
+            }));
+            assert_ne!(
+                parent["result"]["exit_code"], 0,
+                "a command signalled its caller: {parent}"
             );
         }
 
@@ -1476,6 +1488,14 @@ fn assert_client_death_kills_the_command_tree(mode: &str, signal: libc::c_int, c
     unsafe { libc::kill(client.id() as i32, signal) };
     let _ = client.wait();
 
+    // A caught signal cancels the command before the client exits. SIGKILL
+    // cannot be caught: the kernel ends only the command's main process, and
+    // the next operation on the session stops the rest before it runs.
+    let result = if signal == libc::SIGKILL {
+        Some(exec(project.path(), &sid, "echo alive"))
+    } else {
+        None
+    };
     let deadline = Instant::now() + Duration::from_secs(20);
     while process_exists(&sleep) {
         assert!(
@@ -1485,7 +1505,7 @@ fn assert_client_death_kills_the_command_tree(mode: &str, signal: libc::c_int, c
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    let result = exec(project.path(), &sid, "echo alive");
+    let result = result.unwrap_or_else(|| exec(project.path(), &sid, "echo alive"));
     assert_eq!(result["exit_code"], 0, "[{mode} sig {signal}] {result}");
     assert!(result["stdout"].as_str().unwrap().contains("alive"), "{result}");
 
@@ -1500,9 +1520,9 @@ fn interrupting_the_exec_client_kills_the_running_command_tree() {
     assert_client_death_kills_the_command_tree("copy-private", libc::SIGTERM, 2);
 }
 
-/// SIGKILL cannot be handled, so only the kernel-side mechanisms apply: on
-/// Linux the worker's parent-death signal (in-process modes) and the helper's
-/// hangup detection (helper-routed modes).
+/// SIGKILL cannot be handled. The kernel's parent-death signal ends the
+/// command's main process, and the next session operation stops whatever it
+/// left in its process group (`crate::fence`) before running.
 #[cfg(target_os = "linux")]
 #[test]
 fn killing_the_exec_client_kills_the_running_command_tree() {

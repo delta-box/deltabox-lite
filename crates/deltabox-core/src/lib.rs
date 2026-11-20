@@ -13,6 +13,8 @@ pub mod changeset;
 pub mod checkpoint;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod command_executor;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod fence;
 pub mod coordinator;
 #[cfg(windows)]
 pub mod windows_cbcow;
