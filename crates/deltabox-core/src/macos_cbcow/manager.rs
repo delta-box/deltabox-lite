@@ -511,10 +511,10 @@ impl Manager {
         let _lock = self.exec_lock(&session_id)?;
         let meta = self.running_meta(&session_id)?;
         let record = self.record(&session_id)?;
-        let mut operation = match self.execution_mode {
-            CommandExecutionMode::Sandboxed => Some(command_executor::lock_operations(
-                &command_endpoint(&record),
-            )?),
+        // Held for the whole command: commit, abort and checkpoint wait until
+        // it has finished, in this process or any other.
+        let _operation = match self.execution_mode {
+            CommandExecutionMode::Sandboxed => Some(operation_lock(&record)?),
             CommandExecutionMode::Trusted => None,
         };
         let mut state = self.open_state(&record)?;
@@ -593,20 +593,7 @@ impl Manager {
                     cwd,
                     env: command_executor::capture_environment(env),
                 };
-                if !endpoint.token_file.exists() {
-                    write_file(
-                        &endpoint.token_file,
-                        format!("{}{}\n", Uuid::new_v4(), Uuid::new_v4()).as_bytes(),
-                        record.durability == DurabilityMode::Strict,
-                    )?;
-                }
-                command_executor::ensure_running(
-                    &endpoint,
-                    &self.helper_bin,
-                    &record.state_root.join("command-helper.log"),
-                )?;
-                drop(operation.take());
-                command_executor::exec(&endpoint, &session_id, 0, spec, request)
+                exec_sandboxed(&session_id, &spec, request, fence_record(&record))
             }
         };
         let tracked = tracker.as_ref().map_or(Ok(()), |tracker| {
@@ -1603,7 +1590,7 @@ impl Manager {
             return Err(Error::SessionNotFound(session_id.into()));
         }
         let record = self.record(session_id)?;
-        let operation = command_executor::lock_operations(&command_endpoint(&record))?;
+        let operation = operation_lock(&record)?;
         Ok(SessionOperationLock {
             _operation: operation,
             _session: session,
@@ -1723,6 +1710,52 @@ fn filesystem_info(mode: Mode, state: &State, durability: DurabilityMode) -> Fil
     info.tainted = state.status().tainted;
     info.mountpoint = Some(state.live());
     info.with_durability(durability, None)
+}
+
+/// Take the session's operation lock, then stop anything a caller that died
+/// while holding it left running (see `crate::fence`).
+///
+/// The lock file is the one the command helper used, so a helper still
+/// running from an older version and this process exclude each other.
+fn operation_lock(record: &Record) -> Result<command_executor::OperationLock> {
+    let operation = command_executor::lock_operations(&command_endpoint(record))?;
+    crate::fence::reap(&fence_record(record))?;
+    Ok(operation)
+}
+
+/// Where a running command's process group is recorded for the fence.
+fn fence_record(record: &Record) -> PathBuf {
+    record.state_root.join("command-group.json")
+}
+
+/// Run one sandboxed command in this process: build the Seatbelt profile and,
+/// if the policy needs one, a network proxy for this command only, spawn it
+/// under `sandbox-exec`, and tear both down when it ends.
+///
+/// The command is bound to the calling thread's cancel scope, so `kill()`,
+/// `cancelExec` and the CLI's signal handling end its process tree. If this
+/// process dies without cleaning up, the next operation lock fences it.
+fn exec_sandboxed(
+    session_id: &str,
+    spec: &SessionSpec,
+    request: ExecRequest,
+    fence: PathBuf,
+) -> Result<ExecResult> {
+    use crate::backend::SandboxBackend;
+    let mut backend = crate::backend::macos_seatbelt::SeatbeltBackend::new_direct();
+    backend.start_session(session_id, spec)?;
+    let result = {
+        let _fence = crate::fence::scope(fence);
+        backend.exec(session_id, request)
+    };
+    let stopped = backend.stop_session(session_id);
+    match (result, stopped) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(Error::Backend(format!(
+            "{error}; sandbox cleanup failed: {cleanup}"
+        ))),
+    }
 }
 
 fn command_endpoint(record: &Record) -> CommandEndpoint {

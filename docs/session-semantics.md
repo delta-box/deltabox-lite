@@ -54,15 +54,24 @@ filesystem metadata was introduced continue to resolve to `copy-private`.
 
 ## Process model
 
-Normal CLI operations are synchronous and require no prestarted service. A
-CB-CoW session lazily launches a session-scoped command helper on its first
-`exec`. Independent CLI and `serve` calls reuse its warm Sandlock worker on
-Linux or its prepared Seatbelt profile and network proxy on macOS; each user
-command is still a short-lived confined child. The helper owns no authoritative
-filesystem state and is recreated automatically after failure. A changed
-policy or a restarted Linux filesystem helper invalidates and rebuilds only the
-warm sandbox runtime. Failed commands are never replayed automatically because
-the caller may already have observed their side effects.
+Normal CLI operations are synchronous and require no prestarted service.
+
+On macOS, the caller runs each command itself: the CLI, `serve` or Node host
+builds the Seatbelt profile and, when the policy needs one, a network proxy
+for that one command, then spawns it under `sandbox-exec` as its own process
+group. Both are torn down when the command ends. Cancelling the request,
+`kill()`, or Ctrl-C (SIGINT, SIGTERM or SIGHUP to the CLI) ends the command's
+whole process tree.
+
+On Linux, a CB-CoW session lazily launches a session-scoped command helper on
+its first `exec`, and independent CLI and `serve` calls reuse its warm Sandlock
+worker. The helper owns no authoritative filesystem state and is recreated
+automatically after failure. A changed policy or a restarted Linux filesystem
+helper invalidates and rebuilds only the warm sandbox runtime. (#71 moves
+Linux to the same per-command model as macOS.)
+
+Failed commands are never replayed automatically because the caller may
+already have observed their side effects.
 
 A Linux CB-CoW session also owns one automatically launched filesystem helper
 and FUSE mount. The filesystem helper can be restarted from its journal and
@@ -91,11 +100,25 @@ truth. A failed worker returns an error for its request; the next request
 rebuilds a worker from the durable working view. Live child processes and file
 descriptors are not recoverable state.
 
-The command helper holds a second per-session operation lock while an `exec` is
-live. If the invoking CLI exits after dispatch, later status, diff, checkpoint,
-commit, abort, stop, or exec operations wait for that orphaned command boundary
-instead of racing it. The helper acknowledges lock ownership before starting a
-command, so a request whose client disappears before handoff is not executed.
+A second per-session operation lock (`flock`) is held while an `exec` is
+live, so status, diff, checkpoint, commit, abort, stop and other execs wait for
+the command instead of racing it.
+
+On macOS the caller holds that lock itself for the whole command. If the
+caller is SIGKILLed or crashes, the kernel releases the lock but the command's
+process tree keeps running. To cover that, the caller records the command's
+process group (with its leader's start time) under the session state while it
+holds the lock. Whoever takes the lock next first stops any group still
+recorded there (SIGTERM, a short grace, then SIGKILL), so nothing a dead
+caller started runs past the session's next operation. A number reused by an
+unrelated process is never stopped, because the leader's start time no longer
+matches.
+
+On Linux the command helper takes over the lock while a command runs. If the
+invoking CLI exits after dispatch, later operations wait for that orphaned
+command boundary instead of racing it. The helper acknowledges lock ownership
+before starting a command, so a request whose client disappears before handoff
+is not executed.
 
 ## Concurrency and conflicts
 

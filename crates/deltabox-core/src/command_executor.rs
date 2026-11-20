@@ -112,10 +112,12 @@ struct ReadyRecord {
     nonce: String,
 }
 
+/// When a process started, to tell a live process from a later one that
+/// reused its number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-struct ProcessStart {
-    coarse: u64,
-    fine: u64,
+pub(crate) struct ProcessStart {
+    pub(crate) coarse: u64,
+    pub(crate) fine: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -916,7 +918,7 @@ fn runtime_environment() -> Vec<(String, Vec<u8>)> {
 }
 
 #[cfg(target_os = "linux")]
-fn process_start(pid: u32) -> Option<ProcessStart> {
+pub(crate) fn process_start(pid: u32) -> Option<ProcessStart> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let after_name = stat.rsplit_once(')')?.1;
     let mut fields = after_name.split_whitespace();
@@ -930,7 +932,7 @@ fn process_start(pid: u32) -> Option<ProcessStart> {
 }
 
 #[cfg(target_os = "macos")]
-fn process_start(pid: u32) -> Option<ProcessStart> {
+pub(crate) fn process_start(pid: u32) -> Option<ProcessStart> {
     let pid = i32::try_from(pid).ok()?;
     let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
     let size = std::mem::size_of::<libc::proc_bsdinfo>();

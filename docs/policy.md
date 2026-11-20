@@ -189,7 +189,7 @@ A trusted orchestrator can grant temporary network access for a single command:
 #### Enforcement & Security Model
 
 - **Direct egress blocked**: Sandbox backends (Linux Landlock, macOS Seatbelt) permit egress exclusively to the local loopback proxy (`127.0.0.1:<port>`). Direct raw TCP/UDP out to other addresses is denied by the OS kernel.
-- **Proxy environment**: The command helper automatically injects proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and empty `NO_PROXY`) with per-execution random Basic Auth credentials.
+- **Proxy environment**: Deltabox automatically injects proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and empty `NO_PROXY`) with per-execution random Basic Auth credentials.
 - **Private IP guard (`allow_private = false`)**: The proxy resolves DNS on the host and validates that the resolved IP is public before connecting. Connections use the checked IP directly without a second lookup (preventing DNS rebinding). Requests resolving to private, loopback, link-local, or cloud metadata addresses (e.g. `169.254.169.254`) are blocked.
 - **Lifecycle cleanup**: The helper terminates the confined runtime and tears down all tracked proxy sockets immediately after each command. No connections or credentials survive across commands.
 - **Protocol scope**: Supports HTTP and HTTPS via CONNECT tunnels. Direct TCP, UDP, QUIC (HTTP/3), and raw SSH are not proxied and remain blocked.
