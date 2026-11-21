@@ -9,6 +9,25 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+### Added
+
+- Streaming `spawn(deltabox, sessionId, options)` with a Node `ChildProcess`-style
+  handle (`stdout`/`stderr` Readable streams with backpressure on Node and Bun,
+  `exit`/`close` events, `pid`, `kill()`, and `result`), plus an options-object
+  `exec(deltabox, sessionId, options)` wrapper supporting `AbortSignal`.
+- `ExecResult.background_terminated` reporting how many lingering background
+  processes in the command's process group were stopped when the main command
+  exited.
+
+### Changed
+
+- Sandboxed commands on macOS and Linux now run directly in the caller process,
+  removing the persistent in-sandbox worker and command-helper IPC layers.
+- Lingering descendants in a command's process group (or Windows job object) are
+  now terminated on command exit (`SIGTERM`, 500 ms grace, then `SIGKILL`) so
+  background children like `cmd &` cannot hang output streams or outlive the
+  command's review scope.
+
 ## [0.4.4] - 2026-11-20
 
 ### Added
