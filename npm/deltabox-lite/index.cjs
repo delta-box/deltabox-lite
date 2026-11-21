@@ -26,4 +26,6 @@ function loadNative() {
   return require(nativePath());
 }
 
-module.exports = { binaryPath, nativePath, loadNative };
+const { spawn, exec, DeltaboxChildProcess } = require("./child.cjs");
+
+module.exports = { binaryPath, nativePath, loadNative, spawn, exec, DeltaboxChildProcess };

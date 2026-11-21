@@ -128,12 +128,14 @@ pub struct NativeSessionInfo {
     pub mountpoint: Option<String>,
 }
 
+#[derive(Clone)]
 #[napi(object)]
 pub struct NativeNetworkDenial {
     pub target: String,
     pub reason: String,
 }
 
+#[derive(Clone)]
 #[napi(object)]
 pub struct NativeExecResult {
     #[napi(js_name = "exit_code")]
@@ -145,6 +147,141 @@ pub struct NativeExecResult {
     pub truncated: bool,
     #[napi(js_name = "network_denials")]
     pub network_denials: Vec<NativeNetworkDenial>,
+    /// Processes the command left running in its process group that were
+    /// stopped when its main process exited.
+    #[napi(js_name = "background_terminated")]
+    pub background_terminated: u32,
+}
+
+/// Options for [`NativeDeltabox::spawn`]: the same as `exec`'s arguments.
+#[napi(object)]
+pub struct NativeSpawnOptions {
+    pub argv: Vec<String>,
+    pub cwd: Option<String>,
+    pub environment: Option<Vec<NativeEnvironmentEntry>>,
+    pub label: Option<String>,
+    #[napi(js_name = "executionProfile")]
+    pub execution_profile: Option<String>,
+    #[napi(js_name = "networkAllow")]
+    pub network_allow: Option<Vec<String>>,
+    #[napi(js_name = "fsReadAllow")]
+    pub fs_read_allow: Option<Vec<String>>,
+    #[napi(js_name = "fsWriteAllow")]
+    pub fs_write_allow: Option<Vec<String>>,
+}
+
+/// A command started by [`NativeDeltabox::spawn`]. Use it through the
+/// `ChildProcess`-style wrapper in the npm package, which turns the pipe ends
+/// into Node streams.
+#[napi]
+pub struct NativeChild {
+    cancel: deltabox_core::cancel::CancelHandle,
+    pid: Arc<std::sync::atomic::AtomicU32>,
+    done: tokio::sync::watch::Receiver<Option<std::result::Result<NativeExecResult, String>>>,
+    stdout: Mutex<Option<std::io::PipeReader>>,
+    stderr: Mutex<Option<std::io::PipeReader>>,
+}
+
+#[napi]
+impl NativeChild {
+    /// The command's process id, or null until it has started (and for a
+    /// command that failed to start).
+    #[napi(getter)]
+    pub fn pid(&self) -> Option<u32> {
+        match self.pid.load(std::sync::atomic::Ordering::Acquire) {
+            0 => None,
+            pid => Some(pid),
+        }
+    }
+
+    /// Take ownership of the read end of the stdout pipe, as a file
+    /// descriptor (Unix only). The caller must close it exactly once. Returns
+    /// null if it was already taken or on Windows, where `readStdout` is used.
+    #[napi]
+    pub fn take_stdout_fd(&self) -> Option<i32> {
+        take_fd(&self.stdout)
+    }
+
+    /// Like `takeStdoutFd`, for stderr.
+    #[napi]
+    pub fn take_stderr_fd(&self) -> Option<i32> {
+        take_fd(&self.stderr)
+    }
+
+    /// Read the next chunk of stdout, or null at EOF. For hosts that cannot
+    /// use a raw descriptor (Windows); reads happen off the JS thread.
+    #[napi]
+    pub async fn read_stdout(&self) -> napi::Result<Option<Buffer>> {
+        read_chunk(&self.stdout).await
+    }
+
+    /// Like `readStdout`, for stderr.
+    #[napi]
+    pub async fn read_stderr(&self) -> napi::Result<Option<Buffer>> {
+        read_chunk(&self.stderr).await
+    }
+
+    /// Resolve once the command has finished: its main process exited, what
+    /// it left in its process group was stopped, and the session recorded the
+    /// result. Its output pipes reach EOF no later than this.
+    #[napi]
+    pub async fn wait(&self) -> napi::Result<NativeExecResult> {
+        let mut done = self.done.clone();
+        let outcome = done
+            .wait_for(Option::is_some)
+            .await
+            .map_err(native_error)?
+            .clone()
+            .expect("waited for a result");
+        outcome.map_err(napi::Error::from_reason)
+    }
+
+    /// End the command's whole process tree. Safe before it starts (it is
+    /// then never run) and after it has finished.
+    #[napi]
+    pub fn kill(&self) {
+        self.cancel.cancel();
+    }
+}
+
+#[cfg(unix)]
+fn take_fd(slot: &Mutex<Option<std::io::PipeReader>>) -> Option<i32> {
+    use std::os::fd::IntoRawFd;
+    slot.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+        .map(IntoRawFd::into_raw_fd)
+}
+
+#[cfg(not(unix))]
+fn take_fd(_slot: &Mutex<Option<std::io::PipeReader>>) -> Option<i32> {
+    None
+}
+
+async fn read_chunk(slot: &Mutex<Option<std::io::PipeReader>>) -> napi::Result<Option<Buffer>> {
+    use std::io::Read;
+    let reader = slot
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(std::io::PipeReader::try_clone)
+        .transpose()
+        .map_err(native_error)?;
+    let Some(mut reader) = reader else {
+        return Ok(None);
+    };
+    let chunk = run_blocking(move || {
+        let mut buffer = vec![0u8; 64 * 1024];
+        let read = reader.read(&mut buffer).map_err(native_error)?;
+        buffer.truncate(read);
+        Ok(buffer)
+    })
+    .await?;
+    if chunk.is_empty() {
+        slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+        return Ok(None);
+    }
+    Ok(Some(chunk.into()))
 }
 
 #[napi(object)]
@@ -481,6 +618,76 @@ impl NativeDeltabox {
     #[napi]
     pub fn cancel_exec(&self, exec_id: String) -> bool {
         self.executions.cancel(&exec_id)
+    }
+
+    /// Start a command and return a handle to it at once. The command runs
+    /// exactly as `exec` would (same session lock, fence, journaling and
+    /// review tracking), but its stdout and stderr go into pipes the caller
+    /// reads while it runs. The caller must consume both pipes, or a command
+    /// that writes a lot blocks once they fill.
+    #[napi]
+    pub fn spawn(
+        &self,
+        session_id: String,
+        options: NativeSpawnOptions,
+    ) -> napi::Result<NativeChild> {
+        let execution_profile = parse_execution_profile(options.execution_profile.as_deref())?;
+        let (stdout, stdout_write) = std::io::pipe().map_err(native_error)?;
+        let (stderr, stderr_write) = std::io::pipe().map_err(native_error)?;
+        let cancel = deltabox_core::cancel::CancelHandle::default();
+        let (done_tx, done) = tokio::sync::watch::channel(None);
+        let pid = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let params = ExecParams {
+            session_id,
+            argv: options.argv,
+            cwd: options.cwd.map(PathBuf::from),
+            env: options.environment.map(|values| {
+                values
+                    .into_iter()
+                    .map(|entry| (entry.key, entry.value))
+                    .collect()
+            }),
+            label: options.label,
+            execution_profile,
+            network_allow: options.network_allow.unwrap_or_default(),
+            fs_read_allow: options
+                .fs_read_allow
+                .unwrap_or_default()
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
+            fs_write_allow: options
+                .fs_write_allow
+                .unwrap_or_default()
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
+        };
+        let coordinator = Arc::clone(&self.coordinator);
+        let thread_cancel = cancel.clone();
+        let thread_pid = Arc::clone(&pid);
+        // A dedicated thread, not the blocking pool: it lives exactly as long
+        // as the command, and nothing else queues behind a long-running one.
+        std::thread::Builder::new()
+            .name("deltabox-spawn".into())
+            .spawn(move || {
+                let _cancel = deltabox_core::cancel::enter(&thread_cancel);
+                let outcome = {
+                    let _stdio =
+                        deltabox_core::stdio::scope(stdout_write, stderr_write, thread_pid);
+                    coordinator.exec(params)
+                };
+                // The scope is gone, so every write end is closed by now.
+                let _ = done_tx.send(Some(outcome.map(exec_result).map_err(|e| e.to_string())));
+            })
+            .map_err(native_error)?;
+        Ok(NativeChild {
+            cancel,
+            pid,
+            done,
+            stdout: Mutex::new(Some(stdout)),
+            stderr: Mutex::new(Some(stderr)),
+        })
     }
 
     #[napi]
@@ -895,6 +1102,7 @@ fn exec_result(value: ExecResult) -> NativeExecResult {
                 reason: v.reason,
             })
             .collect(),
+        background_terminated: value.background_terminated,
     }
 }
 

@@ -15,7 +15,7 @@ use super::SandboxBackend;
 use crate::error::{Error, Result};
 use crate::policy::{NetworkMode, Policy};
 use crate::protocol::{AbortResult, CommitResult, ExecRequest, ExecResult, SessionSpec};
-use crate::worker::{read_capped, ScanEntry};
+use crate::worker::ScanEntry;
 use sandlock_core::sandbox::{ByteSize, StdioMode};
 use sandlock_core::{Protection, Sandbox};
 use std::collections::HashMap;
@@ -162,52 +162,50 @@ fn exec(mut spec: SessionSpec, mut req: ExecRequest) -> Result<ExecResult> {
         .build()
         .map_err(|e| Error::Backend(format!("tokio runtime: {e}")))?;
     let started = Instant::now();
-    let (exit_code, stdout, stderr) = runtime.block_on(async {
-        let argv: Vec<&str> = req.argv.iter().map(String::as_str).collect();
-        // stdin is never inherited: from a terminal, sandlock would make the
-        // command the terminal's foreground process group.
-        let mut process = sandbox
-            .popen(&argv, StdioMode::Null, StdioMode::Piped, StdioMode::Piped)
-            .await
-            .map_err(|e| Error::Backend(format!("exec spawn failed: {e}")))?;
-        // sandlock puts the command in its own process group.
-        let pgid = process.pid().unwrap_or(0);
-        let _cancel = crate::cancel::register(move || crate::cancel::kill_process_group(pgid));
-        crate::fence::record(pgid);
-        // Read the pipes on plain threads: blocking reads on the runtime would
-        // starve the supervisor and deadlock the command.
-        let stdout = process.take_stdout().map(read_pipe);
-        let stderr = process.take_stderr().map(read_pipe);
-        let status = process
-            .wait()
-            .await
-            .map_err(|e| Error::Backend(format!("exec wait failed: {e}")))?;
-        let collect = |reader: Option<std::thread::JoinHandle<(String, bool)>>| {
-            reader.map_or_else(
-                || Ok((String::new(), false)),
-                |reader| {
-                    reader
-                        .join()
-                        .map_err(|_| Error::Backend("output reader failed".into()))
-                },
-            )
-        };
-        Ok::<_, Error>((status.code(), collect(stdout)?, collect(stderr)?))
-    })?;
+    let (exit_code, (stdout, stderr, truncated), background_terminated) =
+        runtime.block_on(async {
+            let argv: Vec<&str> = req.argv.iter().map(String::as_str).collect();
+            // stdin is never inherited: from a terminal, sandlock would make the
+            // command the terminal's foreground process group.
+            let mut process = sandbox
+                .popen(&argv, StdioMode::Null, StdioMode::Piped, StdioMode::Piped)
+                .await
+                .map_err(|e| Error::Backend(format!("exec spawn failed: {e}")))?;
+            // sandlock puts the command in its own process group.
+            let pgid = process.pid().unwrap_or(0);
+            let _cancel = crate::cancel::register(move || crate::cancel::kill_process_group(pgid));
+            crate::fence::record(pgid);
+            crate::stdio::started(pgid as u32);
+            // Read the pipes on plain threads: blocking reads on the runtime would
+            // starve the supervisor and deadlock the command.
+            let pipe = |fd: Option<OwnedFd>| {
+                fd.map(std::fs::File::from)
+                    .ok_or_else(|| Error::Backend("sandlock returned no output pipe".into()))
+            };
+            let readers =
+                crate::stdio::read(pipe(process.take_stdout())?, pipe(process.take_stderr())?);
+            let status = process
+                .wait()
+                .await
+                .map_err(|e| Error::Backend(format!("exec wait failed: {e}")))?;
+            // Stop what the command left in its process group while the sandbox
+            // and its supervisor still exist, then wait for the pipes, which those
+            // processes would otherwise hold open.
+            let background_terminated =
+                crate::cancel::terminate_survivors(pgid, crate::cancel::SURVIVOR_GRACE);
+            Ok::<_, Error>((status.code(), readers.join()?, background_terminated))
+        })?;
     drop(sandbox);
     drop(runtime);
     Ok(ExecResult {
         exit_code,
-        stdout: stdout.0,
-        stderr: stderr.0,
+        stdout,
+        stderr,
         duration_ms: started.elapsed().as_millis() as u64,
-        truncated: stdout.1 || stderr.1,
+        truncated,
         network_denials: proxy.map(|proxy| proxy.denials()).unwrap_or_default(),
+        background_terminated,
     })
-}
-
-fn read_pipe(fd: OwnedFd) -> std::thread::JoinHandle<(String, bool)> {
-    std::thread::spawn(move || read_capped(std::fs::File::from(fd)))
 }
 
 /// The command's environment: a small allowlist from the caller, private

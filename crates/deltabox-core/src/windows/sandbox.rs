@@ -360,8 +360,7 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
     let stderr = process
         .take_stderr()
         .ok_or_else(|| Error::Backend("missing MXC stderr".into()))?;
-    let out = std::thread::spawn(move || crate::worker::read_capped(stdout));
-    let err = std::thread::spawn(move || crate::worker::read_capped(stderr));
+    let readers = crate::stdio::read(stdout, stderr);
     // Bind the command to this call. MXC's `kill` terminates the whole job
     // object, so a cancel reaches every descendant. `kill` needs `&mut`, so
     // poll for exit instead of blocking in `wait` while a cancel can arrive.
@@ -386,12 +385,9 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
     // `wait` owns descendant termination and teardown, so it always runs.
     let exit = process.wait();
     drop(registration);
-    let (stdout, out_cut) = out
-        .join()
-        .map_err(|_| Error::Backend("stdout reader failed".into()))?;
-    let (stderr, err_cut) = err
-        .join()
-        .map_err(|_| Error::Backend("stderr reader failed".into()))?;
+    // `wait` tore down the job object, so nothing the command left running
+    // can hold its pipes open.
+    let (stdout, stderr, truncated) = readers.join()?;
     // The proxy outlives the command (it is dropped on return), so its denials are complete here.
     let network_denials = proxy
         .as_ref()
@@ -402,8 +398,10 @@ pub fn execute(manifest: &Manifest, params: ExecParams, state: &Path) -> Result<
         stdout,
         stderr,
         duration_ms: started.elapsed().as_millis() as u64,
-        truncated: out_cut || err_cut,
+        truncated,
         network_denials,
+        // MXC stops them in `wait` but cannot count them.
+        background_terminated: 0,
     })
 }
 

@@ -9,7 +9,7 @@ use crate::protocol::{AbortResult, CommitResult, ExecRequest, ExecResult, Sessio
 use crate::snapshot::{
     build_scan_entries, clone_or_copy_file, diff_snapshots, preserve_symlink_times,
 };
-use crate::worker::{read_capped, scan_root, ScanEntry};
+use crate::worker::{scan_root, ScanEntry};
 use base64::Engine;
 use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
@@ -533,27 +533,28 @@ impl SandboxBackend for SeatbeltBackend {
         // If this caller dies without cleaning up, the next session operation
         // stops this group (see `crate::fence`).
         crate::fence::record(pgid);
-        let stdout = child.stdout.take().expect("stdout piped");
-        let stderr = child.stderr.take().expect("stderr piped");
-        let out_thread = std::thread::spawn(move || read_capped(stdout));
-        let err_thread = std::thread::spawn(move || read_capped(stderr));
+        crate::stdio::started(child.id());
+        let readers = crate::stdio::read(
+            child.stdout.take().expect("stdout piped"),
+            child.stderr.take().expect("stderr piped"),
+        );
         let status = child.wait()?;
-        let (stdout, out_truncated) = out_thread
-            .join()
-            .map_err(|_| Error::Backend("stdout reader failed".into()))?;
-        let (stderr, err_truncated) = err_thread
-            .join()
-            .map_err(|_| Error::Backend("stderr reader failed".into()))?;
+        // The command owns its process tree: stop what it left running before
+        // waiting for the pipes, which those processes would otherwise hold open.
+        let background_terminated =
+            crate::cancel::terminate_survivors(pgid, crate::cancel::SURVIVOR_GRACE);
+        let (stdout, stderr, truncated) = readers.join()?;
         Ok(ExecResult {
             exit_code: status.code(),
             stdout,
             stderr,
             duration_ms: start.elapsed().as_millis() as u64,
-            truncated: out_truncated || err_truncated,
+            truncated,
             network_denials: state
                 .network_proxy
                 .as_ref()
                 .map_or_else(Vec::new, |p| p.denials()),
+            background_terminated,
         })
     }
 

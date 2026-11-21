@@ -51,6 +51,7 @@ mod state_layout;
 mod state_layout;
 #[cfg(not(windows))]
 pub mod snapshot;
+pub mod stdio;
 pub mod trusted;
 pub mod worker;
 #[cfg(windows)]
