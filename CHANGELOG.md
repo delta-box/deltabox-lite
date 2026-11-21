@@ -9,6 +9,8 @@ Unreleased section below into the new version's section.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-21
+
 ### Added
 
 - Streaming `spawn(deltabox, sessionId, options)` with a Node `ChildProcess`-style
